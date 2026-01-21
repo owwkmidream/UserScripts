@@ -1,17 +1,15 @@
 // ==UserScript==
 // @name         JRants Ultimate: Gallery Fix & Clean (v7.3 Stable)
 // @namespace    http://tampermonkey.net/
-// @version      7.3
-// @description  修复画廊消失问题 + 彻底隐藏分页器 + 智能清理空白
-// @author       Optimizer
-// @match        https://jrants.com/*
+// @version      7.6
+// @description  恢复首页布局和Meta信息 + 详情页画廊修复 (v7.6 修复序号) + 强力去广告
 // @match        https://*.jrants.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=jrants.com
 // @grant        GM_addStyle
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // =================================================================
@@ -33,24 +31,80 @@
             display: none !important;
         }
 
-        /* ::::: 首页布局 ::::: */
-        .generate-columns-container {
+        /* ::::: 首页 & 分类页布局 (Grid + Meta信息) - Restored from v6.7 ::::: */
+
+        /* 容器 Grid 化 */
+        .generate-columns-container, .masonry-container {
             display: grid !important;
             grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important;
-            gap: 20px !important; width: 100% !important; margin: 0 !important; padding: 20px 0 !important;
+            gap: 20px !important; width: 100% !important; height: auto !important;
+            position: static !important; margin: 0 !important; padding: 20px 0 !important; float: none !important;
         }
+
+        /* 标题/按钮跨行 */
         .generate-columns-container > .page-header, .tm-page-divider, .tm-load-more-btn {
-            grid-column: 1 / -1 !important; width: 100% !important; margin: 20px 0 !important;
+            grid-column: 1 / -1 !important; width: 100% !important; position: static !important;
+            margin: 0 0 20px 0 !important; clear: both !important;
         }
+        .page-header h1 {
+            text-align: center; font-size: 28px !important; color: #fff !important;
+            border-bottom: 2px solid #5dade2; padding-bottom: 10px; display: block !important;
+        }
+
+        /* 卡片重构 */
         .generate-columns-container .post {
-            background: #252525 !important; border: 1px solid #333; border-radius: 6px;
-            display: flex !important; flex-direction: column !important; height: auto !important; margin: 0 !important;
+            position: static !important; top: auto !important; left: auto !important; transform: none !important;
+            width: auto !important; height: 100% !important; margin: 0 !important;
+            display: flex !important; flex-direction: column !important;
+            background: #252525 !important; border: 1px solid #333; border-radius: 6px; box-shadow: none !important;
         }
-        .post-image img { width: 100% !important; aspect-ratio: 2/3 !important; object-fit: cover !important; }
-        .entry-header { padding: 10px !important; order: 2; }
-        .entry-meta, footer.entry-meta { padding: 0 10px 10px 10px !important; font-size: 12px !important; color: #888 !important; }
-        .entry-title { font-size: 14px !important; line-height: 1.4 !important; margin: 0 !important; }
+
+        /* 确保卡片内部内容也是 Flex 上下排列 */
+        .generate-columns-container .inside-article {
+            display: flex !important; flex-direction: column !important;
+            height: 100% !important; padding: 0 !important;
+        }
+
+        /* 图片 */
+        .post-image { margin: 0 !important; width: 100% !important; aspect-ratio: 2/3 !important; order: 1; }
+        .post-image img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+
+        /* 标题 */
+        .entry-header {
+            padding: 10px 12px 5px 12px !important;
+            order: 2;
+        }
+        .entry-title {
+            font-size: 14px !important; margin: 0 !important;
+            line-height: 1.4 !important; font-weight: bold !important;
+        }
         .entry-title a { color: #eee !important; }
+
+        /* 恢复：发布日期 (Meta) */
+        .entry-meta {
+            display: block !important; /* 恢复显示 */
+            order: 3;
+            padding: 0 12px !important;
+            font-size: 12px !important;
+            color: #888 !important;
+            margin-bottom: 5px !important;
+        }
+
+        /* 恢复：分类/标签 (Footer Meta) */
+        footer.entry-meta {
+            display: block !important; /* 恢复显示 */
+            order: 4;
+            padding: 8px 12px 12px 12px !important;
+            font-size: 11px !important;
+            color: #666 !important;
+            border-top: 1px solid #333;
+            margin-top: auto !important; /* 强制推到底部 */
+        }
+        footer.entry-meta a, .entry-meta a { color: #888 !important; }
+        footer.entry-meta a:hover { color: #5dade2 !important; }
+
+        /* 仅隐藏摘要 */
+        .entry-summary, .paging-navigation { display: none !important; }
 
         /* ::::: 详情页布局 ::::: */
         .site-content { display: flex !important; flex-direction: column !important; }
@@ -99,13 +153,21 @@
     };
     const DOM = { galleryGrid: null, status: null, lightboxImg: null };
 
-    // --- 工具：清理布局 ---
+    // --- 工具：清理布局 (Restored from v6.7) ---
     function cleanLayout() {
         const sidebar = document.getElementById('right-sidebar');
         const mainContainer = document.querySelector('.site-content');
         if (sidebar && mainContainer && sidebar.parentNode !== mainContainer) {
             mainContainer.appendChild(sidebar);
         }
+
+        // 强力清除 Grid 布局的内联样式 (Critical for Layout Fix)
+        const gridContainer = document.querySelector('.generate-columns-container');
+        if (gridContainer) {
+            gridContainer.removeAttribute('style');
+            gridContainer.querySelectorAll('.post').forEach(post => post.removeAttribute('style'));
+        }
+
         document.querySelectorAll('.widget_custom_html, .code-block, ins, iframe, .addtoany_content').forEach(el => el.remove());
     }
 
@@ -117,11 +179,11 @@
             src = parent.href;
         } else {
             src = img.getAttribute('data-original') ||
-                  img.getAttribute('data-src') ||
-                  img.getAttribute('data-lazy-src') ||
-                  img.src;
+                img.getAttribute('data-src') ||
+                img.getAttribute('data-lazy-src') ||
+                img.src;
         }
-        try { return new URL(src, location.href).href; } catch(e){ return null; }
+        try { return new URL(src, location.href).href; } catch (e) { return null; }
     }
 
     // --- 详情页：安全清理原图 (修复重点) ---
@@ -139,7 +201,7 @@
 
                 // 3. 处理 br
                 const br = img.nextElementSibling;
-                if(br && br.tagName === 'BR') br.style.display = 'none';
+                if (br && br.tagName === 'BR') br.style.display = 'none';
             });
 
             // 4. 清理残留的空 P 标签
@@ -149,53 +211,47 @@
         }
     }
 
-    // --- 首页：无限翻页 ---
-    const HOME = { url: null, loading: false };
+    // --- 首页：无限翻页 (Restored from v6.7) ---
+    const HOME_STATE = { nextPageUrl: null, loading: false, container: null, pageNum: 1 };
     function initHome() {
         const container = document.querySelector('.generate-columns-container');
         if (!container) return;
-
-        const updateNextUrl = (doc) => {
-            const link = doc.querySelector('a.next.page-numbers, .nav-links .next');
-            HOME.url = link ? link.href : null;
+        HOME_STATE.container = container;
+        const findNext = (doc) => {
+            const link = doc.querySelector('.nav-links .next, a.next.page-numbers');
+            HOME_STATE.nextPageUrl = link ? link.href : null;
         };
-        updateNextUrl(document);
-
-        if (HOME.url) {
+        findNext(document);
+        if (HOME_STATE.nextPageUrl) {
             const btn = document.createElement('div');
             btn.className = 'tm-load-more-btn';
-            btn.textContent = 'Load Next Page';
-            container.parentNode.appendChild(btn);
-
+            btn.textContent = 'Load More Images';
+            container.appendChild(btn);
             btn.onclick = async () => {
-                if (HOME.loading || !HOME.url) return;
+                if (HOME_STATE.loading || !HOME_STATE.nextPageUrl) return;
                 btn.textContent = 'Loading...';
-                HOME.loading = true;
+                HOME_STATE.loading = true;
                 try {
-                    const res = await fetch(HOME.url);
+                    const res = await fetch(HOME_STATE.nextPageUrl);
                     const html = await res.text();
                     const doc = new DOMParser().parseFromString(html, 'text/html');
-
-                    const pageNum = HOME.url.match(/page\/(\d+)/) ? HOME.url.match(/page\/(\d+)/)[1] : 'Next';
+                    HOME_STATE.pageNum++;
                     const divider = document.createElement('div');
                     divider.className = 'tm-page-divider';
-                    divider.textContent = `Page ${pageNum}`;
-                    container.appendChild(divider);
-
+                    divider.textContent = `Page ${HOME_STATE.pageNum}`;
+                    container.insertBefore(divider, btn);
                     const posts = doc.querySelectorAll('.generate-columns-container .post');
                     posts.forEach(p => {
+                        p.removeAttribute('style');
                         const img = p.querySelector('img');
-                        if(img && (img.dataset.src || img.dataset.original)) {
-                            img.src = img.dataset.src || img.dataset.original;
-                        }
-                        container.appendChild(p);
+                        if (img && img.dataset.src) img.src = img.dataset.src;
+                        container.insertBefore(p, btn);
                     });
-
-                    updateNextUrl(doc);
-                    if (HOME.url) btn.textContent = 'Load Next Page';
-                    else btn.style.display = 'none';
-                } catch(e) { console.error(e); btn.textContent = 'Load Failed'; }
-                HOME.loading = false;
+                    findNext(doc);
+                    if (HOME_STATE.nextPageUrl) btn.textContent = 'Load More Images';
+                    else { btn.textContent = 'End of Content'; btn.style.display = 'none'; }
+                } catch (e) { btn.textContent = 'Error'; }
+                HOME_STATE.loading = false;
             };
         }
     }
@@ -243,7 +299,7 @@
             if (!isNaN(num) && num > maxPage) maxPage = num;
         });
 
-        // 4. 后台抓取
+        // 4. 后台抓取 (Fix: 并行请求，顺序处理，解决页码错乱问题)
         if (maxPage > 1) {
             DOM.status.innerText = `Fetching ${maxPage - 1} pages...`;
             const urls = [];
@@ -251,15 +307,23 @@
                 urls.push({ page: i, url: `${baseUrl}/${i}` });
             }
 
-            await Promise.all(urls.map(item =>
+            // 使用 Promise.all 并行下载，但保持数组顺序
+            const requests = urls.map(item =>
                 fetch(item.url)
-                .then(r => r.text())
-                .then(html => {
-                    const doc = new DOMParser().parseFromString(html, 'text/html');
-                    extractFromDoc(doc, item.page);
-                })
-                .catch(e => console.log('Fetch error', e))
-            ));
+                    .then(r => r.text())
+                    .then(html => ({ page: item.page, html: html }))
+                    .catch(e => null)
+            );
+
+            const results = await Promise.all(requests);
+
+            // 严格按顺序提取，确保图片归属到正确的（最早出现的）页码
+            results.forEach(res => {
+                if (res && res.html) {
+                    const doc = new DOMParser().parseFromString(res.html, 'text/html');
+                    extractFromDoc(doc, res.page);
+                }
+            });
 
             DOM.status.innerText = "All Pages Merged";
             sortAndRebuildGrid();
@@ -303,12 +367,12 @@
 
     function appendImagesToGrid(list) {
         const frag = document.createDocumentFragment();
-        list.forEach(item => {
+        list.forEach((item, i) => {
             const div = document.createElement('div');
             div.className = 'tm-item';
             div.innerHTML = `
                 <img src="${item.thumb}" class="tm-gallery-img" loading="lazy" referrerpolicy="no-referrer">
-                <span class="tm-page-tag">P${item.page}</span>
+                <span class="tm-page-tag">${i + 1}</span>
             `;
             div.onclick = () => {
                 // 实时查找索引，因为 totalImages 可能会重新排序
@@ -334,7 +398,7 @@
 
     // --- 灯箱逻辑 ---
     function initLightbox() {
-        if(document.getElementById('tm-lightbox')) return;
+        if (document.getElementById('tm-lightbox')) return;
         const lb = document.createElement('div');
         lb.id = 'tm-lightbox';
         lb.innerHTML = `<div class="tm-lb-close">×</div><div class="tm-lb-nav tm-lb-prev">‹</div><div class="tm-lb-stage"><img class="tm-lb-img" src="" draggable="false"></div><div class="tm-lb-nav tm-lb-next">›</div>`;
@@ -377,6 +441,7 @@
     function init() {
         if (STATE.isInitialized) return;
 
+        document.body.classList.remove('masonry-enabled');
         cleanLayout();
         setInterval(cleanLayout, 3000); // 低频清理
 
@@ -389,7 +454,7 @@
         }
     }
 
-    if(document.readyState !== 'loading') setTimeout(init, 50);
+    if (document.readyState !== 'loading') setTimeout(init, 50);
     else document.addEventListener('DOMContentLoaded', () => setTimeout(init, 50));
 
 })();
