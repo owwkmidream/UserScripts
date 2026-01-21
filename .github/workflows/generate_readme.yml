@@ -1,0 +1,35 @@
+name: Generate READMEs
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/*.js"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run README Generator
+        run: python .github/scripts/generate_readme.py
+
+      - name: Commit and Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: update READMEs for scripts"
+          file_pattern: "**/README.md"
