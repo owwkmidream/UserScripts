@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JRants Ultimate: Gallery Fix & Clean (v7.3 Stable)
 // @namespace    http://tampermonkey.net/
-// @version      7.6
-// @description  恢复首页布局和Meta信息 + 详情页画廊修复 (v7.6 修复序号) + 强力去广告
+// @version      7.7
+// @description  恢复首页布局和Meta信息 + 详情页画廊修复 (v7.7 灯箱缩放) + 强力去广告
 // @match        https://*.jrants.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=jrants.com
 // @grant        GM_addStyle
@@ -127,7 +127,8 @@
         #tm-lightbox { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.98); z-index: 999999; display: none; }
         #tm-lightbox.active { display: flex; }
         .tm-lb-stage { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
-        .tm-lb-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .tm-lb-img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.1s ease-out; cursor: grab; }
+        .tm-lb-img.dragging { cursor: grabbing; }
         .tm-lb-close { position: absolute; top: 20px; right: 20px; font-size: 30px; color: #fff; cursor: pointer; z-index: 100; }
         .tm-lb-nav { position: absolute; top: 0; height: 100%; width: 100px; display: flex; align-items: center; justify-content: center; font-size: 50px; color: #555; cursor: pointer; user-select: none; }
         .tm-lb-nav:hover { background: rgba(255,255,255,0.05); color: #fff; }
@@ -149,7 +150,7 @@
         isInitialized: false,
         totalImages: [],
         colWidth: parseInt(localStorage.getItem('tm_col_width')) || 240,
-        lightbox: { active: false, index: 0 }
+        lightbox: { active: false, index: 0, scale: 1, translateX: 0, translateY: 0, isDragging: false, startX: 0, startY: 0 }
     };
     const DOM = { galleryGrid: null, status: null, lightboxImg: null };
 
@@ -405,13 +406,172 @@
         document.body.appendChild(lb);
         DOM.lightboxImg = lb.querySelector('img');
 
-        const close = () => lb.classList.remove('active');
+        // 重置缩放和位置
+        const resetTransform = () => {
+            STATE.lightbox.scale = 1;
+            STATE.lightbox.translateX = 0;
+            STATE.lightbox.translateY = 0;
+            updateImageTransform();
+        };
+
+        // 更新图片变换
+        const updateImageTransform = () => {
+            const { scale, translateX, translateY } = STATE.lightbox;
+            DOM.lightboxImg.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        };
+
+        const close = () => {
+            lb.classList.remove('active');
+            resetTransform();
+        };
+
         const nav = (dir) => {
             let nextIdx = STATE.lightbox.index + dir;
             if (nextIdx < 0) nextIdx = STATE.totalImages.length - 1;
             if (nextIdx >= STATE.totalImages.length) nextIdx = 0;
             openLightbox(nextIdx);
         };
+
+        // 滚轮缩放
+        lb.addEventListener('wheel', (e) => {
+            if (!lb.classList.contains('active')) return;
+            e.preventDefault();
+
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            const newScale = Math.max(0.5, Math.min(5, STATE.lightbox.scale + delta));
+
+            // 计算鼠标位置相对于图片中心的偏移
+            const rect = DOM.lightboxImg.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const offsetX = e.clientX - centerX;
+            const offsetY = e.clientY - centerY;
+
+            // 调整平移以保持鼠标位置不变
+            const scaleRatio = newScale / STATE.lightbox.scale;
+            STATE.lightbox.translateX = e.clientX - (e.clientX - STATE.lightbox.translateX - centerX) * scaleRatio - centerX;
+            STATE.lightbox.translateY = e.clientY - (e.clientY - STATE.lightbox.translateY - centerY) * scaleRatio - centerY;
+
+            STATE.lightbox.scale = newScale;
+            updateImageTransform();
+        }, { passive: false });
+
+        // 鼠标拖动
+        let mouseStartX = 0, mouseStartY = 0;
+        DOM.lightboxImg.addEventListener('mousedown', (e) => {
+            if (STATE.lightbox.scale <= 1) return;
+            e.preventDefault();
+            STATE.lightbox.isDragging = true;
+            mouseStartX = e.clientX - STATE.lightbox.translateX;
+            mouseStartY = e.clientY - STATE.lightbox.translateY;
+            DOM.lightboxImg.classList.add('dragging');
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!STATE.lightbox.isDragging) return;
+            e.preventDefault();
+            STATE.lightbox.translateX = e.clientX - mouseStartX;
+            STATE.lightbox.translateY = e.clientY - mouseStartY;
+            updateImageTransform();
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (STATE.lightbox.isDragging) {
+                STATE.lightbox.isDragging = false;
+                DOM.lightboxImg.classList.remove('dragging');
+            }
+        });
+
+        // 触摸缩放和拖动
+        let touchStartDist = 0;
+        let touchStartScale = 1;
+        let touch1StartX = 0, touch1StartY = 0;
+        let isTouchZooming = false;
+
+        lb.addEventListener('touchstart', (e) => {
+            if (!lb.classList.contains('active')) return;
+
+            if (e.touches.length === 2) {
+                // 双指缩放
+                e.preventDefault();
+                isTouchZooming = true;
+                const touch1 = e.touches[0];
+                const touch2 = e.touches[1];
+                touchStartDist = Math.hypot(
+                    touch2.clientX - touch1.clientX,
+                    touch2.clientY - touch1.clientY
+                );
+                touchStartScale = STATE.lightbox.scale;
+            } else if (e.touches.length === 1 && STATE.lightbox.scale > 1) {
+                // 单指拖动(仅在放大时)
+                e.preventDefault();
+                const touch = e.touches[0];
+                touch1StartX = touch.clientX - STATE.lightbox.translateX;
+                touch1StartY = touch.clientY - STATE.lightbox.translateY;
+                DOM.lightboxImg.classList.add('dragging');
+            }
+        }, { passive: false });
+
+        lb.addEventListener('touchmove', (e) => {
+            if (!lb.classList.contains('active')) return;
+
+            if (e.touches.length === 2 && isTouchZooming) {
+                // 双指缩放
+                e.preventDefault();
+                const touch1 = e.touches[0];
+                const touch2 = e.touches[1];
+                const currentDist = Math.hypot(
+                    touch2.clientX - touch1.clientX,
+                    touch2.clientY - touch1.clientY
+                );
+
+                const newScale = Math.max(0.5, Math.min(5, touchStartScale * (currentDist / touchStartDist)));
+                STATE.lightbox.scale = newScale;
+                updateImageTransform();
+            } else if (e.touches.length === 1 && STATE.lightbox.scale > 1) {
+                // 单指拖动
+                e.preventDefault();
+                const touch = e.touches[0];
+                STATE.lightbox.translateX = touch.clientX - touch1StartX;
+                STATE.lightbox.translateY = touch.clientY - touch1StartY;
+                updateImageTransform();
+            }
+        }, { passive: false });
+
+        lb.addEventListener('touchend', (e) => {
+            if (e.touches.length === 0) {
+                isTouchZooming = false;
+                DOM.lightboxImg.classList.remove('dragging');
+            }
+        });
+
+        // 双击重置缩放
+        let lastTap = 0;
+        DOM.lightboxImg.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            if (STATE.lightbox.scale > 1) {
+                resetTransform();
+            } else {
+                STATE.lightbox.scale = 2;
+                updateImageTransform();
+            }
+        });
+
+        // 移动端双击检测
+        DOM.lightboxImg.addEventListener('touchend', (e) => {
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTap;
+            if (tapLength < 300 && tapLength > 0) {
+                e.preventDefault();
+                if (STATE.lightbox.scale > 1) {
+                    resetTransform();
+                } else {
+                    STATE.lightbox.scale = 2;
+                    updateImageTransform();
+                }
+            }
+            lastTap = currentTime;
+        });
 
         lb.querySelector('.tm-lb-close').onclick = close;
         lb.onclick = (e) => { if (e.target === lb || e.target.classList.contains('tm-lb-stage')) close(); };
@@ -421,6 +581,18 @@
             if (e.key === 'Escape') close();
             if (e.key === 'ArrowLeft' || e.key === 'a') nav(-1);
             if (e.key === 'ArrowRight' || e.key === 'd') nav(1);
+            // 键盘缩放
+            if (e.key === '+' || e.key === '=') {
+                STATE.lightbox.scale = Math.min(5, STATE.lightbox.scale + 0.2);
+                updateImageTransform();
+            }
+            if (e.key === '-' || e.key === '_') {
+                STATE.lightbox.scale = Math.max(0.5, STATE.lightbox.scale - 0.2);
+                updateImageTransform();
+            }
+            if (e.key === '0') {
+                resetTransform();
+            }
         });
 
         lb.querySelector('.tm-lb-prev').onclick = (e) => { e.stopPropagation(); nav(-1); };
@@ -432,6 +604,13 @@
         STATE.lightbox.index = idx;
         const imgObj = STATE.totalImages[idx];
         DOM.lightboxImg.src = imgObj.src;
+
+        // 重置缩放和位置
+        STATE.lightbox.scale = 1;
+        STATE.lightbox.translateX = 0;
+        STATE.lightbox.translateY = 0;
+        DOM.lightboxImg.style.transform = 'translate(0px, 0px) scale(1)';
+
         document.getElementById('tm-lightbox').classList.add('active');
     }
 
