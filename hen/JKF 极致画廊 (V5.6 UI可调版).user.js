@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         JKF 极致画廊 (V5.6 UI可调版)
+// @name         JKF 极致画廊 (V5.7 UI可调版)
 // @namespace    http://tampermonkey.net/
-// @version      5.6
+// @version      5.7
 // @description  修复 CSS 误杀问题，新增列数调节滑块，支持自动记忆布局偏好。
 // @author       FrontendArchitect
 // @match        *://jkforum.net/*
@@ -10,12 +10,12 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // 0. 启动检查
     if (!/thread-\d+-\d+/.test(location.href)) return;
-    console.log('✨ JKF Gallery V5.6: UI Adjustable');
+    console.log('✨ JKF Gallery V5.7: UI Adjustable + SPA Support');
 
     const debugDot = document.createElement('div');
     debugDot.style.cssText = 'position:fixed; bottom:5px; left:5px; width:6px; height:6px; background:red; border-radius:50%; z-index:999999; pointer-events:none; opacity:0.5;';
@@ -90,9 +90,32 @@
     let globalImages = [];
     let isRunning = false;
     let checkTimer = null;
+    let mutationObserver = null;
+    let currentUrl = location.href;
 
     // ==========================================
-    // 2. 暴力轮询
+    // 2. 清理函数
+    // ==========================================
+    function cleanup() {
+        if (checkTimer) {
+            clearInterval(checkTimer);
+            checkTimer = null;
+        }
+        const oldGallery = document.getElementById('jkf-embedded-gallery');
+        if (oldGallery) {
+            oldGallery.remove();
+        }
+        const oldLightbox = document.getElementById('jkf-lb');
+        if (oldLightbox) {
+            oldLightbox.remove();
+        }
+        globalImages = [];
+        isRunning = false;
+        debugDot.style.background = 'red';
+    }
+
+    // ==========================================
+    // 3. 暴力轮询
     // ==========================================
     function startHeartbeat() {
         let attempts = 0;
@@ -107,6 +130,35 @@
             }
             if (attempts > 60) { clearInterval(checkTimer); debugDot.style.background = 'gray'; }
         }, 500);
+    }
+
+    // ==========================================
+    // 4. MutationObserver - 监听 SPA 页面变化
+    // ==========================================
+    function startMutationObserver() {
+        mutationObserver = new MutationObserver((mutations) => {
+            // 检查 URL 是否变化
+            if (location.href !== currentUrl) {
+                console.log('🔄 URL Changed:', currentUrl, '->', location.href);
+                currentUrl = location.href;
+
+                // 清理旧实例
+                cleanup();
+
+                // 如果新页面是帖子页,重新初始化
+                if (/thread-\d+-\d+/.test(location.href)) {
+                    console.log('✨ Reinitializing Gallery for new thread...');
+                    setTimeout(() => startHeartbeat(), 300);
+                }
+            }
+        });
+
+        // 监听 body 的子树变化
+        mutationObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        console.log('👀 MutationObserver started');
     }
 
     // ==========================================
@@ -267,13 +319,13 @@
         lb.querySelector('.lb-close').onclick = closeLb;
         lb.querySelector('.lb-prev').onclick = (e) => { e.stopPropagation(); changeLb(-1); };
         lb.querySelector('.lb-next').onclick = (e) => { e.stopPropagation(); changeLb(1); };
-        lb.onclick = (e) => { if(e.target===lb) closeLb(); };
+        lb.onclick = (e) => { if (e.target === lb) closeLb(); };
 
         document.addEventListener('keydown', e => {
-            if(!lb.classList.contains('active')) return;
-            if(e.key === 'Escape') closeLb();
-            if(e.key === 'ArrowLeft') changeLb(-1);
-            if(e.key === 'ArrowRight') changeLb(1);
+            if (!lb.classList.contains('active')) return;
+            if (e.key === 'Escape') closeLb();
+            if (e.key === 'ArrowLeft') changeLb(-1);
+            if (e.key === 'ArrowRight') changeLb(1);
         });
 
         const img = lb.querySelector('.lb-img');
@@ -312,6 +364,12 @@
         img.src = item.src;
     }
 
+    // ==========================================
+    // 启动
+    // ==========================================
+    // 首次加载时启动心跳检测
     startHeartbeat();
+    // 启动 MutationObserver 监听 SPA 页面变化
+    startMutationObserver();
 
 })();
