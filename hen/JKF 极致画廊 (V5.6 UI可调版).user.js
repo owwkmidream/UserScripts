@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         JKF 极致画廊 (V5.7 UI可调版)
+// @name         JKF 极致画廊 (V5.8 UI可调版)
 // @namespace    http://tampermonkey.net/
-// @version      5.7
+// @version      5.8
 // @description  修复 CSS 误杀问题，新增列数调节滑块，支持自动记忆布局偏好。
 // @author       FrontendArchitect
 // @match        *://jkforum.net/*
@@ -293,7 +293,7 @@
         images.forEach((img, i) => {
             const d = document.createElement('div');
             d.className = 'g-card';
-            d.innerHTML = `<img src="${img.thumb}" loading="lazy"><span class="g-idx">${img.index}</span>`;
+            d.innerHTML = `<img src="${img.thumb}" loading="lazy" referrerpolicy="no-referrer"><span class="g-idx">${img.index}</span>`;
             d.onclick = () => openLb(i);
             frag.appendChild(d);
         });
@@ -301,9 +301,17 @@
     }
 
     // ==========================================
-    // 4. 灯箱
+    // 4. 旗舰级灯箱引擎 (Ultimate Lightbox)
     // ==========================================
     let lbIdx = 0;
+    const lbState = {
+        scale: 1,
+        translateX: 0,
+        translateY: 0,
+        isDragging: false,
+        startX: 0,
+        startY: 0
+    };
 
     function initLightbox() {
         const lb = document.createElement('div');
@@ -311,10 +319,25 @@
         lb.innerHTML = `
             <button class="lb-close">×</button>
             <button class="lb-nav lb-prev">❮</button>
-            <img class="lb-img">
+            <img class="lb-img" draggable="false">
             <button class="lb-nav lb-next">❯</button>
         `;
         document.body.appendChild(lb);
+
+        const img = lb.querySelector('.lb-img');
+
+        // 更新变换
+        const updateTransform = () => {
+            img.style.transform = `translate(${lbState.translateX}px, ${lbState.translateY}px) scale(${lbState.scale})`;
+        };
+
+        // 重置变换
+        const resetTransform = () => {
+            lbState.scale = 1;
+            lbState.translateX = 0;
+            lbState.translateY = 0;
+            updateTransform();
+        };
 
         lb.querySelector('.lb-close').onclick = closeLb;
         lb.querySelector('.lb-prev').onclick = (e) => { e.stopPropagation(); changeLb(-1); };
@@ -328,19 +351,123 @@
             if (e.key === 'ArrowRight') changeLb(1);
         });
 
-        const img = lb.querySelector('.lb-img');
-        let scale = 1;
+        // 滚轮缩放 - 以鼠标指针为中心
         lb.addEventListener('wheel', e => {
             e.preventDefault();
-            scale += e.deltaY * -0.001;
-            scale = Math.min(Math.max(1, scale), 5);
-            img.style.transform = `scale(${scale})`;
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            const newScale = Math.max(1, Math.min(5, lbState.scale + delta));
+
+            // 以鼠标位置为中心缩放
+            const rect = img.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const scaleRatio = newScale / lbState.scale;
+
+            lbState.translateX = e.clientX - (e.clientX - lbState.translateX - centerX) * scaleRatio - centerX;
+            lbState.translateY = e.clientY - (e.clientY - lbState.translateY - centerY) * scaleRatio - centerY;
+            lbState.scale = newScale;
+            updateTransform();
+        }, { passive: false });
+
+        // 鼠标拖拽平移
+        img.addEventListener('mousedown', (e) => {
+            if (lbState.scale <= 1) return;
+            e.preventDefault();
+            lbState.isDragging = true;
+            lbState.startX = e.clientX - lbState.translateX;
+            lbState.startY = e.clientY - lbState.translateY;
+            img.style.cursor = 'grabbing';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!lbState.isDragging) return;
+            e.preventDefault();
+            lbState.translateX = e.clientX - lbState.startX;
+            lbState.translateY = e.clientY - lbState.startY;
+            updateTransform();
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (lbState.isDragging) {
+                lbState.isDragging = false;
+                img.style.cursor = 'grab';
+            }
+        });
+
+        // 双击复位/放大toggle
+        img.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            if (lbState.scale > 1) {
+                resetTransform();
+            } else {
+                lbState.scale = 2;
+                updateTransform();
+            }
+        });
+
+        // 移动端双指捏合缩放
+        let touchStartDist = 0;
+        let touchStartScale = 1;
+        let touch1StartX = 0, touch1StartY = 0;
+        let isTouchZooming = false;
+
+        lb.addEventListener('touchstart', (e) => {
+            if (!lb.classList.contains('active')) return;
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                isTouchZooming = true;
+                const t1 = e.touches[0], t2 = e.touches[1];
+                touchStartDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+                touchStartScale = lbState.scale;
+            } else if (e.touches.length === 1 && lbState.scale > 1) {
+                e.preventDefault();
+                const t = e.touches[0];
+                touch1StartX = t.clientX - lbState.translateX;
+                touch1StartY = t.clientY - lbState.translateY;
+            }
+        }, { passive: false });
+
+        lb.addEventListener('touchmove', (e) => {
+            if (!lb.classList.contains('active')) return;
+            if (e.touches.length === 2 && isTouchZooming) {
+                e.preventDefault();
+                const t1 = e.touches[0], t2 = e.touches[1];
+                const currentDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+                lbState.scale = Math.max(0.5, Math.min(5, touchStartScale * (currentDist / touchStartDist)));
+                updateTransform();
+            } else if (e.touches.length === 1 && lbState.scale > 1) {
+                e.preventDefault();
+                const t = e.touches[0];
+                lbState.translateX = t.clientX - touch1StartX;
+                lbState.translateY = t.clientY - touch1StartY;
+                updateTransform();
+            }
+        }, { passive: false });
+
+        lb.addEventListener('touchend', (e) => {
+            if (e.touches.length === 0) isTouchZooming = false;
+        });
+
+        // 移动端双击检测
+        let lastTapTime = 0;
+        img.addEventListener('touchend', (e) => {
+            const now = Date.now();
+            if (now - lastTapTime < 300) {
+                e.preventDefault();
+                if (lbState.scale > 1) resetTransform();
+                else { lbState.scale = 2; updateTransform(); }
+            }
+            lastTapTime = now;
         });
     }
 
     function openLb(i) {
         lbIdx = i;
         const lb = document.getElementById('jkf-lb');
+        // 重置缩放和位置
+        lbState.scale = 1;
+        lbState.translateX = 0;
+        lbState.translateY = 0;
         document.querySelector('.lb-img').style.transform = 'scale(1)';
         updateLb();
         lb.classList.add('active');
@@ -354,6 +481,10 @@
 
     function changeLb(dir) {
         lbIdx = (lbIdx + dir + globalImages.length) % globalImages.length;
+        // 切换图片时重置缩放
+        lbState.scale = 1;
+        lbState.translateX = 0;
+        lbState.translateY = 0;
         document.querySelector('.lb-img').style.transform = 'scale(1)';
         updateLb();
     }

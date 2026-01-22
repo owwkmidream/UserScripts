@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NứngVL Ultimate Gallery (AutoLoad + Grid + Zoom Lightbox)
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1
 // @description  自动加载所有分页，Grid并排布局，内置支持“滚轮缩放/双指缩放/拖拽平移”的高级灯箱。
 // @author       YourName
 // @match        https://nungvl.net/gallerys/*
@@ -11,7 +11,7 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // ==========================================
@@ -139,14 +139,28 @@
         };
 
         // --- 辅助函数 ---
+        // 源地址智能清洗 (符合Prompt v9.0优先级)
         const getHighResUrl = (linkEl) => {
+            const img = linkEl.querySelector('img');
+            if (img) {
+                // 优先级：zoomfile > file > data-src > data-original > data-lazy-src > src
+                const src = img.getAttribute('zoomfile') ||
+                    img.getAttribute('file') ||
+                    img.getAttribute('data-src') ||
+                    img.getAttribute('data-original') ||
+                    img.getAttribute('data-lazy-src') ||
+                    img.src;
+                if (src) return src;
+            }
+            // 检查父级 <a> 的 href
             const href = linkEl.getAttribute('href');
             try {
                 const urlObj = new URL(href, window.location.origin);
                 const realUrl = urlObj.searchParams.get('url');
                 if (realUrl) return realUrl;
-            } catch (e) {}
-            return linkEl.querySelector('img') ? linkEl.querySelector('img').src : href;
+                if (/\.(jpg|jpeg|png|webp|gif)/i.test(href)) return href;
+            } catch (e) { }
+            return img ? img.src : href;
         };
 
         const updateTransform = () => {
@@ -315,6 +329,10 @@
     // 3. 主程序入口 (Grid + AutoLoad + Click Intercept)
     // ==========================================
 
+    // 状态锁 - 防止重复执行
+    if (document.body.dataset.galleryInitialized === 'true') return;
+    document.body.dataset.galleryInitialized = 'true';
+
     createLightbox();
     const contentContainer = document.querySelector('.contentme');
     if (!contentContainer) return;
@@ -331,6 +349,11 @@
         }
     };
     cleanDOM();
+
+    // 添加防盗链referrerpolicy
+    contentContainer.querySelectorAll('img').forEach(img => {
+        img.setAttribute('referrerpolicy', 'no-referrer');
+    });
 
     // 拦截点击
     contentContainer.addEventListener('click', (e) => {
@@ -361,34 +384,48 @@
                 const baseUrl = window.location.pathname;
                 const urlsToFetch = [];
                 for (let i = currentPage + 1; i <= totalPages; i++) {
-                    urlsToFetch.push(`${baseUrl}?page=${i}`);
+                    urlsToFetch.push({ page: i, url: `${baseUrl}?page=${i}` });
                 }
 
                 try {
-                    // 并发加载
-                    const promises = urlsToFetch.map(url => fetch(url).then(r => r.text()));
-                    const pagesHtml = await Promise.all(promises);
+                    // 有序并发抓取: Promise.all + 索引排序 (符合Prompt v9.0)
+                    const promises = urlsToFetch.map(item =>
+                        fetch(item.url)
+                            .then(r => r.text())
+                            .then(html => ({ page: item.page, html }))
+                            .catch(() => null)
+                    );
+                    const results = await Promise.all(promises);
                     const parser = new DOMParser();
 
-                    pagesHtml.forEach(html => {
-                        const doc = parser.parseFromString(html, "text/html");
-                        const newContainer = doc.querySelector('.contentme');
-                        if (newContainer) {
-                            const links = newContainer.querySelectorAll('a');
-                            links.forEach(link => {
-                                if (link.querySelector('img')) contentContainer.appendChild(link);
-                            });
-                        }
-                    });
+                    // 按页码排序后合并，防止网络延迟导致乱序
+                    results
+                        .filter(r => r !== null)
+                        .sort((a, b) => a.page - b.page)
+                        .forEach(res => {
+                            const doc = parser.parseFromString(res.html, "text/html");
+                            const newContainer = doc.querySelector('.contentme');
+                            if (newContainer) {
+                                const links = newContainer.querySelectorAll('a');
+                                links.forEach(link => {
+                                    if (link.querySelector('img')) {
+                                        // 添加防盗链
+                                        const img = link.querySelector('img');
+                                        if (img) img.setAttribute('referrerpolicy', 'no-referrer');
+                                        contentContainer.appendChild(link);
+                                    }
+                                });
+                            }
+                        });
 
                     statusLabel.innerText = "全部图片加载完毕";
                     setTimeout(() => statusLabel.remove(), 2000);
 
                     // 隐藏原分页控件
                     const pagination = document.querySelector('.pagination-site');
-                    if(pagination) pagination.style.display = 'none';
+                    if (pagination) pagination.style.display = 'none';
                     const pagContainer = document.querySelector('.pag');
-                    if(pagContainer) pagContainer.style.display = 'none';
+                    if (pagContainer) pagContainer.style.display = 'none';
 
                 } catch (e) {
                     statusLabel.innerText = "自动加载出错，请刷新";

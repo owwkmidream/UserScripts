@@ -124,7 +124,7 @@
         .tm-page-tag { position: absolute; bottom: 0; right: 0; background: rgba(0,0,0,0.7); color: #fff; font-size: 10px; padding: 2px 6px; z-index: 2; }
 
         /* 灯箱 */
-        #tm-lightbox { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.98); z-index: 999999; display: none; }
+        #tm-lightbox { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.98); z-index: 999999; display: none; touch-action: none; }
         #tm-lightbox.active { display: flex; }
         .tm-lb-stage { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
         .tm-lb-img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.1s ease-out; cursor: grab; }
