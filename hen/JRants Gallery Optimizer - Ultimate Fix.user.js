@@ -27,7 +27,9 @@
         /* 隐藏分页器 */
         .page-links, .post-page-numbers, .pgntn-page-pagination, .pagination, .nav-links,
         /* 隐藏原图容器（由JS辅助控制，这里做兜底） */
-        .entry-content img:not(.tm-gallery-img) {
+        .entry-content img:not(.tm-gallery-img),
+        /* 隐藏 GIF 图片（广告） */
+        .entry-content img[src*=".gif"] {
             display: none !important;
         }
 
