@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JRants Ultimate: Gallery Fix & Clean (v7.3 Stable)
 // @namespace    http://tampermonkey.net/
-// @version      7.7
-// @description  恢复首页布局和Meta信息 + 详情页画廊修复 (v7.7 灯箱缩放) + 强力去广告
+// @version      7.8
+// @description  恢复首页布局和Meta信息 + 详情页画廊修复 (v7.8 过滤GIF广告) + 强力去广告
 // @match        https://*.jrants.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=jrants.com
 // @grant        GM_addStyle
