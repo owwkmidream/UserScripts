@@ -350,6 +350,9 @@
 
             const src = getHighResSrc(img);
             if (src) {
+                // 排除 GIF 图片(广告)
+                if (/\.gif(\?|$)/i.test(src)) return;
+
                 // 简单去重
                 const exists = STATE.totalImages.find(x => x.src === src);
                 if (!exists) {
