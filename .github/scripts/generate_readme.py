@@ -39,13 +39,6 @@ CDN_CONFIGS = [
         "description": "国内代理，实时同步 GitHub，大陆访问友好"
     },
     {
-        "name": "FastGit",
-        "base_url": "https://raw.fastgit.org/owwkmidream/UserScripts/master/",
-        "emoji": "💨",
-        "anchor": "fastgit",
-        "description": "国内镜像服务，访问速度快"
-    },
-    {
         "name": "Raw.Githack",
         "base_url": "https://raw.githack.com/owwkmidream/UserScripts/master/",
         "emoji": "🔥",
