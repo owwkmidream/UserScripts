@@ -32,10 +32,10 @@ CDN_CONFIGS = [
         "description": "国内镜像，大陆访问稳定快速，更新及时"
     },
     {
-        "name": "ghproxy",
-        "base_url": "https://ghproxy.com/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/",
+        "name": "ghfast",
+        "base_url": "https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/",
         "emoji": "🌐",
-        "anchor": "ghproxy",
+        "anchor": "ghfast",
         "description": "国内代理，实时同步 GitHub，大陆访问友好"
     },
     {
