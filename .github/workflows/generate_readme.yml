@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - master
-    paths:
-      - "**/*.js"
   workflow_dispatch:
 
 jobs:
