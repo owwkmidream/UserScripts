@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站活动页任务助手
 // @namespace    http://tampermonkey.net/
-// @version      4.3
+// @version      4.4
 // @description  悬浮面板默认展开，字体统一，支持按钮点击切换开关，每日四宫格。
 // @author       Gemini_Refactored
 // @include      /^https:\/\/www\.bilibili\.com\/blackboard\/era\/[a-zA-Z0-9]+\.html$/
@@ -12,7 +12,7 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // ==========================================
@@ -62,8 +62,22 @@
         .era-scroll::-webkit-scrollbar { width: 4px; }
         .era-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 4px; }
 
-        .section-title { font-size: 12px; font-weight: 700; color: var(--era-sub); margin: 16px 0 8px 0; }
+        .section-title { font-size: 12px; font-weight: 700; color: var(--era-sub); margin: 16px 0 8px 0; padding: 6px 4px; }
         .section-title:first-child { margin-top: 0; }
+        
+        /* 列表折叠动画 */
+        .list-container-wrapper {
+            display: grid;
+            grid-template-rows: 1fr;
+            transition: grid-template-rows 0.3s ease-out;
+        }
+        .list-container-wrapper.collapsed {
+            grid-template-rows: 0fr;
+        }
+        .list-container {
+            overflow: hidden;
+            min-height: 0; /* 必须有 */
+        }
 
         /* 四宫格 (Daily) */
         .era-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -187,7 +201,32 @@
             if (isDaily) sections.DAILY.push(item); else sections.SUBMIT.push(item);
         });
 
-        const sort = (a, b) => (a.status === 2 ? 0 : (a.status === 1 ? 1 : 2)) - (b.status === 2 ? 0 : (b.status === 1 ? 1 : 2));
+        const getFilmVal = (str) => {
+            if (!str) return 0;
+            if (str.includes('菲林')) {
+                const m = str.match(/菲林.*?(\d+)/); // 简单匹配数字
+                return m ? parseInt(m[1]) : 1;
+            }
+            return 0;
+        };
+
+        const sort = (a, b) => {
+            // 1. 按状态：待领 (2) > 进行中 (1) > 待触发/未开始 (0) > 已完成 (3)
+            // 映射优先级：2->0(最高), 1->1, 3->2, 其他->1
+            const pA = a.status === 2 ? 0 : (a.status === 1 ? 1 : (a.status === 3 ? 2 : 1));
+            const pB = b.status === 2 ? 0 : (b.status === 1 ? 1 : (b.status === 3 ? 2 : 1));
+
+            if (pA !== pB) return pA - pB;
+
+            // 2. 如果都是待领取 (status=2)，优先菲林，且菲林数量从大到小
+            if (a.status === 2) {
+                const vA = getFilmVal(a.reward);
+                const vB = getFilmVal(b.reward);
+                if (vA !== vB) return vB - vA; // 大的在前
+            }
+
+            return 0;
+        };
         Object.values(sections).forEach(list => list.sort(sort));
         return sections;
     };
@@ -202,7 +241,7 @@
         // Grid (Daily)
         const renderGrid = (items) => {
             let el = document.getElementById('sec-daily');
-            if (!items.length) { if(el) el.style.display='none'; return; }
+            if (!items.length) { if (el) el.style.display = 'none'; return; }
             if (!el) {
                 el = document.createElement('div'); el.id = 'sec-daily';
                 el.innerHTML = `<div class="section-title">📅 每日必做</div><div class="era-grid"></div>`;
@@ -215,16 +254,16 @@
                 const pColor = isClaim ? '#45bd63' : (isDone ? '#ddd' : '#00aeec');
 
                 const html = `
-                    <div class="grid-title">${t.name.replace('当日','').replace('直播间','')}</div>
+                    <div class="grid-title">${t.name.replace('当日', '').replace('直播间', '')}</div>
                     <div class="grid-status">
                         <span>${isDone ? 'Finished' : `${t.cur} / ${t.total}`}</span>
-                        <span style="font-weight:bold; color:${isClaim?'#faad14':(isDone?'#aaa':'#00aeec')}">
-                            ${isClaim ? '待领' : (isDone?'✓':'进行中')}
+                        <span style="font-weight:bold; color:${isClaim ? '#faad14' : (isDone ? '#aaa' : '#00aeec')}">
+                            ${isClaim ? '待领' : (isDone ? '✓' : '进行中')}
                         </span>
                     </div>
                     <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${t.percent}%; background:${pColor}"></div></div>
                 `;
-                const cls = `grid-card ${isClaim?'status-claim':''} ${isDone?'status-done':''}`;
+                const cls = `grid-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
                 const hash = `${t.status}-${t.cur}`;
                 if (!card) {
                     card = document.createElement('a'); card.id = `grid-${t.id}`; card.className = cls;
@@ -240,11 +279,35 @@
         // List (Others)
         const renderList = (id, title, items) => {
             let el = document.getElementById(id);
-            if (!items.length) { if(el) el.style.display='none'; return; }
+            if (!items.length) { if (el) el.style.display = 'none'; return; }
+            if (el) el.style.display = 'block';
+
             if (!el) {
                 el = document.createElement('div'); el.id = id;
-                el.innerHTML = `<div class="section-title">${title}</div><div class="list-container"></div>`;
+                el = document.createElement('div'); el.id = id;
+                el.innerHTML = `
+                    <div class="section-title" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; user-select:none">
+                        <span>${title}</span>
+                        <span class="arrow" style="font-size:12px; transition:transform 0.3s">▼</span>
+                    </div>
+                    <div class="list-container-wrapper">
+                        <div class="list-container"></div>
+                    </div>
+                `;
                 container.appendChild(el);
+
+                el.querySelector('.section-title').onclick = () => {
+                    const wrapper = el.querySelector('.list-container-wrapper');
+                    const arrow = el.querySelector('.arrow');
+
+                    if (wrapper.classList.contains('collapsed')) {
+                        wrapper.classList.remove('collapsed');
+                        arrow.style.transform = 'rotate(0deg)';
+                    } else {
+                        wrapper.classList.add('collapsed');
+                        arrow.style.transform = 'rotate(-90deg)';
+                    }
+                };
             }
             const list = el.querySelector('.list-container');
             items.forEach(t => {
@@ -268,7 +331,7 @@
                     <div class="full-progress"><div class="full-bar" style="width:${t.percent}%"></div></div>
                     ` : ''}
                 `;
-                const cls = `list-card ${isClaim?'status-claim':''} ${isDone?'status-done':''}`;
+                const cls = `list-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
                 const hash = `${t.status}-${t.cur}`;
                 if (!card) {
                     card = document.createElement('a'); card.id = `list-${t.id}`; card.className = cls;
@@ -295,7 +358,7 @@
         div.innerHTML = `
             <div id="era-drawer">
                 <div class="era-header">
-                    <div class="era-title">任务助手 V4.3</div>
+                    <div class="era-title">任务助手</div>
                     <div id="era-close" style="cursor:pointer; opacity:0.5; font-size:18px">×</div>
                 </div>
                 <div class="era-scroll" id="era-scroll-view"></div>
@@ -332,7 +395,7 @@
                     document.getElementById('era-clock').innerText = new Date().toLocaleTimeString();
                 }
             }
-        } catch(e) { console.error(e); }
+        } catch (e) { console.error(e); }
         finally { STATE.isPolling = false; }
     };
 
