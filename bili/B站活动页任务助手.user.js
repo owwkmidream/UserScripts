@@ -27,7 +27,8 @@
             --era-backdrop: blur(12px);
             --era-shadow: 0 8px 32px rgba(0,0,0,0.12);
             --era-radius: 12px;
-            --era-primary: #00aeec;
+            /* --era-primary: #00aeec; */
+            --era-primary: var(--era-pink);
             --era-pink: #fb7299;
             --era-text: #2c3e50;
             --era-sub: #9499a0;
@@ -144,12 +145,14 @@
         .era-tab-content { display: none; }
         .era-tab-content.active { display: block; }
 
-        /* 投稿统计 Banner (样式重构 v5.2) */
+        /* 投稿统计 Banner (样式重构 v5.2 + v5.3) */
         .submit-stats-banner {
             background: #fff;
             border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
             border: 1px solid rgba(0,0,0,0.03); box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             display: flex; justify-content: space-between; align-items: center;
+            min-height: 66px; /* v5.3 防止加载跳动 */
+            box-sizing: border-box;
         }
         .stats-group { display: flex; flex-direction: column; }
         .stats-group.left { align-items: flex-start; }
@@ -505,11 +508,11 @@
         let statusClass = '', iconHtml = '', subText = '';
 
         if (noActivity) {
-            statusClass = 'status-pending'; // 某种意义上也是待处理
+            statusClass = ''; // 使用默认白色，避免歧义
             iconHtml = ICONS.WARN;
             subText = '未获取到活动';
         } else if (loading) {
-            statusClass = 'status-pending';
+            statusClass = ''; // 加载中使用默认白色背景
             iconHtml = ICONS.LOADING;
             subText = '数据加载中...';
         } else if (submitted) {
@@ -517,8 +520,8 @@
             iconHtml = ICONS.CHECK;
             subText = `活动第 ${dayNum} 天`;
         } else {
-            statusClass = 'status-pending';
-            iconHtml = ''; // 未完成不显示图标，保持干净，或显示刷新按钮
+            statusClass = ''; // 未打卡也使用白色背景（同普通未完成任务）
+            iconHtml = '';
             subText = `活动第 ${dayNum} 天`;
         }
 
@@ -538,9 +541,15 @@
             card.id = 'grid-submission-card';
             grid.appendChild(card);
             card.addEventListener('click', (e) => {
-                // 点击卡片任意位置刷新（防止遮挡）
+                // 点击卡片任意位置
                 e.preventDefault(); e.stopPropagation();
-                refreshArchives();
+
+                // v5.3: 未完成时跳转投稿页
+                if (!submitted) {
+                    window.open('https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload', '_blank');
+                } else {
+                    refreshArchives();
+                }
             });
         }
 
@@ -578,7 +587,34 @@
             content.insertBefore(banner, content.firstChild);
         }
         banner.className = 'submit-stats-banner';
+        // v5.3: 保持布局骨架，但这有点复杂，直接显示 Loading 即可
+        // 由于设置了 min-height，高度不会跳动
         banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
+    };
+
+    /** v5.3: 计算下一个动态目标 */
+    const calcNextTarget = (currentViews) => {
+        const targets = [];
+        if (STATE.config && Array.isArray(STATE.config)) {
+            STATE.config.forEach(t => {
+                if (!t || !t.taskName) return;
+                const match = t.taskName.match(/播放.*?(\d+)(万)?/);
+                if (match) {
+                    let num = parseInt(match[1], 10);
+                    if (match[2] === '万') num *= 10000;
+                    if (!targets.includes(num)) targets.push(num);
+                }
+            });
+        }
+        targets.sort((a, b) => a - b);
+
+        // 默认目标（防止没有匹配到）
+        if (targets.length === 0) {
+            targets.push(150000, 700000);
+        }
+
+        const next = targets.find(t => t > currentViews);
+        return next || null; // null 表示全部达成
     };
 
     /** 渲染投稿 Tab 统计 Banner */
@@ -609,16 +645,22 @@
         // 格式化播放量：只醒目万位
         const wan = Math.floor(stats.totalViews / 10000);
         const rest = stats.totalViews % 10000;
-        const viewsHtml = `<span class="highlight-num">${wan}</span><span style="font-size:12px;color:var(--era-sub)">万</span><span style="font-family:monospace;color:var(--era-sub);margin-left:2px">${rest.toString().padStart(4, '0')}</span>`;
+        const viewsHtml = `<span class="highlight-num">${wan}</span><span style="color:var(--era-text);font-size:12px;font-weight:700">万</span><span style="font-weight:400;color:var(--era-sub);margin-left:2px">${rest.toString().padStart(4, '0')}</span>`;
 
         // 目标差额计算
+        const nextTarget = calcNextTarget(stats.totalViews);
         let targetText = '';
-        if (stats.totalViews < 150000) {
-            targetText = `(距15万差 ${(150000 - stats.totalViews).toLocaleString()})`;
-        } else if (stats.totalViews < 700000) {
-            targetText = `(距70万差 ${(700000 - stats.totalViews).toLocaleString()})`;
+
+        if (nextTarget) {
+            const diff = nextTarget - stats.totalViews;
+            // 目标显示：如果目标是万级别，显示 "XX万"
+            const targetDisplay = (nextTarget >= 10000 && nextTarget % 10000 === 0)
+                ? `${nextTarget / 10000}万`
+                : formatViews(nextTarget);
+
+            targetText = `(距 ${targetDisplay} 差 ${formatViews(diff)})`;
         } else {
-            targetText = '(已达成70万目标)';
+            targetText = '(已达成所有目标)';
         }
 
         banner.className = 'submit-stats-banner';
