@@ -96,27 +96,34 @@
         .mini-progress-bg { position: absolute; bottom: 0; left: 0; width: 100%; height: 3px; background: rgba(0,0,0,0.05); }
         .mini-progress-bar { height: 100%; background: var(--era-primary); transition: width 0.3s; }
 
-        /* 大卡片 - 横跨两列 (样式统一) */
+        /* 大卡片 - 横跨两列 (样式重构 v5.2) */
         .grid-card-wide {
             grid-column: span 2;
-            background: rgba(255,255,255,0.7);
-            border: 1px solid rgba(0,0,0,0.05); border-radius: 8px;
-            padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;
+            background: #fff; border: 1px solid rgba(0,0,0,0.05); border-radius: 8px;
+            padding: 0 12px; display: flex; align-items: center; justify-content: space-between;
             text-decoration: none; color: inherit; position: relative; overflow: hidden; transition: all 0.2s;
             min-height: 52px;
         }
-        .grid-card-wide:hover { background: #fff; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        .wide-card-left { flex: 1; min-width: 0; }
-        .wide-card-title { font-size: 13px; font-weight: 700; color: var(--era-text); margin-bottom: 2px; }
-        .wide-card-sub { font-size: 12px; color: var(--era-sub); }
-        .wide-card-status { font-size: 14px; font-weight: 700; margin-right: 12px; }
+        .grid-card-wide.status-pending { background: #fffbe6; border-color: #ffe58f; }
+        .grid-card-wide.status-done { background: #f4f5f7; border-color: rgba(0,0,0,0.05); opacity: 0.8; }
+        .grid-card-wide:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+
+        .wide-card-left { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+        .wide-card-title { font-size: 13px; font-weight: 700; color: #2c3e50; margin-bottom: 2px; }
+        .wide-card-sub { font-size: 11px; color: #9499a0; }
+
+        .wide-card-right { display: flex; align-items: center; gap: 8px; }
+        .wide-card-icon { color: var(--era-sub); transition: color 0.2s; }
+        .status-pending .wide-card-icon { color: #faad14; }
+        .status-done .wide-card-icon { color: #45bd63; }
+        
         .wide-card-refresh {
-            width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.1);
-            background: #fff; cursor: pointer; display: flex; align-items: center;
-            justify-content: center; font-size: 12px; transition: all 0.2s; flex-shrink: 0; color: var(--era-sub);
+            width: 24px; height: 24px; border-radius: 50%;
+            background: rgba(255,255,255,0.5); cursor: pointer; display: flex; align-items: center;
+            justify-content: center; font-size: 12px; transition: all 0.2s; color: var(--era-sub);
         }
-        .wide-card-refresh:hover { color: var(--era-primary); border-color: var(--era-primary); transform: rotate(180deg); }
-        .wide-card-refresh.spinning { animation: spin 0.8s linear infinite; }
+        .wide-card-refresh:hover { background: #fff; color: var(--era-primary); transform: rotate(180deg); }
+        .wide-card-refresh.spinning { animation: spin 0.8s linear infinite; pointer-events: none; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
         /* Tabs 标签栏 */
@@ -137,21 +144,24 @@
         .era-tab-content { display: none; }
         .era-tab-content.active { display: block; }
 
+        /* 投稿统计 Banner (样式重构 v5.2) */
         .submit-stats-banner {
             background: #fff;
             border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
             border: 1px solid rgba(0,0,0,0.03); box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-            display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+            display: flex; justify-content: space-between; align-items: center;
         }
-        .stats-item { display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        .stats-item .num { font-weight: 700; color: var(--era-text); font-family: "DingTalk Sans", "Roboto", sans-serif; font-size: 16px; line-height: 1.2; }
-        .stats-item .label { font-size: 11px; color: var(--era-sub); margin-top: 2px; }
-        .stats-row-full { grid-column: span 2; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 8px; margin-top: 4px; }
-        .stats-loading { font-size: 12px; color: var(--era-sub); text-align: center; padding: 12px 0; grid-column: span 2; }
-        .stats-error { font-size: 12px; color: #e74c3c; text-align: center; padding: 12px 0; grid-column: span 2; }
+        .stats-group { display: flex; flex-direction: column; }
+        .stats-group.left { align-items: flex-start; }
+        .stats-group.right { align-items: flex-end; text-align: right; }
         
-        .era-icon { width: 20px; height: 20px; display: block; }
-        .highlight-num { color: var(--era-primary); font-weight: 800; font-size: 15px; margin: 0 3px; font-family: "DingTalk Sans", sans-serif; }
+        .stats-label { font-size: 11px; color: var(--era-sub); margin-bottom: 2px; }
+        .stats-value-main { font-weight: 700; color: var(--era-text); font-family: "DingTalk Sans", "Roboto", sans-serif; font-size: 14px; }
+        .stats-value-sub { font-size: 10px; color: var(--era-sub); margin-top: 2px; }
+        
+        .highlight-num { color: var(--era-primary); font-weight: 800; font-size: 16px; margin-right: 2px; font-family: "DingTalk Sans", sans-serif; }
+        
+        .era-icon { width: 18px; height: 18px; display: block; }
 
 
         /* 列表项 (List) */
@@ -491,19 +501,25 @@
             LOADING: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon spinning"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`
         };
 
-        let statusIcon, statusColor, subText;
+        // 状态判断
+        let statusClass = '', iconHtml = '', subText = '';
+
         if (noActivity) {
-            statusIcon = ICONS.WARN;
-            statusColor = '#faad14';
-            subText = '未获取到活动信息';
+            statusClass = 'status-pending'; // 某种意义上也是待处理
+            iconHtml = ICONS.WARN;
+            subText = '未获取到活动';
         } else if (loading) {
-            statusIcon = ICONS.LOADING;
-            statusColor = '#9499a0';
-            subText = '加载中...';
+            statusClass = 'status-pending';
+            iconHtml = ICONS.LOADING;
+            subText = '数据加载中...';
+        } else if (submitted) {
+            statusClass = 'status-done';
+            iconHtml = ICONS.CHECK;
+            subText = `活动第 ${dayNum} 天`;
         } else {
-            statusIcon = submitted ? ICONS.CHECK : ICONS.CROSS;
-            statusColor = submitted ? '#45bd63' : '#e74c3c';
-            subText = `活动第 <span class="highlight-num">${dayNum}</span> 天`;
+            statusClass = 'status-pending';
+            iconHtml = ''; // 未完成不显示图标，保持干净，或显示刷新按钮
+            subText = `活动第 ${dayNum} 天`;
         }
 
         const html = `
@@ -511,29 +527,33 @@
                 <div class="wide-card-title">📝 投稿打卡</div>
                 <div class="wide-card-sub">${subText}</div>
             </div>
-            <div class="wide-card-status" style="color:${statusColor}">${statusIcon}</div>
-            <div class="wide-card-refresh" id="btn-refresh-submission" title="刷新投稿状态">${ICONS.REFRESH}</div>
+            <div class="wide-card-right">
+                ${iconHtml ? `<div class="wide-card-icon">${iconHtml}</div>` : ''}
+                <div class="wide-card-refresh" id="btn-refresh-submission" title="刷新投稿状态">${ICONS.REFRESH}</div>
+            </div>
         `;
 
         if (!card) {
             card = document.createElement('div');
             card.id = 'grid-submission-card';
-            card.className = 'grid-card-wide';
-            card.innerHTML = html;
             grid.appendChild(card);
-            card.querySelector('#btn-refresh-submission').onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+            card.addEventListener('click', (e) => {
+                // 点击卡片任意位置刷新（防止遮挡）
+                e.preventDefault(); e.stopPropagation();
                 refreshArchives();
-            };
-        } else {
-            card.innerHTML = html;
-            card.querySelector('#btn-refresh-submission').onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                refreshArchives();
-            };
+            });
         }
+
+        // 更新类名和内容
+        card.className = `grid-card-wide ${statusClass}`;
+        card.innerHTML = html;
+
+        // 绑定刷新按钮事件（虽然整体可点，但保留单独按钮逻辑以防万一）
+        const btn = card.querySelector('#btn-refresh-submission');
+        if (btn) btn.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            refreshArchives();
+        };
     };
 
     /** 刷新稿件数据 */
@@ -589,7 +609,7 @@
         // 格式化播放量：只醒目万位
         const wan = Math.floor(stats.totalViews / 10000);
         const rest = stats.totalViews % 10000;
-        const viewsHtml = `<span class="highlight-num" style="font-size:18px">${wan}</span><span style="font-size:12px;color:var(--era-sub)">万</span><span style="font-family:monospace;color:var(--era-sub)">${rest.toString().padStart(4, '0')}</span>`;
+        const viewsHtml = `<span class="highlight-num">${wan}</span><span style="font-size:12px;color:var(--era-sub)">万</span><span style="font-family:monospace;color:var(--era-sub);margin-left:2px">${rest.toString().padStart(4, '0')}</span>`;
 
         // 目标差额计算
         let targetText = '';
@@ -603,14 +623,14 @@
 
         banner.className = 'submit-stats-banner';
         banner.innerHTML = `
-            <div class="stats-item"><div class="num">${stats.activityDays}</div><div class="label">📅 活动天数</div></div>
-            <div class="stats-item"><div class="num">${stats.uniqueDays}</div><div class="label">📝 投稿天数</div></div>
-            <div class="stats-row-full" style="flex-direction:column; align-items:flex-start; gap:2px">
-                <div style="width:100%; display:flex; justify-content:space-between; align-items:center">
-                    <span class="label">🎬 稿件总播放量</span>
-                    <div>${viewsHtml}</div>
-                </div>
-                <div style="width:100%; text-align:right; font-size:10px; color:#fb7299;">${targetText}</div>
+            <div class="stats-group left">
+                <div class="stats-label">累计投稿</div>
+                <div class="stats-value-main">${stats.uniqueDays} <span style="font-size:12px;font-weight:400">天</span></div>
+            </div>
+            <div class="stats-group right">
+                <div class="stats-label">总播放量</div>
+                <div class="stats-value-main">${viewsHtml}</div>
+                <div class="stats-value-sub">${targetText}</div>
             </div>
         `;
     };
