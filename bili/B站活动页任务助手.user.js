@@ -603,20 +603,6 @@
         banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
     };
 
-    /** 渲染投稿 Tab 初始状态 */
-    const renderArchivesInit = () => {
-        const content = document.getElementById('tab-content-SUBMIT');
-        if (!content) return;
-        let banner = document.getElementById('submit-stats-banner');
-        if (!banner) {
-            banner = document.createElement('div');
-            banner.id = 'submit-stats-banner';
-            content.insertBefore(banner, content.firstChild);
-            banner.className = 'submit-stats-banner';
-            banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
-        }
-    };
-
     /** v5.3: 计算下一个动态目标 */
     const calcNextTarget = (currentViews) => {
         const targets = [];
@@ -795,7 +781,7 @@
         }
         // 渲染各 Tab 内容
         renderTabList('SUBMIT', sections.SUBMIT);
-        renderArchivesInit();
+        renderSubmitTab(); // 渲染投稿Card
         renderTabList('LIVE', sections.LIVE);
         renderTabList('LOTTERY', sections.LOTTERY);
     };
@@ -921,11 +907,11 @@
         setTimeout(() => {
             loop();
             setInterval(loop, 1000);
-        }, 1000);
+        }, 10);
 
         // 初始获取一次稿件数据
         if (STATE.activityInfo) {
-            setTimeout(() => fetchActivityArchives(), 2000);
+            setTimeout(() => fetchActivityArchives(), 0);
         }
     };
 
