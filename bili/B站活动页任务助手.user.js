@@ -151,7 +151,7 @@
             border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
             border: 1px solid rgba(0,0,0,0.03); box-shadow: 0 1px 2px rgba(0,0,0,0.03);
             display: flex; justify-content: space-between; align-items: center;
-            min-height: 66px; /* v5.3 防止加载跳动 */
+            min-height: 80px; /* v5.3 防止加载跳动 */
             box-sizing: border-box;
         }
         .stats-group { display: flex; flex-direction: column; }
@@ -592,6 +592,20 @@
         banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
     };
 
+    /** 渲染投稿 Tab 初始状态 */
+    const renderArchivesInit = () => {
+        const content = document.getElementById('tab-content-SUBMIT');
+        if (!content) return;
+        let banner = document.getElementById('submit-stats-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'submit-stats-banner';
+            content.insertBefore(banner, content.firstChild);
+            banner.className = 'submit-stats-banner';
+            banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
+        }
+    };
+
     /** v5.3: 计算下一个动态目标 */
     const calcNextTarget = (currentViews) => {
         const targets = [];
@@ -768,9 +782,9 @@
 
             container.appendChild(tabsWrapper);
         }
-
         // 渲染各 Tab 内容
         renderTabList('SUBMIT', sections.SUBMIT);
+        renderArchivesInit();
         renderTabList('LIVE', sections.LIVE);
         renderTabList('LOTTERY', sections.LOTTERY);
     };
