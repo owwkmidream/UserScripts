@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站活动页任务助手
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.4
 // @description  悬浮面板，Tabs标签切换，活动稿件投稿打卡与统计。
 // @author       Gemini_Refactored
 // @include      /^https:\/\/www\.bilibili\.com\/blackboard\/era\/[a-zA-Z0-9]+\.html$/
@@ -454,6 +454,17 @@
                 url: `https://www.bilibili.com/blackboard/era/award-exchange.html?task_id=${conf.taskId}`,
                 type: isDaily ? 'DAILY' : 'SUBMIT'
             };
+
+            // 投稿类型：从 taskName 解析投稿天数 limit，用累计投稿天数作 cur
+            if (!isDaily) {
+                const limitMatch = conf.taskName?.match(/投稿.*?(\d+)天/);
+                if (limitMatch) {
+                    item.total = parseInt(limitMatch[1], 10);
+                    const stats = calcActivityStats();
+                    item.cur = stats ? stats.uniqueDays : 0;
+                }
+            }
+
             item.percent = Math.min(100, (item.cur / item.total) * 100);
             if (isDaily) sections.DAILY.push(item); else sections.SUBMIT.push(item);
         });
@@ -829,7 +840,7 @@
                     </div>
                     <div class="list-btn ${btnCls}">${btnText}</div>
                 </div>
-                ${(t.type === 'LIVE' || t.type === 'LOTTERY') ? `
+                ${(t.type === 'LIVE' || t.type === 'LOTTERY' || t.type === 'SUBMIT') ? `
                 <div class="full-progress"><div class="full-bar" style="width:${t.percent}%"></div></div>
                 ` : ''}
             `;
