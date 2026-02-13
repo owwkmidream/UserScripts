@@ -556,6 +556,13 @@
         LIVE_STOP: 'https://api.live.bilibili.com/room/v1/Room/stopLive',
         LIVE_FACE_AUTH: 'https://www.bilibili.com/blackboard/live/face-auth-middle.html',
     });
+    const UI_TIMING = Object.freeze({
+        FLASH_HIGHLIGHT_MS: 800,
+        LIVE_BOOT_DELAY_MS: 50,
+        TASK_BOOT_DELAY_MS: 10,
+        TASK_LOOP_MS: 1000,
+        ARCHIVES_BOOT_DELAY_MS: 0,
+    });
 
     // ==========================================
     // 2. 工具函数
@@ -1592,12 +1599,32 @@
         }
         return banner;
     };
+    const setSubmitBannerContent = (banner, html) => {
+        banner.className = 'submit-stats-banner';
+        banner.innerHTML = html;
+    };
     const updateTaskCardByHash = (card, cls, html, hash) => {
         if (card.dataset.hash === hash) return;
         card.className = `${cls} highlight-flash`;
         card.innerHTML = html;
         card.dataset.hash = hash;
-        setTimeout(() => card.classList.remove('highlight-flash'), 800);
+        setTimeout(() => card.classList.remove('highlight-flash'), UI_TIMING.FLASH_HIGHLIGHT_MS);
+    };
+    const upsertTaskAnchorCard = ({ id, container, cls, hash, html, href }) => {
+        let card = document.getElementById(id);
+        if (!card) {
+            card = document.createElement('a');
+            card.id = id;
+            card.className = cls;
+            card.href = href;
+            card.target = '_blank';
+            card.innerHTML = html;
+            card.dataset.hash = hash;
+            container.appendChild(card);
+            return card;
+        }
+        updateTaskCardByHash(card, cls, html, hash);
+        return card;
     };
     const SUBMISSION_CARD_ICONS = Object.freeze({
         REFRESH: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`,
@@ -1702,10 +1729,9 @@
     const renderArchivesLoading = () => {
         const banner = ensureSubmitBanner();
         if (!banner) return;
-        banner.className = 'submit-stats-banner';
         // v5.3: 保持布局骨架，但这有点复杂，直接显示 Loading 即可
         // 由于设置了 min-height，高度不会跳动
-        banner.innerHTML = '<div class="stats-loading">⏳ 正在获取稿件数据...</div>';
+        setSubmitBannerContent(banner, '<div class="stats-loading">⏳ 正在获取稿件数据...</div>');
     };
 
     /** v5.3: 计算下一个动态目标 */
@@ -1739,15 +1765,13 @@
         if (!banner) return;
 
         if (!STATE.activityInfo) {
-            banner.className = 'submit-stats-banner';
-            banner.innerHTML = '<div class="stats-error">⚠️ 未获取到活动信息</div>';
+            setSubmitBannerContent(banner, '<div class="stats-error">⚠️ 未获取到活动信息</div>');
             return;
         }
 
         const stats = calcActivityStats();
         if (!stats) {
-            banner.className = 'submit-stats-banner';
-            banner.innerHTML = '<div class="stats-loading">暂无数据</div>';
+            setSubmitBannerContent(banner, '<div class="stats-loading">暂无数据</div>');
             return;
         }
 
@@ -1772,8 +1796,7 @@
             targetText = '(已达成所有目标)';
         }
 
-        banner.className = 'submit-stats-banner';
-        banner.innerHTML = `
+        setSubmitBannerContent(banner, `
             <div class="stats-group left">
                 <div class="stats-label">累计投稿</div>
                 <div class="stats-value-main">${stats.uniqueDays} <span style="font-size:12px;font-weight:400">天</span></div>
@@ -1783,7 +1806,7 @@
                 <div class="stats-value-main">${viewsHtml}</div>
                 <div class="stats-value-sub">${targetText}</div>
             </div>
-        `;
+        `);
     };
 
     /** 主渲染函数 */
@@ -1797,6 +1820,31 @@
         // ---- Tabs ----
         renderTabs(sections, container);
     };
+    const buildGridTaskCardHtml = (task, isClaim, isDone, progressColor) => `
+        <div class="grid-title">${task.name.replace('当日', '').replace('直播间', '')}</div>
+        <div class="grid-status">
+            <span>${isDone ? 'Finished' : `${task.cur} / ${task.total}`}</span>
+            <span style="font-weight:bold; color:${isClaim ? '#faad14' : (isDone ? '#aaa' : '#00aeec')}">
+                ${isClaim ? '待领' : (isDone ? '✓' : '进行中')}
+            </span>
+        </div>
+        <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${task.percent}%; background:${progressColor}"></div></div>
+    `;
+    const buildListTaskCardHtml = (task, btnCls, btnText) => `
+        <div class="list-row-main">
+            <div class="list-content">
+                <div class="list-title">${task.name}</div>
+                <div class="list-meta">
+                    <span class="list-reward">${task.reward}</span>
+                    <span class="list-progress-text">${task.cur} / ${task.total}</span>
+                </div>
+            </div>
+            <div class="list-btn ${btnCls}">${btnText}</div>
+        </div>
+        ${(task.type === TASK_TYPE.LIVE || task.type === TASK_TYPE.LOTTERY || task.type === TASK_TYPE.SUBMIT) ? `
+        <div class="full-progress"><div class="full-bar" style="width:${task.percent}%"></div></div>
+        ` : ''}
+    `;
 
     /** 渲染每日必做四宫格 */
     const renderGrid = (items, container) => {
@@ -1811,29 +1859,19 @@
         const grid = el.querySelector('.era-grid');
 
         items.forEach(t => {
-            let card = document.getElementById(`${DOM_IDS.GRID_TASK_PREFIX}${t.id}`);
             const { isClaim, isDone } = getStatusFlags(t.status);
             const pColor = isClaim ? '#45bd63' : (isDone ? '#ddd' : '#00aeec');
-
-            const html = `
-                <div class="grid-title">${t.name.replace('当日', '').replace('直播间', '')}</div>
-                <div class="grid-status">
-                    <span>${isDone ? 'Finished' : `${t.cur} / ${t.total}`}</span>
-                    <span style="font-weight:bold; color:${isClaim ? '#faad14' : (isDone ? '#aaa' : '#00aeec')}">
-                        ${isClaim ? '待领' : (isDone ? '✓' : '进行中')}
-                    </span>
-                </div>
-                <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${t.percent}%; background:${pColor}"></div></div>
-            `;
+            const html = buildGridTaskCardHtml(t, isClaim, isDone, pColor);
             const cls = `grid-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
             const hash = getTaskCardHash(t);
-            if (!card) {
-                card = document.createElement('a'); card.id = `${DOM_IDS.GRID_TASK_PREFIX}${t.id}`; card.className = cls;
-                card.href = t.url; card.target = '_blank'; card.innerHTML = html; card.dataset.hash = hash;
-                grid.appendChild(card);
-            } else {
-                updateTaskCardByHash(card, cls, html, hash);
-            }
+            upsertTaskAnchorCard({
+                id: `${DOM_IDS.GRID_TASK_PREFIX}${t.id}`,
+                container: grid,
+                cls,
+                hash,
+                html,
+                href: t.url,
+            });
         });
 
         // 渲染投稿打卡大卡片
@@ -1906,35 +1944,20 @@
         if (!content) return;
 
         items.forEach(t => {
-            let card = document.getElementById(`${DOM_IDS.LIST_TASK_PREFIX}${t.id}`);
             const { isClaim, isDone } = getStatusFlags(t.status);
             const btnText = isClaim ? '领取' : (isDone ? '已完成' : '去完成');
             const btnCls = isClaim ? 'btn-claim' : '';
-
-            const html = `
-                <div class="list-row-main">
-                    <div class="list-content">
-                        <div class="list-title">${t.name}</div>
-                        <div class="list-meta">
-                            <span class="list-reward">${t.reward}</span>
-                            <span class="list-progress-text">${t.cur} / ${t.total}</span>
-                        </div>
-                    </div>
-                    <div class="list-btn ${btnCls}">${btnText}</div>
-                </div>
-                ${(t.type === TASK_TYPE.LIVE || t.type === TASK_TYPE.LOTTERY || t.type === TASK_TYPE.SUBMIT) ? `
-                <div class="full-progress"><div class="full-bar" style="width:${t.percent}%"></div></div>
-                ` : ''}
-            `;
+            const html = buildListTaskCardHtml(t, btnCls, btnText);
             const cls = `list-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
             const hash = getTaskCardHash(t);
-            if (!card) {
-                card = document.createElement('a'); card.id = `${DOM_IDS.LIST_TASK_PREFIX}${t.id}`; card.className = cls;
-                card.href = t.url; card.target = '_blank'; card.innerHTML = html; card.dataset.hash = hash;
-                content.appendChild(card);
-            } else {
-                updateTaskCardByHash(card, cls, html, hash);
-            }
+            upsertTaskAnchorCard({
+                id: `${DOM_IDS.LIST_TASK_PREFIX}${t.id}`,
+                container: content,
+                cls,
+                hash,
+                html,
+                href: t.url,
+            });
         });
     };
 
@@ -2011,7 +2034,7 @@
             MODULES.live.refreshLiveState(true);
             setInterval(() => MODULES.live.refreshLiveState(true), LIVE_STATUS_POLL_MS);
             setInterval(MODULES.live.updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
-        }, 50);
+        }, UI_TIMING.LIVE_BOOT_DELAY_MS);
 
         // 获取活动信息
         try {
@@ -2028,12 +2051,12 @@
         // 启动任务轮询
         setTimeout(() => {
             loop();
-            setInterval(loop, 1000);
-        }, 10);
+            setInterval(loop, UI_TIMING.TASK_LOOP_MS);
+        }, UI_TIMING.TASK_BOOT_DELAY_MS);
 
         // 初始获取一次稿件数据
         if (STATE.activityInfo) {
-            setTimeout(() => MODULES.activity.fetchActivityArchives(), 0);
+            setTimeout(() => MODULES.activity.fetchActivityArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
         }
     };
 
