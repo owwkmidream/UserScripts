@@ -998,94 +998,117 @@
         return t;
     };
 
-    const processTasks = (configList, apiList) => {
-        const apiMap = {};
-        apiList.forEach(i => apiMap[i.task_id] = i);
-        const sections = {
-            [TASK_TYPE.DAILY]: [],
-            [TASK_TYPE.SUBMIT]: [],
-            [TASK_TYPE.LIVE]: [],
-            [TASK_TYPE.LOTTERY]: [],
+    const createTaskSections = () => ({
+        [TASK_TYPE.DAILY]: [],
+        [TASK_TYPE.SUBMIT]: [],
+        [TASK_TYPE.LIVE]: [],
+        [TASK_TYPE.LOTTERY]: [],
+    });
+    const buildLotteryTaskItem = (conf, api) => {
+        const cps = api.check_points || [];
+        const ind = api.indicators?.[0] || { cur_value: 0, limit: 1 };
+        const max = cps.length ? cps[cps.length - 1].list[0].limit : ind.limit;
+        const nextRw = cps.find(c => c.status !== TASK_STATUS.DONE)?.award_name || '已完成';
+        const done = cps.every(c => c.status === TASK_STATUS.DONE);
+        return {
+            id: conf.taskId,
+            name: conf.taskName,
+            status: done ? TASK_STATUS.DONE : (cps.some(c => c.status === TASK_STATUS.CLAIMABLE) ? TASK_STATUS.CLAIMABLE : TASK_STATUS.PENDING),
+            cur: ind.cur_value,
+            total: max,
+            reward: nextRw,
+            percent: Math.min(100, (ind.cur_value / max) * 100),
+            url: '#',
+            type: TASK_TYPE.LOTTERY,
         };
-
-        configList.forEach(conf => {
-            const api = apiMap[conf.taskId];
-            if (!api) return;
-
-            if (conf.taskAwardType === 3 || api.award_type === 3) {
-                const cps = api.check_points || [];
-                const ind = api.indicators?.[0] || { cur_value: 0, limit: 1 };
-                const max = cps.length ? cps[cps.length - 1].list[0].limit : ind.limit;
-                const nextRw = cps.find(c => c.status !== TASK_STATUS.DONE)?.award_name || '已完成';
-                const done = cps.every(c => c.status === TASK_STATUS.DONE);
-                sections[TASK_TYPE.LOTTERY].push({
-                    id: conf.taskId, name: conf.taskName,
-                    status: done ? TASK_STATUS.DONE : (cps.some(c => c.status === TASK_STATUS.CLAIMABLE) ? TASK_STATUS.CLAIMABLE : TASK_STATUS.PENDING),
-                    cur: ind.cur_value, total: max, reward: nextRw,
-                    percent: Math.min(100, (ind.cur_value / max) * 100),
-                    url: '#', type: TASK_TYPE.LOTTERY
-                });
-                return;
-            }
-
-            if (conf.statisticType === 2 || api.accumulative_check_points?.length) {
-                (api.accumulative_check_points || []).forEach(sub => {
-                    sections[TASK_TYPE.LIVE].push({
-                        id: sub.sid, name: `累计直播 ${sub.list[0].limit} 天`,
-                        status: sub.status, cur: api.accumulative_count, total: sub.list[0].limit,
-                        reward: sub.award_name, percent: Math.min(100, (api.accumulative_count / sub.list[0].limit) * 100),
-                        url: buildAwardExchangeUrl(sub.sid),
-                        type: TASK_TYPE.LIVE
-                    });
-                });
-                return;
-            }
-
-            const isDaily = conf.periodType === 1 && conf.taskAwardType === 1;
-            const cp = api.check_points?.[0];
-            const item = {
-                id: conf.taskId, name: conf.taskName, status: api.task_status,
-                cur: cp ? cp.list[0].cur_value : 0, total: cp ? cp.list[0].limit : 1,
+    };
+    const buildLiveAccumulativeTaskItems = (api) => (api.accumulative_check_points || []).map((sub) => ({
+        id: sub.sid,
+        name: `累计直播 ${sub.list[0].limit} 天`,
+        status: sub.status,
+        cur: api.accumulative_count,
+        total: sub.list[0].limit,
+        reward: sub.award_name,
+        percent: Math.min(100, (api.accumulative_count / sub.list[0].limit) * 100),
+        url: buildAwardExchangeUrl(sub.sid),
+        type: TASK_TYPE.LIVE,
+    }));
+    const buildBaseTaskItem = (conf, api) => {
+        const isDaily = conf.periodType === 1 && conf.taskAwardType === 1;
+        const cp = api.check_points?.[0];
+        return {
+            isDaily,
+            item: {
+                id: conf.taskId,
+                name: conf.taskName,
+                status: api.task_status,
+                cur: cp ? cp.list[0].cur_value : 0,
+                total: cp ? cp.list[0].limit : 1,
                 reward: conf.awardName,
                 url: buildAwardExchangeUrl(conf.taskId),
-                type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT
-            };
-
-            // 投稿类型：从 taskName 解析投稿天数 limit，用累计投稿天数作 cur
-            if (!isDaily) {
-                const limitMatch = conf.taskName?.match(/投稿.*?(\d+)天/);
-                if (limitMatch) {
-                    item.total = parseInt(limitMatch[1], 10);
-                    const stats = calcActivityStats();
-                    item.cur = stats ? stats.uniqueDays : 0;
-                }
-            }
-
-            item.percent = Math.min(100, (item.cur / item.total) * 100);
-            if (isDaily) sections[TASK_TYPE.DAILY].push(item); else sections[TASK_TYPE.SUBMIT].push(item);
-        });
-
-        const getFilmVal = (str) => {
-            if (!str) return 0;
-            if (str.includes('菲林')) {
-                const m = str.match(/菲林.*?(\d+)/);
-                return m ? parseInt(m[1]) : 1;
-            }
-            return 0;
+                type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT,
+            },
         };
-
-        const sort = (a, b) => {
+    };
+    const applySubmitProgressFromTaskName = (item, taskName) => {
+        const limitMatch = taskName?.match(/投稿.*?(\d+)天/);
+        if (!limitMatch) return item;
+        item.total = parseInt(limitMatch[1], 10);
+        const stats = calcActivityStats();
+        item.cur = stats ? stats.uniqueDays : 0;
+        return item;
+    };
+    const getFilmRewardValue = (str) => {
+        if (!str) return 0;
+        if (str.includes('菲林')) {
+            const m = str.match(/菲林.*?(\d+)/);
+            return m ? parseInt(m[1], 10) : 1;
+        }
+        return 0;
+    };
+    const sortTaskSectionList = (list) => {
+        list.sort((a, b) => {
             const pA = getStatusPriority(a.status);
             const pB = getStatusPriority(b.status);
             if (pA !== pB) return pA - pB;
             if (a.status === TASK_STATUS.CLAIMABLE) {
-                const vA = getFilmVal(a.reward);
-                const vB = getFilmVal(b.reward);
+                const vA = getFilmRewardValue(a.reward);
+                const vB = getFilmRewardValue(b.reward);
                 if (vA !== vB) return vB - vA;
             }
             return 0;
-        };
-        Object.values(sections).forEach(list => list.sort(sort));
+        });
+    };
+    const processTasks = (configList, apiList) => {
+        const apiMap = {};
+        apiList.forEach((i) => {
+            apiMap[i.task_id] = i;
+        });
+        const sections = createTaskSections();
+
+        configList.forEach((conf) => {
+            const api = apiMap[conf.taskId];
+            if (!api) return;
+
+            if (conf.taskAwardType === 3 || api.award_type === 3) {
+                sections[TASK_TYPE.LOTTERY].push(buildLotteryTaskItem(conf, api));
+                return;
+            }
+
+            if (conf.statisticType === 2 || api.accumulative_check_points?.length) {
+                sections[TASK_TYPE.LIVE].push(...buildLiveAccumulativeTaskItems(api));
+                return;
+            }
+
+            const { item, isDaily } = buildBaseTaskItem(conf, api);
+            if (!isDaily) {
+                applySubmitProgressFromTaskName(item, conf.taskName);
+            }
+            item.percent = Math.min(100, (item.cur / item.total) * 100);
+            if (isDaily) sections[TASK_TYPE.DAILY].push(item); else sections[TASK_TYPE.SUBMIT].push(item);
+        });
+
+        Object.values(sections).forEach(sortTaskSectionList);
         return sections;
     };
 
@@ -1465,6 +1488,56 @@
         });
     };
 
+    const getLiveStatusSubText = (isLive) => {
+        if (STATE.live.lastError) {
+            return `状态拉取失败：${STATE.live.lastError}`;
+        }
+        if (STATE.live.isRefreshing && !STATE.live.lastSyncAt) {
+            return '正在同步直播状态...';
+        }
+        return isLive ? '直播中' : '未开播';
+    };
+    const getLiveStatusViewModel = () => {
+        const isLive = STATE.live.liveStatus === 1;
+        const roomInfo = STATE.live.roomInfo;
+        const areaText = roomInfo?.parent_name && roomInfo?.area_v2_name
+            ? `${roomInfo.parent_name} / ${roomInfo.area_v2_name}`
+            : '分区信息待获取';
+        const syncTimeText = STATE.live.lastSyncAt
+            ? new Date(STATE.live.lastSyncAt).toLocaleTimeString()
+            : '--:--:--';
+        return {
+            isLive,
+            duration: isLive ? formatDuration(getLiveDurationSeconds()) : '--:--:--',
+            areaText,
+            syncTimeText,
+            subText: getLiveStatusSubText(isLive),
+            isOperating: STATE.live.isOperating,
+        };
+    };
+    const getLiveStatusRenderHash = (viewModel) => ([
+        viewModel.isLive ? 1 : 0,
+        viewModel.subText,
+        viewModel.areaText,
+        viewModel.syncTimeText,
+        viewModel.isOperating ? 1 : 0,
+    ].join('|'));
+    const buildLiveStatusCardHtml = (tabKey, viewModel) => `
+        <div class="live-card-head">
+            <span class="live-dot ${viewModel.isLive ? 'on' : 'off'}"></span>
+            <div class="wide-card-title">📡 直播状态</div>
+            <span class="live-state-text">${viewModel.subText}</span>
+        </div>
+        <button class="live-action-btn ${viewModel.isLive ? 'stop' : 'start'}" id="${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}" ${viewModel.isOperating ? 'disabled' : ''}>
+            ${viewModel.isOperating ? '处理中' : (viewModel.isLive ? '关播' : '开播')}
+        </button>
+        <div class="live-card-area" title="${viewModel.areaText}">分区 ${viewModel.areaText}</div>
+        <div class="live-duration-line">
+            <span class="label">本场时长</span><span class="live-duration-value">${viewModel.duration}</span>
+        </div>
+        <div class="live-card-sync" title="15秒自动轮询更新">更新于 ${viewModel.syncTimeText}</div>
+    `;
+
     const renderLiveStatusCard = (tabKey) => {
         const content = document.getElementById(`${DOM_IDS.TAB_CONTENT_PREFIX}${tabKey}`);
         if (!content) return;
@@ -1477,48 +1550,12 @@
             content.prepend(card);
         }
 
-        const isLive = STATE.live.liveStatus === 1;
-        const duration = isLive ? formatDuration(getLiveDurationSeconds()) : '--:--:--';
-        const roomInfo = STATE.live.roomInfo;
-        const areaText = roomInfo?.parent_name && roomInfo?.area_v2_name
-            ? `${roomInfo.parent_name} / ${roomInfo.area_v2_name}`
-            : '分区信息待获取';
-        const syncTimeText = STATE.live.lastSyncAt
-            ? new Date(STATE.live.lastSyncAt).toLocaleTimeString()
-            : '--:--:--';
-
-        let subText = isLive ? '直播中' : '未开播';
-        if (STATE.live.lastError) {
-            subText = `状态拉取失败：${STATE.live.lastError}`;
-        } else if (STATE.live.isRefreshing && !STATE.live.lastSyncAt) {
-            subText = '正在同步直播状态...';
-        }
-
-        const renderHash = [
-            isLive ? 1 : 0,
-            subText,
-            areaText,
-            syncTimeText,
-            STATE.live.isOperating ? 1 : 0,
-        ].join('|');
+        const viewModel = getLiveStatusViewModel();
+        const renderHash = getLiveStatusRenderHash(viewModel);
 
         if (card.dataset.renderHash !== renderHash) {
-            card.className = `tab-live-card ${isLive ? 'live-on' : 'live-off'}`;
-            card.innerHTML = `
-                <div class="live-card-head">
-                    <span class="live-dot ${isLive ? 'on' : 'off'}"></span>
-                    <div class="wide-card-title">📡 直播状态</div>
-                    <span class="live-state-text">${subText}</span>
-                </div>
-                <button class="live-action-btn ${isLive ? 'stop' : 'start'}" id="${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}" ${STATE.live.isOperating ? 'disabled' : ''}>
-                    ${STATE.live.isOperating ? '处理中' : (isLive ? '关播' : '开播')}
-                </button>
-                <div class="live-card-area" title="${areaText}">分区 ${areaText}</div>
-                <div class="live-duration-line">
-                    <span class="label">本场时长</span><span class="live-duration-value">${duration}</span>
-                </div>
-                <div class="live-card-sync" title="15秒自动轮询更新">更新于 ${syncTimeText}</div>
-            `;
+            card.className = `tab-live-card ${viewModel.isLive ? 'live-on' : 'live-off'}`;
+            card.innerHTML = buildLiveStatusCardHtml(tabKey, viewModel);
             card.dataset.renderHash = renderHash;
         }
 
@@ -1532,7 +1569,7 @@
                 e.preventDefault();
                 e.stopPropagation();
                 if (STATE.live.isOperating) return;
-                if (isLive) {
+                if (viewModel.isLive) {
                     await stopLiveStream();
                 } else {
                     await showAreaSelectionModal();
@@ -1562,6 +1599,51 @@
         card.dataset.hash = hash;
         setTimeout(() => card.classList.remove('highlight-flash'), 800);
     };
+    const SUBMISSION_CARD_ICONS = Object.freeze({
+        REFRESH: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`,
+        CHECK: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><path d="M20 6 9 17l-5-5"/></svg>`,
+        CROSS: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><path d="M18 6 6 18"/><path d="M6 6 18 18"/></svg>`,
+        WARN: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
+        LOADING: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon spinning"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+    });
+    const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) => {
+        if (noActivity) {
+            return {
+                statusClass: '', // 使用默认白色，避免歧义
+                iconHtml: SUBMISSION_CARD_ICONS.WARN,
+                subText: '未获取到活动',
+            };
+        }
+        if (loading) {
+            return {
+                statusClass: '', // 加载中使用默认白色背景
+                iconHtml: SUBMISSION_CARD_ICONS.LOADING,
+                subText: '数据加载中...',
+            };
+        }
+        if (submitted) {
+            return {
+                statusClass: 'status-done',
+                iconHtml: SUBMISSION_CARD_ICONS.CHECK,
+                subText: `活动第 ${dayNum} 天`,
+            };
+        }
+        return {
+            statusClass: 'status-pending',
+            iconHtml: SUBMISSION_CARD_ICONS.CROSS,
+            subText: `活动第 ${dayNum} 天`,
+        };
+    };
+    const buildSubmissionCardHtml = ({ iconHtml, subText }) => `
+        <div class="wide-card-left">
+            <div class="wide-card-title">📝 投稿打卡</div>
+            <div class="wide-card-sub">${subText}</div>
+        </div>
+        <div class="wide-card-right">
+            ${iconHtml ? `<div class="wide-card-icon">${iconHtml}</div>` : ''}
+            <div class="wide-card-refresh" id="${DOM_IDS.REFRESH_SUBMISSION_BTN}" title="刷新投稿状态">${SUBMISSION_CARD_ICONS.REFRESH}</div>
+        </div>
+    `;
 
     /** 渲染投稿打卡大卡片（在每日必做区域） */
     const renderSubmissionCard = () => {
@@ -1573,45 +1655,8 @@
         const loading = STATE.isLoadingArchives;
         const noActivity = !STATE.activityInfo;
 
-        const ICONS = {
-            REFRESH: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`,
-            CHECK: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><path d="M20 6 9 17l-5-5"/></svg>`,
-            CROSS: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><path d="M18 6 6 18"/><path d="M6 6 18 18"/></svg>`,
-            WARN: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
-            LOADING: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon spinning"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`
-        };
-
-        // 状态判断
-        let statusClass = '', iconHtml = '', subText = '';
-
-        if (noActivity) {
-            statusClass = ''; // 使用默认白色，避免歧义
-            iconHtml = ICONS.WARN;
-            subText = '未获取到活动';
-        } else if (loading) {
-            statusClass = ''; // 加载中使用默认白色背景
-            iconHtml = ICONS.LOADING;
-            subText = '数据加载中...';
-        } else if (submitted) {
-            statusClass = 'status-done';
-            iconHtml = ICONS.CHECK;
-            subText = `活动第 ${dayNum} 天`;
-        } else {
-            statusClass = 'status-pending';
-            iconHtml = ICONS.CROSS;
-            subText = `活动第 ${dayNum} 天`;
-        }
-
-        const html = `
-            <div class="wide-card-left">
-                <div class="wide-card-title">📝 投稿打卡</div>
-                <div class="wide-card-sub">${subText}</div>
-            </div>
-            <div class="wide-card-right">
-                ${iconHtml ? `<div class="wide-card-icon">${iconHtml}</div>` : ''}
-                <div class="wide-card-refresh" id="${DOM_IDS.REFRESH_SUBMISSION_BTN}" title="刷新投稿状态">${ICONS.REFRESH}</div>
-            </div>
-        `;
+        const submissionCardState = resolveSubmissionCardState({ noActivity, loading, submitted, dayNum });
+        const html = buildSubmissionCardHtml(submissionCardState);
 
         if (!card) {
             card = document.createElement('div');
@@ -1631,7 +1676,7 @@
         }
 
         // 更新类名和内容
-        card.className = `grid-card-wide ${statusClass}`;
+        card.className = `grid-card-wide ${submissionCardState.statusClass}`;
         card.innerHTML = html;
 
         // 绑定刷新按钮事件（虽然整体可点，但保留单独按钮逻辑以防万一）
@@ -1893,6 +1938,26 @@
         });
     };
 
+    const MODULES = Object.freeze({
+        activity: Object.freeze({
+            parseConfig,
+            processTasks,
+            fetchActivityId,
+            fetchActivityArchives,
+        }),
+        live: Object.freeze({
+            refreshLiveState,
+            updateLiveDurationTexts,
+        }),
+        render: Object.freeze({
+            render,
+            renderLiveStatusCard,
+            renderSubmitTab,
+            renderSubmissionCard,
+            renderArchivesLoading,
+        }),
+    });
+
     // ==========================================
     // 10. 初始化
     // ==========================================
@@ -1922,7 +1987,7 @@
         if (STATE.isPolling) return;
         STATE.isPolling = true;
         try {
-            if (!STATE.config.length) STATE.config = parseConfig();
+            if (!STATE.config.length) STATE.config = MODULES.activity.parseConfig();
             if (STATE.config.length) {
                 // 去重 task IDs
                 const ids = [...new Set(STATE.config.map(t => t.taskId))];
@@ -1930,7 +1995,7 @@
                     buildTaskTotalUrl(getCookie('bili_jct'), ids)
                 );
                 if (res?.code === 0) {
-                    render(processTasks(STATE.config, res.data.list));
+                    MODULES.render.render(MODULES.activity.processTasks(STATE.config, res.data.list));
                     document.getElementById(DOM_IDS.CLOCK).innerText = new Date().toLocaleTimeString();
                 }
             }
@@ -1943,14 +2008,14 @@
 
         // 启动直播状态轮询与时长本地计时
         setTimeout(() => {
-            refreshLiveState(true);
-            setInterval(() => refreshLiveState(true), LIVE_STATUS_POLL_MS);
-            setInterval(updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
+            MODULES.live.refreshLiveState(true);
+            setInterval(() => MODULES.live.refreshLiveState(true), LIVE_STATUS_POLL_MS);
+            setInterval(MODULES.live.updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
         }, 50);
 
         // 获取活动信息
         try {
-            STATE.activityInfo = await fetchActivityId();
+            STATE.activityInfo = await MODULES.activity.fetchActivityId();
             if (STATE.activityInfo) {
                 console.log('[任务助手] 匹配到活动:', STATE.activityInfo.name);
             } else {
@@ -1968,7 +2033,7 @@
 
         // 初始获取一次稿件数据
         if (STATE.activityInfo) {
-            setTimeout(() => fetchActivityArchives(), 0);
+            setTimeout(() => MODULES.activity.fetchActivityArchives(), 0);
         }
     };
 
