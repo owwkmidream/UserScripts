@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站活动页任务助手
 // @namespace    http://tampermonkey.net/
-// @version      5.4
+// @version      5.5
 // @description  悬浮面板，Tabs标签切换，活动稿件投稿打卡与统计。
 // @author       Gemini_Refactored
 // @include      /^https:\/\/www\.bilibili\.com\/blackboard\/era\/[a-zA-Z0-9]+\.html$/
@@ -10,8 +10,11 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        unsafeWindow
+// @require      https://cdnjs.cloudflare.com/ajax/libs/blueimp-md5/2.19.0/js/md5.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js
 // @connect      api.bilibili.com
 // @connect      member.bilibili.com
+// @connect      api.live.bilibili.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -105,7 +108,7 @@
             text-decoration: none; color: inherit; position: relative; overflow: hidden; transition: all 0.2s;
             min-height: 52px;
         }
-        .grid-card-wide.status-pending { background: #fffbe6; border-color: #ffe58f; }
+        .grid-card-wide.status-pending { background: #fff; border-color: rgba(0,0,0,0.05); }
         .grid-card-wide.status-done { background: #f4f5f7; border-color: rgba(0,0,0,0.05); opacity: 0.8; }
         .grid-card-wide:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
 
@@ -115,7 +118,7 @@
 
         .wide-card-right { display: flex; align-items: center; gap: 8px; }
         .wide-card-icon { color: var(--era-sub); transition: color 0.2s; }
-        .status-pending .wide-card-icon { color: #faad14; }
+        .status-pending .wide-card-icon { color: #f05454; }
         .status-done .wide-card-icon { color: #45bd63; }
         
         .wide-card-refresh {
@@ -196,6 +199,296 @@
         .full-progress { margin-top: 8px; height: 4px; background: #f0f0f0; border-radius: 2px; overflow:hidden; }
         .full-bar { height: 100%; background: var(--era-primary); border-radius: 2px; transition: width 0.4s; }
 
+        /* 直播状态卡片 */
+        .tab-live-card {
+            background: rgba(255,255,255,0.75);
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,0.05);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+            padding: 10px 12px;
+            margin-bottom: 10px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            grid-template-areas:
+                "head action"
+                "area dur"
+                "sync sync";
+            align-items: center;
+            row-gap: 2px;
+            column-gap: 8px;
+        }
+        .tab-live-card.live-on {
+            border-color: rgba(69, 189, 99, 0.32);
+            background: rgba(69, 189, 99, 0.08);
+        }
+        .tab-live-card.live-off {
+            border-color: rgba(0,0,0,0.05);
+            background: #f4f5f7;
+        }
+        .live-card-head {
+            grid-area: head;
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            gap: 6px;
+        }
+        .live-state-text {
+            font-size: 12px;
+            color: #7d8591;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #c9cdd4;
+        }
+        .live-dot.on {
+            background: #45bd63;
+            box-shadow: 0 0 0 4px rgba(69, 189, 99, 0.16);
+        }
+        .live-dot.off {
+            background: #a9b0bb;
+            box-shadow: 0 0 0 4px rgba(169, 176, 187, 0.18);
+        }
+        .live-card-area {
+            grid-area: area;
+            font-size: 11px;
+            color: var(--era-sub);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.3;
+        }
+        .live-card-sync {
+            grid-area: sync;
+            font-size: 10px;
+            color: #8f96a0;
+            line-height: 1.35;
+        }
+        .live-duration-line {
+            grid-area: dur;
+            text-align: right;
+            min-width: 92px;
+            font-size: 11px;
+            color: var(--era-sub);
+            white-space: nowrap;
+        }
+        .live-duration-line .label {
+            margin-right: 4px;
+        }
+        .live-duration-value {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--era-text);
+            font-family: "DingTalk Sans", "Roboto", sans-serif;
+        }
+        .live-action-btn {
+            grid-area: action;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            height: 26px;
+            min-width: 52px;
+            width: auto;
+            justify-self: end;
+            align-self: center;
+            padding: 0 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.2s;
+            color: #fff;
+        }
+        .live-action-btn:hover {
+            transform: translateY(-1px);
+        }
+        .live-action-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.65;
+            transform: none;
+        }
+        .live-action-btn.start {
+            background: #f4f5f7;
+            border-color: rgba(0,0,0,0.06);
+            color: #7d8591;
+        }
+        .live-action-btn.stop {
+            background: #3ead5f;
+            border-color: rgba(48, 140, 78, 0.5);
+            color: #fff;
+        }
+        .live-action-btn.start:hover {
+            background: #eceef1;
+        }
+        .live-action-btn.stop:hover {
+            background: #389f56;
+        }
+
+        /* 直播分区选择弹窗 */
+        #era-live-area-overlay,
+        #era-live-auth-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 1000000;
+        }
+        #era-live-area-modal,
+        #era-live-auth-modal {
+            display: none;
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+            z-index: 1000001;
+            width: 360px;
+            max-width: calc(100vw - 30px);
+            box-sizing: border-box;
+            padding: 16px;
+        }
+        #era-live-area-modal h3,
+        #era-live-auth-modal h3 {
+            margin: 2px 0 12px 0;
+            font-size: 16px;
+            color: var(--era-text);
+        }
+        .era-live-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .era-live-row label {
+            width: 58px;
+            flex-shrink: 0;
+            font-size: 12px;
+            color: var(--era-sub);
+            text-align: right;
+        }
+        .era-live-row select {
+            flex: 1;
+            border: 1px solid rgba(0,0,0,0.12);
+            border-radius: 6px;
+            height: 30px;
+            padding: 0 8px;
+            font-size: 12px;
+            color: var(--era-text);
+            background: #fff;
+        }
+        .era-live-history {
+            margin-bottom: 12px;
+        }
+        .era-live-history-title {
+            font-size: 12px;
+            color: var(--era-sub);
+            margin-bottom: 6px;
+        }
+        .era-live-history-list {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            min-height: 24px;
+        }
+        .era-live-history-btn {
+            border: 1px solid rgba(251, 114, 153, 0.35);
+            color: #d6467d;
+            background: #fff;
+            border-radius: 12px;
+            font-size: 11px;
+            line-height: 1;
+            padding: 5px 8px;
+            cursor: pointer;
+        }
+        .era-live-history-empty {
+            font-size: 11px;
+            color: #a7adb5;
+        }
+        .era-live-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        .era-live-modal-actions button {
+            border: none;
+            border-radius: 7px;
+            height: 32px;
+            min-width: 68px;
+            padding: 0 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        #era-live-start-confirm {
+            background: #fb7299;
+            color: #fff;
+        }
+        #era-live-start-cancel,
+        #era-live-auth-cancel {
+            background: #edf0f4;
+            color: #4f5d75;
+        }
+        #era-live-auth-retry {
+            background: #fb7299;
+            color: #fff;
+        }
+
+        #era-live-auth-modal p {
+            margin: 0 0 10px 0;
+            font-size: 12px;
+            color: var(--era-sub);
+        }
+        #era-live-auth-qrcode {
+            width: 200px;
+            height: 200px;
+            margin: 4px auto 12px auto;
+            border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fafafa;
+        }
+        #era-live-auth-qrcode canvas,
+        #era-live-auth-qrcode img {
+            width: 180px !important;
+            height: 180px !important;
+        }
+        /* 直播操作提示 */
+        #era-live-toast {
+            position: fixed;
+            right: 18px;
+            bottom: 18px;
+            z-index: 1000002;
+            min-width: 240px;
+            max-width: 340px;
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,0.08);
+            background: #fff;
+            color: var(--era-text);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        #era-live-toast.info {
+            border-color: rgba(45, 123, 229, 0.28);
+        }
+        #era-live-toast.success {
+            border-color: rgba(69, 189, 99, 0.35);
+        }
+        #era-live-toast.warning {
+            border-color: rgba(250, 173, 20, 0.42);
+        }
+        #era-live-toast.error {
+            border-color: rgba(245, 84, 84, 0.42);
+        }
+
         .era-footer { padding: 8px; text-align: center; font-size: 10px; color: var(--era-sub); border-top: 1px solid rgba(0,0,0,0.05); }
         .highlight-flash { animation: flash 0.6s ease-out; }
         @keyframes flash { 0% { background: rgba(250, 173, 20, 0.2); } 100% { background: inherit; } }
@@ -260,6 +553,27 @@
         });
     });
 
+    const LIVE_STATUS_POLL_MS = 15000;
+    const LIVE_DURATION_TICK_MS = 1000;
+    const LIVE_AREA_HISTORY_KEY = 'era_live_area_history_v1';
+    const LIVE_AREA_HISTORY_LIMIT = 10;
+    const LIVE_BUVID_KEY = 'bilibili_live_buvid_header';
+    const LIVE_UA_FALLBACK = 'LiveHime/7.11.3.8931 os/Windows pc_app/livehime build/8931 osVer/10.0_x86_64';
+
+    const getArrayStore = (key) => {
+        const raw = GM_getValue(key, []);
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === 'string') {
+            try {
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (_) {
+                return [];
+            }
+        }
+        return [];
+    };
+
     // ==========================================
     // 3. 状态
     // ==========================================
@@ -270,6 +584,206 @@
         activityInfo: null,       // { id, name, stime, etime, actUrl }
         activityArchives: null,   // [{ bvid, title, ptime, view }]
         isLoadingArchives: false,
+        live: {
+            roomInfo: null,
+            roomExtInfo: null,
+            areaList: null,
+            roomId: null,
+            liveStatus: 0,
+            liveStartTs: null,
+            isRefreshing: false,
+            isOperating: false,
+            versionCache: null,
+            lastError: '',
+            lastSyncAt: 0,
+            areaHistory: getArrayStore(LIVE_AREA_HISTORY_KEY),
+        }
+    };
+
+    const getFixedBuvid = () => {
+        let cachedBuvid = GM_getValue(LIVE_BUVID_KEY, null);
+        if (cachedBuvid) return cachedBuvid;
+        const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        }).toUpperCase();
+        const padding = Math.floor(Math.random() * 90000) + 10000;
+        cachedBuvid = `${uuid}${padding}user`;
+        GM_setValue(LIVE_BUVID_KEY, cachedBuvid);
+        return cachedBuvid;
+    };
+
+    const generateLivehimeUA = (version, build) => `LiveHime/${version} os/Windows pc_app/livehime build/${build} osVer/10.0_x86_64`;
+
+    const makeLiveApiRequest = (options = {}) => new Promise((resolve, reject) => {
+        const method = (options.method || 'GET').toUpperCase();
+        const ua = STATE.live.versionCache
+            ? generateLivehimeUA(STATE.live.versionCache.version, STATE.live.versionCache.build)
+            : LIVE_UA_FALLBACK;
+        const headers = {
+            'User-Agent': ua,
+            buvid: GM_getValue(LIVE_BUVID_KEY, getFixedBuvid()),
+            Referer: '',
+            ...(options.headers || {})
+        };
+        if (method === 'POST') {
+            headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+        }
+
+        GM_xmlhttpRequest({
+            method,
+            url: options.url,
+            data: options.data,
+            timeout: options.timeout || 15000,
+            headers,
+            onload: (response) => {
+                try {
+                    const data = JSON.parse(response.responseText || '{}');
+                    const isStopLiveRepeat = options.url && options.url.includes('stopLive')
+                        && (data.code === 160000 || data.msg === '重复关播');
+                    if (data.code === 0 || isStopLiveRepeat) {
+                        resolve(data);
+                        return;
+                    }
+                    if (data.code === 60024) {
+                        reject(new Error(`API Error: ${data.code} - 需要进行身份验证`));
+                        return;
+                    }
+                    reject(new Error(`API Error: ${data.code} - ${data.message || data.msg || '未知错误'}`));
+                } catch (e) {
+                    reject(new Error(`JSON解析失败: ${e.message}`));
+                }
+            },
+            onerror: () => reject(new Error('请求失败')),
+            ontimeout: () => reject(new Error('请求超时')),
+        });
+    });
+
+    const fetchLatestLivehimeVersion = async () => {
+        if (STATE.live.versionCache) return STATE.live.versionCache;
+        try {
+            const response = await makeLiveApiRequest({
+                method: 'GET',
+                url: 'https://api.live.bilibili.com/xlive/app-blink/v1/liveVersionInfo/getHomePageLiveVersion?system_version=2',
+            });
+            if (response?.data?.curr_version && response?.data?.build) {
+                STATE.live.versionCache = {
+                    version: response.data.curr_version,
+                    build: String(response.data.build),
+                };
+                return STATE.live.versionCache;
+            }
+        } catch (_) {
+            // 失败则走兜底版本，不阻断开播链路
+        }
+        STATE.live.versionCache = { version: '7.11.3.8931', build: '8931' };
+        return STATE.live.versionCache;
+    };
+
+    const fetchLiveRoomInfo = async (forceRefresh = false) => {
+        if (STATE.live.roomInfo && !forceRefresh) return STATE.live.roomInfo;
+        const res = await makeLiveApiRequest({
+            method: 'GET',
+            url: 'https://api.live.bilibili.com/xlive/app-blink/v1/room/GetInfo?platform=pc',
+        });
+        STATE.live.roomInfo = res.data || null;
+        return STATE.live.roomInfo;
+    };
+
+    const fetchLiveRoomStartInfo = async (roomId) => {
+        if (!roomId) return null;
+        const res = await makeLiveApiRequest({
+            method: 'GET',
+            url: `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${roomId}`,
+        });
+        STATE.live.roomExtInfo = res.data || null;
+        return STATE.live.roomExtInfo;
+    };
+
+    const fetchLiveAreaList = async () => {
+        if (STATE.live.areaList) return STATE.live.areaList;
+        const res = await makeLiveApiRequest({
+            method: 'GET',
+            url: 'https://api.live.bilibili.com/room/v1/Area/getList?show_pinyin=1',
+        });
+        STATE.live.areaList = res.data || [];
+        return STATE.live.areaList;
+    };
+
+    const parseLiveTimeToTs = (val) => {
+        if (val === null || val === undefined) return null;
+        if (typeof val === 'number' && Number.isFinite(val) && val > 0) return Math.floor(val);
+        const str = String(val).trim();
+        if (!str || str === '0' || str === '0000-00-00 00:00:00') return null;
+        if (/^\d+$/.test(str)) {
+            const n = Number(str);
+            if (Number.isFinite(n) && n > 0) return Math.floor(n > 1e12 ? n / 1000 : n);
+            return null;
+        }
+        const m = str.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+        if (m) {
+            const y = Number(m[1]);
+            const mo = Number(m[2]);
+            const d = Number(m[3]);
+            const h = Number(m[4]);
+            const mi = Number(m[5]);
+            const s = Number(m[6]);
+            const utcMs = Date.UTC(y, mo - 1, d, h - 8, mi, s);
+            return Math.floor(utcMs / 1000);
+        }
+        const parsed = Date.parse(str);
+        if (Number.isNaN(parsed)) return null;
+        return Math.floor(parsed / 1000);
+    };
+
+    const getLiveDurationSeconds = () => {
+        if (STATE.live.liveStatus !== 1 || !STATE.live.liveStartTs) return null;
+        return Math.max(0, Math.floor(Date.now() / 1000) - STATE.live.liveStartTs);
+    };
+
+    const formatDuration = (sec) => {
+        if (sec === null || sec === undefined || !Number.isFinite(sec)) return '--:--:--';
+        const total = Math.max(0, Math.floor(sec));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
+    const findAreaBySubId = (subAreaId, areas = STATE.live.areaList) => {
+        if (!subAreaId || !Array.isArray(areas)) return null;
+        for (const parent of areas) {
+            if (!Array.isArray(parent.list)) continue;
+            const sub = parent.list.find((it) => Number(it.id) === Number(subAreaId));
+            if (sub) {
+                return {
+                    parentId: Number(parent.id),
+                    parentName: parent.name,
+                    areaId: Number(sub.id),
+                    areaName: sub.name,
+                };
+            }
+        }
+        return null;
+    };
+
+    const saveAreaHistory = () => {
+        GM_setValue(LIVE_AREA_HISTORY_KEY, STATE.live.areaHistory);
+    };
+
+    const rememberAreaHistory = (entry) => {
+        if (!entry || !entry.areaId) return;
+        const filtered = (STATE.live.areaHistory || []).filter((it) => Number(it.areaId) !== Number(entry.areaId));
+        const next = [{
+            areaId: Number(entry.areaId),
+            areaName: entry.areaName || '',
+            parentId: Number(entry.parentId || 0),
+            parentName: entry.parentName || '',
+            ts: Math.floor(Date.now() / 1000),
+        }, ...filtered].slice(0, LIVE_AREA_HISTORY_LIMIT);
+        STATE.live.areaHistory = next;
+        saveAreaHistory();
     };
 
 
@@ -494,6 +1008,458 @@
     };
 
     // ==========================================
+    // 8.5 直播管理
+    // ==========================================
+    const showLiveToast = (message, type = 'info', autoDismiss = true, duration = 3600) => {
+        let toast = document.getElementById('era-live-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'era-live-toast';
+            document.body.appendChild(toast);
+        }
+        toast.className = type;
+        toast.innerHTML = message;
+        toast.style.display = 'block';
+        if (toast._timer) clearTimeout(toast._timer);
+        if (autoDismiss) {
+            toast._timer = setTimeout(() => {
+                toast.style.display = 'none';
+            }, duration);
+        }
+    };
+
+    const createLiveAreaModal = () => {
+        if (document.getElementById('era-live-area-modal')) return;
+        const html = `
+            <div id="era-live-area-overlay"></div>
+            <div id="era-live-area-modal">
+                <h3>选择直播分区</h3>
+                <div class="era-live-history">
+                    <div class="era-live-history-title">历史分区（优先）</div>
+                    <div class="era-live-history-list" id="era-live-history-list"></div>
+                </div>
+                <div class="era-live-row">
+                    <label for="era-live-parent-select">父分区</label>
+                    <select id="era-live-parent-select"></select>
+                </div>
+                <div class="era-live-row">
+                    <label for="era-live-sub-select">子分区</label>
+                    <select id="era-live-sub-select"></select>
+                </div>
+                <div class="era-live-modal-actions">
+                    <button id="era-live-start-cancel">取消</button>
+                    <button id="era-live-start-confirm">开播</button>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', html);
+        const overlay = document.getElementById('era-live-area-overlay');
+        const parentSelect = document.getElementById('era-live-parent-select');
+        const cancelBtn = document.getElementById('era-live-start-cancel');
+        const confirmBtn = document.getElementById('era-live-start-confirm');
+
+        parentSelect.addEventListener('change', () => {
+            populateLiveSubAreas(parentSelect.value);
+        });
+        overlay.addEventListener('click', hideLiveAreaModal);
+        cancelBtn.addEventListener('click', hideLiveAreaModal);
+        confirmBtn.addEventListener('click', async () => {
+            const subSelect = document.getElementById('era-live-sub-select');
+            const selectedSubAreaId = Number(subSelect.value || 0);
+            if (!selectedSubAreaId) {
+                showLiveToast('请选择子分区后再开播。', 'warning');
+                return;
+            }
+            const roomData = await fetchLiveRoomInfo();
+            if (!roomData?.room_id) {
+                showLiveToast('未获取到直播间 ID，无法开播。', 'error');
+                return;
+            }
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = '处理中...';
+            await startLiveStream(roomData.room_id, selectedSubAreaId);
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '开播';
+        });
+    };
+
+    const showLiveAreaModal = () => {
+        createLiveAreaModal();
+        document.getElementById('era-live-area-overlay').style.display = 'block';
+        document.getElementById('era-live-area-modal').style.display = 'block';
+    };
+
+    const hideLiveAreaModal = () => {
+        const overlay = document.getElementById('era-live-area-overlay');
+        const modal = document.getElementById('era-live-area-modal');
+        if (overlay) overlay.style.display = 'none';
+        if (modal) modal.style.display = 'none';
+    };
+
+    const populateLiveParentAreas = (defaultParentId) => {
+        const parentSelect = document.getElementById('era-live-parent-select');
+        if (!parentSelect) return;
+        const areas = STATE.live.areaList || [];
+        parentSelect.innerHTML = '<option value="">-- 请选择 --</option>';
+        areas.forEach((parent) => {
+            const option = document.createElement('option');
+            option.value = parent.id;
+            option.textContent = parent.name;
+            parentSelect.appendChild(option);
+        });
+        if (defaultParentId) {
+            parentSelect.value = String(defaultParentId);
+        }
+    };
+
+    const populateLiveSubAreas = (parentId, defaultSubId) => {
+        const subSelect = document.getElementById('era-live-sub-select');
+        if (!subSelect) return;
+        subSelect.innerHTML = '<option value="">-- 请选择 --</option>';
+        if (!parentId) return;
+        const parent = (STATE.live.areaList || []).find((p) => Number(p.id) === Number(parentId));
+        if (!parent || !Array.isArray(parent.list)) return;
+        parent.list.forEach((sub) => {
+            const option = document.createElement('option');
+            option.value = sub.id;
+            option.textContent = sub.name;
+            subSelect.appendChild(option);
+        });
+        if (defaultSubId) {
+            subSelect.value = String(defaultSubId);
+        }
+    };
+
+    const applyHistoryAreaSelection = (entry) => {
+        if (!entry) return;
+        const found = findAreaBySubId(entry.areaId);
+        if (!found) {
+            showLiveToast('历史分区不可用，可能已下线。', 'warning');
+            return;
+        }
+        const parentSelect = document.getElementById('era-live-parent-select');
+        if (!parentSelect) return;
+        parentSelect.value = String(found.parentId);
+        populateLiveSubAreas(found.parentId, found.areaId);
+    };
+
+    const renderLiveAreaHistory = () => {
+        const wrap = document.getElementById('era-live-history-list');
+        if (!wrap) return;
+        const history = STATE.live.areaHistory || [];
+        if (!history.length) {
+            wrap.innerHTML = '<span class="era-live-history-empty">暂无历史分区</span>';
+            return;
+        }
+        wrap.innerHTML = '';
+        history.forEach((entry, idx) => {
+            const btn = document.createElement('button');
+            btn.className = 'era-live-history-btn';
+            btn.textContent = `${entry.parentName || '未知'} / ${entry.areaName || `分区#${entry.areaId}`}`;
+            btn.title = idx === 0 ? '最近使用' : '历史分区';
+            btn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                applyHistoryAreaSelection(entry);
+            };
+            wrap.appendChild(btn);
+        });
+    };
+
+    const showAreaSelectionModal = async () => {
+        showLiveAreaModal();
+        const confirmBtn = document.getElementById('era-live-start-confirm');
+        if (confirmBtn) {
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = '加载中...';
+        }
+        try {
+            const [roomData, areaList] = await Promise.all([
+                fetchLiveRoomInfo(),
+                fetchLiveAreaList(),
+            ]);
+            const historyFirst = (STATE.live.areaHistory || []).find((entry) => findAreaBySubId(entry.areaId, areaList));
+            const defaultParentId = historyFirst?.parentId || roomData?.parent_id;
+            const defaultSubId = historyFirst?.areaId || roomData?.area_v2_id;
+            populateLiveParentAreas(defaultParentId);
+            populateLiveSubAreas(defaultParentId, defaultSubId);
+            renderLiveAreaHistory();
+        } catch (e) {
+            console.error('[任务助手] 打开分区选择失败:', e);
+            showLiveToast(`分区加载失败：${e.message || e}`, 'error');
+            hideLiveAreaModal();
+        } finally {
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = '开播';
+            }
+        }
+    };
+
+    const createLiveAuthModal = () => {
+        if (document.getElementById('era-live-auth-modal')) return;
+        const html = `
+            <div id="era-live-auth-overlay"></div>
+            <div id="era-live-auth-modal">
+                <h3>身份验证</h3>
+                <p>请使用 B 站 App 扫码完成身份验证，然后点击“我已验证”。</p>
+                <div id="era-live-auth-qrcode"></div>
+                <div class="era-live-modal-actions">
+                    <button id="era-live-auth-cancel">取消</button>
+                    <button id="era-live-auth-retry">我已验证</button>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', html);
+        document.getElementById('era-live-auth-overlay').addEventListener('click', hideLiveAuthModal);
+        document.getElementById('era-live-auth-cancel').addEventListener('click', hideLiveAuthModal);
+    };
+
+    const showAuthQRCodeModal = (authUrl, roomId, areaV2) => {
+        createLiveAuthModal();
+        const overlay = document.getElementById('era-live-auth-overlay');
+        const modal = document.getElementById('era-live-auth-modal');
+        const container = document.getElementById('era-live-auth-qrcode');
+        const retryBtn = document.getElementById('era-live-auth-retry');
+        container.innerHTML = '';
+        new QRCode(container, {
+            text: authUrl,
+            width: 180,
+            height: 180,
+            correctLevel: QRCode.CorrectLevel.H,
+        });
+        retryBtn.onclick = async () => {
+            hideLiveAuthModal();
+            showLiveToast('正在重新尝试开播...', 'info');
+            await startLiveStream(roomId, areaV2);
+        };
+        overlay.style.display = 'block';
+        modal.style.display = 'block';
+    };
+
+    const hideLiveAuthModal = () => {
+        const overlay = document.getElementById('era-live-auth-overlay');
+        const modal = document.getElementById('era-live-auth-modal');
+        if (overlay) overlay.style.display = 'none';
+        if (modal) modal.style.display = 'none';
+    };
+
+    const startLiveStream = async (roomId, areaV2) => {
+        const csrfToken = getCookie('bili_jct');
+        const dedeUserID = getCookie('DedeUserID');
+        if (!csrfToken || !dedeUserID) {
+            showLiveToast('未登录或缺少 CSRF，无法开播。', 'error');
+            return false;
+        }
+
+        STATE.live.isOperating = true;
+        renderLiveStatusCard('LIVE');
+
+        const APP_KEY = 'aae92bc66f3edfab';
+        const APP_SECRET = 'af125a0d5279fd576c1b4418a3e8276d';
+
+        try {
+            const vInfo = await fetchLatestLivehimeVersion();
+            const params = new URLSearchParams();
+            params.append('appkey', APP_KEY);
+            params.append('area_v2', String(areaV2));
+            params.append('build', String(vInfo.build));
+            params.append('version', String(vInfo.version));
+            params.append('csrf', csrfToken);
+            params.append('csrf_token', csrfToken);
+            params.append('platform', 'pc_link');
+            params.append('room_id', String(roomId));
+            params.append('ts', String(Math.floor(Date.now() / 1000)));
+            params.append('type', '2');
+            params.sort();
+
+            const sign = md5(params.toString() + APP_SECRET);
+            const formData = new URLSearchParams(params);
+            formData.append('sign', sign);
+
+            await makeLiveApiRequest({
+                method: 'POST',
+                url: 'https://api.live.bilibili.com/room/v1/Room/startLive',
+                data: formData.toString(),
+            });
+
+            const areaMeta = findAreaBySubId(areaV2);
+            if (areaMeta) rememberAreaHistory(areaMeta);
+            showLiveToast('开播成功。', 'success');
+            hideLiveAreaModal();
+            await refreshLiveState(true);
+            return true;
+        } catch (e) {
+            console.error('[任务助手] 开播失败:', e);
+            if (String(e.message || '').includes('60024')) {
+                const faceAuthUrl = `https://www.bilibili.com/blackboard/live/face-auth-middle.html?source_event=400&mid=${dedeUserID}`;
+                hideLiveAreaModal();
+                showAuthQRCodeModal(faceAuthUrl, roomId, areaV2);
+                showLiveToast('该分区要求身份验证，请先扫码。', 'warning', false);
+            } else {
+                showLiveToast(`开播失败：${e.message || e}`, 'error');
+            }
+            return false;
+        } finally {
+            STATE.live.isOperating = false;
+            renderLiveStatusCard('LIVE');
+        }
+    };
+
+    const stopLiveStream = async () => {
+        const csrfToken = getCookie('bili_jct');
+        if (!csrfToken) {
+            showLiveToast('缺少 CSRF，无法关播。', 'error');
+            return;
+        }
+        STATE.live.isOperating = true;
+        renderLiveStatusCard('LIVE');
+        try {
+            const roomData = await fetchLiveRoomInfo(true);
+            if (!roomData?.room_id) {
+                showLiveToast('未获取到直播间 ID，无法关播。', 'error');
+                return;
+            }
+            const formData = new URLSearchParams();
+            formData.append('room_id', String(roomData.room_id));
+            formData.append('platform', 'pc_link');
+            formData.append('csrf', csrfToken);
+            formData.append('csrf_token', csrfToken);
+
+            const data = await makeLiveApiRequest({
+                method: 'POST',
+                url: 'https://api.live.bilibili.com/room/v1/Room/stopLive',
+                data: formData.toString(),
+            });
+            if (data.code === 160000 || data.msg === '重复关播') {
+                showLiveToast('当前未在直播，或已成功关播。', 'info');
+            } else {
+                showLiveToast('关播成功。', 'success');
+            }
+            await refreshLiveState(true);
+        } catch (e) {
+            console.error('[任务助手] 关播失败:', e);
+            showLiveToast(`关播失败：${e.message || e}`, 'error');
+        } finally {
+            STATE.live.isOperating = false;
+            renderLiveStatusCard('LIVE');
+        }
+    };
+
+    const refreshLiveState = async (forceRefresh = false) => {
+        if (STATE.live.isRefreshing) return;
+        STATE.live.isRefreshing = true;
+        try {
+            const roomInfo = await fetchLiveRoomInfo(forceRefresh);
+            STATE.live.roomId = roomInfo?.room_id || null;
+            STATE.live.liveStatus = Number(roomInfo?.live_status || 0);
+            if (STATE.live.roomId) {
+                const ext = await fetchLiveRoomStartInfo(STATE.live.roomId);
+                const startTs = parseLiveTimeToTs(ext?.live_time);
+                STATE.live.liveStartTs = STATE.live.liveStatus === 1 ? startTs : null;
+            } else {
+                STATE.live.liveStartTs = null;
+            }
+            if (STATE.live.liveStatus !== 1) {
+                STATE.live.liveStartTs = null;
+            }
+            STATE.live.lastError = '';
+            STATE.live.lastSyncAt = Date.now();
+        } catch (e) {
+            console.error('[任务助手] 刷新直播状态失败:', e);
+            STATE.live.lastError = e.message || '刷新直播状态失败';
+        } finally {
+            STATE.live.isRefreshing = false;
+            renderLiveStatusCard('LIVE');
+            updateLiveDurationTexts();
+        }
+    };
+
+    const updateLiveDurationTexts = () => {
+        const isLive = STATE.live.liveStatus === 1;
+        const text = isLive ? formatDuration(getLiveDurationSeconds()) : '--:--:--';
+        document.querySelectorAll('.live-duration-value').forEach((el) => {
+            el.textContent = text;
+        });
+    };
+
+    const renderLiveStatusCard = (tabKey) => {
+        const content = document.getElementById(`tab-content-${tabKey}`);
+        if (!content) return;
+
+        const cardId = `tab-live-card-${tabKey}`;
+        let card = document.getElementById(cardId);
+        if (!card) {
+            card = document.createElement('div');
+            card.id = cardId;
+            content.prepend(card);
+        }
+
+        const isLive = STATE.live.liveStatus === 1;
+        const duration = isLive ? formatDuration(getLiveDurationSeconds()) : '--:--:--';
+        const roomInfo = STATE.live.roomInfo;
+        const areaText = roomInfo?.parent_name && roomInfo?.area_v2_name
+            ? `${roomInfo.parent_name} / ${roomInfo.area_v2_name}`
+            : '分区信息待获取';
+        const syncTimeText = STATE.live.lastSyncAt
+            ? new Date(STATE.live.lastSyncAt).toLocaleTimeString()
+            : '--:--:--';
+
+        let subText = isLive ? '直播中' : '未开播';
+        if (STATE.live.lastError) {
+            subText = `状态拉取失败：${STATE.live.lastError}`;
+        } else if (STATE.live.isRefreshing && !STATE.live.lastSyncAt) {
+            subText = '正在同步直播状态...';
+        }
+
+        const renderHash = [
+            isLive ? 1 : 0,
+            subText,
+            areaText,
+            syncTimeText,
+            STATE.live.isOperating ? 1 : 0,
+        ].join('|');
+
+        if (card.dataset.renderHash !== renderHash) {
+            card.className = `tab-live-card ${isLive ? 'live-on' : 'live-off'}`;
+            card.innerHTML = `
+                <div class="live-card-head">
+                    <span class="live-dot ${isLive ? 'on' : 'off'}"></span>
+                    <div class="wide-card-title">📡 直播状态</div>
+                    <span class="live-state-text">${subText}</span>
+                </div>
+                <button class="live-action-btn ${isLive ? 'stop' : 'start'}" id="live-action-btn-${tabKey}" ${STATE.live.isOperating ? 'disabled' : ''}>
+                    ${STATE.live.isOperating ? '处理中' : (isLive ? '关播' : '开播')}
+                </button>
+                <div class="live-card-area" title="${areaText}">分区 ${areaText}</div>
+                <div class="live-duration-line">
+                    <span class="label">本场时长</span><span class="live-duration-value">${duration}</span>
+                </div>
+                <div class="live-card-sync" title="15秒自动轮询更新">更新于 ${syncTimeText}</div>
+            `;
+            card.dataset.renderHash = renderHash;
+        }
+
+        if (content.firstChild !== card) {
+            content.prepend(card);
+        }
+
+        const btn = document.getElementById(`live-action-btn-${tabKey}`);
+        if (btn) {
+            btn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (STATE.live.isOperating) return;
+                if (isLive) {
+                    await stopLiveStream();
+                } else {
+                    await showAreaSelectionModal();
+                }
+            };
+        }
+    };
+
+    // ==========================================
     // 9. 渲染引擎
     // ==========================================
 
@@ -531,8 +1497,8 @@
             iconHtml = ICONS.CHECK;
             subText = `活动第 ${dayNum} 天`;
         } else {
-            statusClass = ''; // 未打卡也使用白色背景（同普通未完成任务）
-            iconHtml = '';
+            statusClass = 'status-pending';
+            iconHtml = ICONS.CROSS;
             subText = `活动第 ${dayNum} 天`;
         }
 
@@ -784,6 +1750,11 @@
         renderSubmitTab(); // 渲染投稿Card
         renderTabList('LIVE', sections.LIVE);
         renderTabList('LOTTERY', sections.LOTTERY);
+        const submitLiveCard = document.getElementById('tab-live-card-SUBMIT');
+        if (submitLiveCard) submitLiveCard.remove();
+        if (!document.getElementById('tab-live-card-LIVE')) {
+            renderLiveStatusCard('LIVE');
+        }
     };
 
     /** 切换标签 */
@@ -890,6 +1861,13 @@
 
     const start = async () => {
         init();
+
+        // 启动直播状态轮询与时长本地计时
+        setTimeout(() => {
+            refreshLiveState(true);
+            setInterval(() => refreshLiveState(true), LIVE_STATUS_POLL_MS);
+            setInterval(updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
+        }, 50);
 
         // 获取活动信息
         try {
