@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站活动页任务助手
 // @namespace    http://tampermonkey.net/
-// @version      5.5
+// @version      5.6
 // @description  悬浮面板，Tabs标签切换，活动稿件投稿打卡与统计。
 // @author       Gemini_Refactored
 // @include      /^https:\/\/www\.bilibili\.com\/blackboard\/era\/[a-zA-Z0-9]+\.html$/
@@ -593,36 +593,61 @@
     const buildLiveRoomExtUrl = (roomId) => `${URLS.LIVE_ROOM_EXT}?room_id=${roomId}`;
     const buildLiveFaceAuthUrl = (mid) => `${URLS.LIVE_FACE_AUTH}?source_event=400&mid=${mid}`;
 
-    /** 统一使用北京时间 (GMT+8) */
-    const getBJDate = (timestamp) => {
-        // timestamp 为秒级时间戳，转为 Date 后提取北京时间日期
-        const d = timestamp ? new Date(timestamp * 1000) : new Date();
-        // 用 UTC + 8 小时
-        const utc = d.getTime() + d.getTimezoneOffset() * 60000;
-        return new Date(utc + 8 * 3600000);
+    const BJ_TZ_OFFSET_SECONDS = 8 * 3600;
+    const BJ_DATE_PARTS_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    });
+
+    const getBJDateParts = (timestamp) => {
+        let date;
+        if (timestamp === null || timestamp === undefined) {
+            date = new Date();
+        } else {
+            const numericTs = Number(timestamp);
+            if (!Number.isFinite(numericTs)) return null;
+            date = new Date(numericTs * 1000);
+        }
+        const partsMap = {};
+        BJ_DATE_PARTS_FORMATTER.formatToParts(date).forEach((part) => {
+            if (part.type !== 'literal') partsMap[part.type] = part.value;
+        });
+        const year = Number(partsMap.year);
+        const month = Number(partsMap.month);
+        const day = Number(partsMap.day);
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+        return { year, month, day };
+    };
+
+    const getBJDaySerial = (timestamp) => {
+        const numericTs = Number(timestamp);
+        if (!Number.isFinite(numericTs)) return null;
+        return Math.floor((numericTs + BJ_TZ_OFFSET_SECONDS) / 86400);
     };
 
     /** 获取北京时间今天的 0:00 和 24:00 时间戳（秒） */
     const getBJTodayRange = () => {
-        const now = getBJDate();
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const startTs = start.getTime() / 1000 - 8 * 3600; // 转回 UTC 秒级时间戳
-        return { start: startTs, end: startTs + 86400 };
+        const todayParts = getBJDateParts();
+        if (!todayParts) return { start: 0, end: 0 };
+        const start = Math.floor(Date.UTC(todayParts.year, todayParts.month - 1, todayParts.day, -8, 0, 0) / 1000);
+        return { start, end: start + 86400 };
     };
 
     /** 格式化北京时间日期字符串 */
     const formatBJDate = (ts) => {
-        const d = getBJDate(ts);
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const parts = getBJDateParts(ts);
+        if (!parts) return '--';
+        return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
     };
 
     /** 计算两个时间戳之间的天数差（北京时间） */
     const daysBetween = (ts1, ts2) => {
-        const d1 = getBJDate(ts1);
-        const d2 = getBJDate(ts2);
-        const date1 = new Date(d1.getFullYear(), d1.getMonth(), d1.getDate());
-        const date2 = new Date(d2.getFullYear(), d2.getMonth(), d2.getDate());
-        return Math.floor((date2 - date1) / 86400000);
+        const day1 = getBJDaySerial(ts1);
+        const day2 = getBJDaySerial(ts2);
+        if (day1 === null || day2 === null) return 0;
+        return day2 - day1;
     };
 
     /** 格式化数字：每4位加逗号 */
@@ -917,15 +942,16 @@
         return null;
     };
 
+    const fetchTaskTotals = (csrfToken, taskIds) => gmFetch(
+        buildTaskTotalUrl(csrfToken, taskIds)
+    );
+
     // ==========================================
     // 6. 稿件获取与匹配
     // ==========================================
-    const fetchActivityArchives = async () => {
-        if (!STATE.activityInfo || STATE.isLoadingArchives) return;
-        STATE.isLoadingArchives = true;
-        renderArchivesLoading();
-
-        const { id: actId, stime } = STATE.activityInfo;
+    const fetchActivityArchivesByInfo = async (activityInfo) => {
+        if (!activityInfo) return [];
+        const { id: actId, stime } = activityInfo;
         const matched = [];
         let pn = 1;
         const ps = 50;
@@ -963,11 +989,19 @@
         } catch (e) {
             console.error('[任务助手] 获取稿件失败:', e);
         }
+        return matched;
+    };
 
-        STATE.activityArchives = matched;
-        STATE.isLoadingArchives = false;
-        renderSubmitTab();
-        renderSubmissionCard();
+    const refreshActivityArchives = async () => {
+        if (!STATE.activityInfo || STATE.isLoadingArchives) return null;
+        STATE.isLoadingArchives = true;
+        try {
+            const matched = await fetchActivityArchivesByInfo(STATE.activityInfo);
+            STATE.activityArchives = matched;
+            return matched;
+        } finally {
+            STATE.isLoadingArchives = false;
+        }
     };
 
     // ==========================================
@@ -1723,7 +1757,10 @@
         if (STATE.isLoadingArchives) return;
         const btn = getById(DOM_IDS.REFRESH_SUBMISSION_BTN);
         if (btn) btn.classList.add('spinning');
-        fetchActivityArchives().finally(() => {
+        MODULES.view.renderArchivesLoading();
+        MODULES.app.refreshActivityArchives().finally(() => {
+            MODULES.view.renderSubmitTab();
+            MODULES.view.renderSubmissionCard();
             const btn2 = getById(DOM_IDS.REFRESH_SUBMISSION_BTN);
             if (btn2) btn2.classList.remove('spinning');
         });
@@ -1966,17 +2003,23 @@
     };
 
     const MODULES = Object.freeze({
-        activity: Object.freeze({
+        api: Object.freeze({
+            fetchTaskTotals,
+            fetchActivityId,
+            fetchActivityArchivesByInfo,
+        }),
+        domain: Object.freeze({
             parseConfig,
             processTasks,
-            fetchActivityId,
-            fetchActivityArchives,
+            calcActivityStats,
+            checkTodaySubmission,
         }),
-        live: Object.freeze({
+        app: Object.freeze({
+            refreshActivityArchives,
             refreshLiveState,
             updateLiveDurationTexts,
         }),
-        render: Object.freeze({
+        view: Object.freeze({
             render,
             renderLiveStatusCard,
             renderSubmitTab,
@@ -2014,15 +2057,13 @@
         if (STATE.isPolling) return;
         STATE.isPolling = true;
         try {
-            if (!STATE.config.length) STATE.config = MODULES.activity.parseConfig();
+            if (!STATE.config.length) STATE.config = MODULES.domain.parseConfig();
             if (STATE.config.length) {
                 // 去重 task IDs
                 const ids = [...new Set(STATE.config.map(t => t.taskId))];
-                const res = await gmFetch(
-                    buildTaskTotalUrl(getCookie('bili_jct'), ids)
-                );
+                const res = await MODULES.api.fetchTaskTotals(getCookie('bili_jct'), ids);
                 if (res?.code === 0) {
-                    MODULES.render.render(MODULES.activity.processTasks(STATE.config, res.data.list));
+                    MODULES.view.render(MODULES.domain.processTasks(STATE.config, res.data.list));
                     getById(DOM_IDS.CLOCK).innerText = new Date().toLocaleTimeString();
                 }
             }
@@ -2035,14 +2076,14 @@
 
         // 启动直播状态轮询与时长本地计时
         setTimeout(() => {
-            MODULES.live.refreshLiveState(true);
-            setInterval(() => MODULES.live.refreshLiveState(true), LIVE_STATUS_POLL_MS);
-            setInterval(MODULES.live.updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
+            MODULES.app.refreshLiveState(true);
+            setInterval(() => MODULES.app.refreshLiveState(true), LIVE_STATUS_POLL_MS);
+            setInterval(MODULES.app.updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
         }, UI_TIMING.LIVE_BOOT_DELAY_MS);
 
         // 获取活动信息
         try {
-            STATE.activityInfo = await MODULES.activity.fetchActivityId();
+            STATE.activityInfo = await MODULES.api.fetchActivityId();
             if (STATE.activityInfo) {
                 console.log('[任务助手] 匹配到活动:', STATE.activityInfo.name);
             } else {
@@ -2060,7 +2101,7 @@
 
         // 初始获取一次稿件数据
         if (STATE.activityInfo) {
-            setTimeout(() => MODULES.activity.fetchActivityArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
+            setTimeout(() => refreshArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
         }
     };
 
