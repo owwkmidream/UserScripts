@@ -496,10 +496,87 @@
 
     GM_addStyle(STYLES);
 
+    const TASK_TYPE = Object.freeze({
+        DAILY: 'DAILY',
+        SUBMIT: 'SUBMIT',
+        LIVE: 'LIVE',
+        LOTTERY: 'LOTTERY',
+    });
+    const TASK_STATUS = Object.freeze({
+        PENDING: 1,
+        CLAIMABLE: 2,
+        DONE: 3,
+    });
+    const TAB_DEFINITIONS = Object.freeze([
+        { key: TASK_TYPE.SUBMIT, label: '📹 投稿' },
+        { key: TASK_TYPE.LIVE, label: '📺 直播' },
+        { key: TASK_TYPE.LOTTERY, label: '🎡 抽奖' },
+    ]);
+    const DOM_IDS = Object.freeze({
+        DRAWER: 'era-drawer',
+        TOGGLE_PILL: 'era-toggle-pill',
+        CLOSE_BTN: 'era-close',
+        CLOCK: 'era-clock',
+        SCROLL_VIEW: 'era-scroll-view',
+        SEC_DAILY: 'sec-daily',
+        SEC_TABS: 'sec-tabs',
+        GRID_SUBMISSION_CARD: 'grid-submission-card',
+        SUBMIT_BANNER: 'submit-stats-banner',
+        REFRESH_SUBMISSION_BTN: 'btn-refresh-submission',
+        LIVE_TOAST: 'era-live-toast',
+        LIVE_AREA_MODAL: 'era-live-area-modal',
+        LIVE_AREA_OVERLAY: 'era-live-area-overlay',
+        LIVE_PARENT_SELECT: 'era-live-parent-select',
+        LIVE_SUB_SELECT: 'era-live-sub-select',
+        LIVE_HISTORY_LIST: 'era-live-history-list',
+        LIVE_START_CANCEL: 'era-live-start-cancel',
+        LIVE_START_CONFIRM: 'era-live-start-confirm',
+        LIVE_AUTH_MODAL: 'era-live-auth-modal',
+        LIVE_AUTH_OVERLAY: 'era-live-auth-overlay',
+        LIVE_AUTH_CANCEL: 'era-live-auth-cancel',
+        LIVE_AUTH_RETRY: 'era-live-auth-retry',
+        LIVE_AUTH_QRCODE: 'era-live-auth-qrcode',
+        TAB_CONTENT_PREFIX: 'tab-content-',
+        TAB_LIVE_CARD_PREFIX: 'tab-live-card-',
+        LIVE_ACTION_BTN_PREFIX: 'live-action-btn-',
+        GRID_TASK_PREFIX: 'grid-',
+        LIST_TASK_PREFIX: 'list-',
+    });
+    const URLS = Object.freeze({
+        ACTIVITY_HOT_LIST: 'https://api.bilibili.com/x/activity_components/video_activity/hot_activity',
+        TASK_TOTAL_V2: 'https://api.bilibili.com/x/task/totalv2',
+        MEMBER_ARCHIVES: 'https://member.bilibili.com/x/web/archives',
+        AWARD_EXCHANGE: 'https://www.bilibili.com/blackboard/era/award-exchange.html',
+        CREATOR_UPLOAD: 'https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload',
+        LIVE_VERSION: 'https://api.live.bilibili.com/xlive/app-blink/v1/liveVersionInfo/getHomePageLiveVersion?system_version=2',
+        LIVE_ROOM_INFO: 'https://api.live.bilibili.com/xlive/app-blink/v1/room/GetInfo?platform=pc',
+        LIVE_ROOM_EXT: 'https://api.live.bilibili.com/room/v1/Room/get_info',
+        LIVE_AREA_LIST: 'https://api.live.bilibili.com/room/v1/Area/getList?show_pinyin=1',
+        LIVE_START: 'https://api.live.bilibili.com/room/v1/Room/startLive',
+        LIVE_STOP: 'https://api.live.bilibili.com/room/v1/Room/stopLive',
+        LIVE_FACE_AUTH: 'https://www.bilibili.com/blackboard/live/face-auth-middle.html',
+    });
+
     // ==========================================
     // 2. 工具函数
     // ==========================================
     const getCookie = (n) => { const m = document.cookie.match(new RegExp('(^| )' + n + '=([^;]+)')); return m ? m[2] : null; };
+    const getStatusFlags = (status) => ({
+        isClaim: status === TASK_STATUS.CLAIMABLE,
+        isDone: status === TASK_STATUS.DONE,
+    });
+    const getStatusPriority = (status) => (
+        status === TASK_STATUS.CLAIMABLE
+            ? 0
+            : (status === TASK_STATUS.PENDING ? 1 : (status === TASK_STATUS.DONE ? 2 : 1))
+    );
+    const getTaskCardHash = (task) => `${task.status}-${task.cur}`;
+    const buildAwardExchangeUrl = (taskId) => `${URLS.AWARD_EXCHANGE}?task_id=${taskId}`;
+    const buildActivityHotUrl = (pn, ps) => `${URLS.ACTIVITY_HOT_LIST}?pn=${pn}&ps=${ps}`;
+    const buildMemberArchivesUrl = (pn, ps) => `${URLS.MEMBER_ARCHIVES}?status=is_pubing%2Cpubed%2Cnot_pubed&pn=${pn}&ps=${ps}&coop=1&interactive=1`;
+    const buildTaskTotalUrl = (csrf, ids) => `${URLS.TASK_TOTAL_V2}?csrf=${csrf}&task_ids=${ids.join(',')}`;
+    const buildLiveRoomExtUrl = (roomId) => `${URLS.LIVE_ROOM_EXT}?room_id=${roomId}`;
+    const buildLiveFaceAuthUrl = (mid) => `${URLS.LIVE_FACE_AUTH}?source_event=400&mid=${mid}`;
 
     /** 统一使用北京时间 (GMT+8) */
     const getBJDate = (timestamp) => {
@@ -580,7 +657,7 @@
     const STATE = {
         config: [],
         isPolling: false,
-        activeTab: 'SUBMIT',
+        activeTab: TASK_TYPE.SUBMIT,
         activityInfo: null,       // { id, name, stime, etime, actUrl }
         activityArchives: null,   // [{ bvid, title, ptime, view }]
         isLoadingArchives: false,
@@ -665,7 +742,7 @@
         try {
             const response = await makeLiveApiRequest({
                 method: 'GET',
-                url: 'https://api.live.bilibili.com/xlive/app-blink/v1/liveVersionInfo/getHomePageLiveVersion?system_version=2',
+                url: URLS.LIVE_VERSION,
             });
             if (response?.data?.curr_version && response?.data?.build) {
                 STATE.live.versionCache = {
@@ -685,7 +762,7 @@
         if (STATE.live.roomInfo && !forceRefresh) return STATE.live.roomInfo;
         const res = await makeLiveApiRequest({
             method: 'GET',
-            url: 'https://api.live.bilibili.com/xlive/app-blink/v1/room/GetInfo?platform=pc',
+            url: URLS.LIVE_ROOM_INFO,
         });
         STATE.live.roomInfo = res.data || null;
         return STATE.live.roomInfo;
@@ -695,7 +772,7 @@
         if (!roomId) return null;
         const res = await makeLiveApiRequest({
             method: 'GET',
-            url: `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${roomId}`,
+            url: buildLiveRoomExtUrl(roomId),
         });
         STATE.live.roomExtInfo = res.data || null;
         return STATE.live.roomExtInfo;
@@ -705,7 +782,7 @@
         if (STATE.live.areaList) return STATE.live.areaList;
         const res = await makeLiveApiRequest({
             method: 'GET',
-            url: 'https://api.live.bilibili.com/room/v1/Area/getList?show_pinyin=1',
+            url: URLS.LIVE_AREA_LIST,
         });
         STATE.live.areaList = res.data || [];
         return STATE.live.areaList;
@@ -798,7 +875,7 @@
         while (true) {
             try {
                 const res = await gmFetch(
-                    `https://api.bilibili.com/x/activity_components/video_activity/hot_activity?pn=${pn}&ps=${ps}`
+                    buildActivityHotUrl(pn, ps)
                 );
                 if (res?.code !== 0 || !res.data?.list?.length) break;
 
@@ -841,7 +918,7 @@
         try {
             while (true) {
                 const res = await gmFetch(
-                    `https://member.bilibili.com/x/web/archives?status=is_pubing%2Cpubed%2Cnot_pubed&pn=${pn}&ps=${ps}&coop=1&interactive=1`
+                    buildMemberArchivesUrl(pn, ps)
                 );
                 if (res?.code !== 0 || !res.data?.arc_audits?.length) break;
 
@@ -924,7 +1001,12 @@
     const processTasks = (configList, apiList) => {
         const apiMap = {};
         apiList.forEach(i => apiMap[i.task_id] = i);
-        const sections = { DAILY: [], SUBMIT: [], LIVE: [], LOTTERY: [] };
+        const sections = {
+            [TASK_TYPE.DAILY]: [],
+            [TASK_TYPE.SUBMIT]: [],
+            [TASK_TYPE.LIVE]: [],
+            [TASK_TYPE.LOTTERY]: [],
+        };
 
         configList.forEach(conf => {
             const api = apiMap[conf.taskId];
@@ -934,26 +1016,26 @@
                 const cps = api.check_points || [];
                 const ind = api.indicators?.[0] || { cur_value: 0, limit: 1 };
                 const max = cps.length ? cps[cps.length - 1].list[0].limit : ind.limit;
-                const nextRw = cps.find(c => c.status !== 3)?.award_name || '已完成';
-                const done = cps.every(c => c.status === 3);
-                sections.LOTTERY.push({
+                const nextRw = cps.find(c => c.status !== TASK_STATUS.DONE)?.award_name || '已完成';
+                const done = cps.every(c => c.status === TASK_STATUS.DONE);
+                sections[TASK_TYPE.LOTTERY].push({
                     id: conf.taskId, name: conf.taskName,
-                    status: done ? 3 : (cps.some(c => c.status === 2) ? 2 : 1),
+                    status: done ? TASK_STATUS.DONE : (cps.some(c => c.status === TASK_STATUS.CLAIMABLE) ? TASK_STATUS.CLAIMABLE : TASK_STATUS.PENDING),
                     cur: ind.cur_value, total: max, reward: nextRw,
                     percent: Math.min(100, (ind.cur_value / max) * 100),
-                    url: '#', type: 'LOTTERY'
+                    url: '#', type: TASK_TYPE.LOTTERY
                 });
                 return;
             }
 
             if (conf.statisticType === 2 || api.accumulative_check_points?.length) {
                 (api.accumulative_check_points || []).forEach(sub => {
-                    sections.LIVE.push({
+                    sections[TASK_TYPE.LIVE].push({
                         id: sub.sid, name: `累计直播 ${sub.list[0].limit} 天`,
                         status: sub.status, cur: api.accumulative_count, total: sub.list[0].limit,
                         reward: sub.award_name, percent: Math.min(100, (api.accumulative_count / sub.list[0].limit) * 100),
-                        url: `https://www.bilibili.com/blackboard/era/award-exchange.html?task_id=${sub.sid}`,
-                        type: 'LIVE'
+                        url: buildAwardExchangeUrl(sub.sid),
+                        type: TASK_TYPE.LIVE
                     });
                 });
                 return;
@@ -965,8 +1047,8 @@
                 id: conf.taskId, name: conf.taskName, status: api.task_status,
                 cur: cp ? cp.list[0].cur_value : 0, total: cp ? cp.list[0].limit : 1,
                 reward: conf.awardName,
-                url: `https://www.bilibili.com/blackboard/era/award-exchange.html?task_id=${conf.taskId}`,
-                type: isDaily ? 'DAILY' : 'SUBMIT'
+                url: buildAwardExchangeUrl(conf.taskId),
+                type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT
             };
 
             // 投稿类型：从 taskName 解析投稿天数 limit，用累计投稿天数作 cur
@@ -980,7 +1062,7 @@
             }
 
             item.percent = Math.min(100, (item.cur / item.total) * 100);
-            if (isDaily) sections.DAILY.push(item); else sections.SUBMIT.push(item);
+            if (isDaily) sections[TASK_TYPE.DAILY].push(item); else sections[TASK_TYPE.SUBMIT].push(item);
         });
 
         const getFilmVal = (str) => {
@@ -993,10 +1075,10 @@
         };
 
         const sort = (a, b) => {
-            const pA = a.status === 2 ? 0 : (a.status === 1 ? 1 : (a.status === 3 ? 2 : 1));
-            const pB = b.status === 2 ? 0 : (b.status === 1 ? 1 : (b.status === 3 ? 2 : 1));
+            const pA = getStatusPriority(a.status);
+            const pB = getStatusPriority(b.status);
             if (pA !== pB) return pA - pB;
-            if (a.status === 2) {
+            if (a.status === TASK_STATUS.CLAIMABLE) {
                 const vA = getFilmVal(a.reward);
                 const vB = getFilmVal(b.reward);
                 if (vA !== vB) return vB - vA;
@@ -1011,10 +1093,10 @@
     // 8.5 直播管理
     // ==========================================
     const showLiveToast = (message, type = 'info', autoDismiss = true, duration = 3600) => {
-        let toast = document.getElementById('era-live-toast');
+        let toast = document.getElementById(DOM_IDS.LIVE_TOAST);
         if (!toast) {
             toast = document.createElement('div');
-            toast.id = 'era-live-toast';
+            toast.id = DOM_IDS.LIVE_TOAST;
             document.body.appendChild(toast);
         }
         toast.className = type;
@@ -1029,34 +1111,34 @@
     };
 
     const createLiveAreaModal = () => {
-        if (document.getElementById('era-live-area-modal')) return;
+        if (document.getElementById(DOM_IDS.LIVE_AREA_MODAL)) return;
         const html = `
-            <div id="era-live-area-overlay"></div>
-            <div id="era-live-area-modal">
+            <div id="${DOM_IDS.LIVE_AREA_OVERLAY}"></div>
+            <div id="${DOM_IDS.LIVE_AREA_MODAL}">
                 <h3>选择直播分区</h3>
                 <div class="era-live-history">
                     <div class="era-live-history-title">历史分区（优先）</div>
-                    <div class="era-live-history-list" id="era-live-history-list"></div>
+                    <div class="era-live-history-list" id="${DOM_IDS.LIVE_HISTORY_LIST}"></div>
                 </div>
                 <div class="era-live-row">
-                    <label for="era-live-parent-select">父分区</label>
-                    <select id="era-live-parent-select"></select>
+                    <label for="${DOM_IDS.LIVE_PARENT_SELECT}">父分区</label>
+                    <select id="${DOM_IDS.LIVE_PARENT_SELECT}"></select>
                 </div>
                 <div class="era-live-row">
-                    <label for="era-live-sub-select">子分区</label>
-                    <select id="era-live-sub-select"></select>
+                    <label for="${DOM_IDS.LIVE_SUB_SELECT}">子分区</label>
+                    <select id="${DOM_IDS.LIVE_SUB_SELECT}"></select>
                 </div>
                 <div class="era-live-modal-actions">
-                    <button id="era-live-start-cancel">取消</button>
-                    <button id="era-live-start-confirm">开播</button>
+                    <button id="${DOM_IDS.LIVE_START_CANCEL}">取消</button>
+                    <button id="${DOM_IDS.LIVE_START_CONFIRM}">开播</button>
                 </div>
             </div>
         `;
         document.body.insertAdjacentHTML('beforeend', html);
-        const overlay = document.getElementById('era-live-area-overlay');
-        const parentSelect = document.getElementById('era-live-parent-select');
-        const cancelBtn = document.getElementById('era-live-start-cancel');
-        const confirmBtn = document.getElementById('era-live-start-confirm');
+        const overlay = document.getElementById(DOM_IDS.LIVE_AREA_OVERLAY);
+        const parentSelect = document.getElementById(DOM_IDS.LIVE_PARENT_SELECT);
+        const cancelBtn = document.getElementById(DOM_IDS.LIVE_START_CANCEL);
+        const confirmBtn = document.getElementById(DOM_IDS.LIVE_START_CONFIRM);
 
         parentSelect.addEventListener('change', () => {
             populateLiveSubAreas(parentSelect.value);
@@ -1064,7 +1146,7 @@
         overlay.addEventListener('click', hideLiveAreaModal);
         cancelBtn.addEventListener('click', hideLiveAreaModal);
         confirmBtn.addEventListener('click', async () => {
-            const subSelect = document.getElementById('era-live-sub-select');
+            const subSelect = document.getElementById(DOM_IDS.LIVE_SUB_SELECT);
             const selectedSubAreaId = Number(subSelect.value || 0);
             if (!selectedSubAreaId) {
                 showLiveToast('请选择子分区后再开播。', 'warning');
@@ -1085,19 +1167,19 @@
 
     const showLiveAreaModal = () => {
         createLiveAreaModal();
-        document.getElementById('era-live-area-overlay').style.display = 'block';
-        document.getElementById('era-live-area-modal').style.display = 'block';
+        document.getElementById(DOM_IDS.LIVE_AREA_OVERLAY).style.display = 'block';
+        document.getElementById(DOM_IDS.LIVE_AREA_MODAL).style.display = 'block';
     };
 
     const hideLiveAreaModal = () => {
-        const overlay = document.getElementById('era-live-area-overlay');
-        const modal = document.getElementById('era-live-area-modal');
+        const overlay = document.getElementById(DOM_IDS.LIVE_AREA_OVERLAY);
+        const modal = document.getElementById(DOM_IDS.LIVE_AREA_MODAL);
         if (overlay) overlay.style.display = 'none';
         if (modal) modal.style.display = 'none';
     };
 
     const populateLiveParentAreas = (defaultParentId) => {
-        const parentSelect = document.getElementById('era-live-parent-select');
+        const parentSelect = document.getElementById(DOM_IDS.LIVE_PARENT_SELECT);
         if (!parentSelect) return;
         const areas = STATE.live.areaList || [];
         parentSelect.innerHTML = '<option value="">-- 请选择 --</option>';
@@ -1113,7 +1195,7 @@
     };
 
     const populateLiveSubAreas = (parentId, defaultSubId) => {
-        const subSelect = document.getElementById('era-live-sub-select');
+        const subSelect = document.getElementById(DOM_IDS.LIVE_SUB_SELECT);
         if (!subSelect) return;
         subSelect.innerHTML = '<option value="">-- 请选择 --</option>';
         if (!parentId) return;
@@ -1137,14 +1219,14 @@
             showLiveToast('历史分区不可用，可能已下线。', 'warning');
             return;
         }
-        const parentSelect = document.getElementById('era-live-parent-select');
+        const parentSelect = document.getElementById(DOM_IDS.LIVE_PARENT_SELECT);
         if (!parentSelect) return;
         parentSelect.value = String(found.parentId);
         populateLiveSubAreas(found.parentId, found.areaId);
     };
 
     const renderLiveAreaHistory = () => {
-        const wrap = document.getElementById('era-live-history-list');
+        const wrap = document.getElementById(DOM_IDS.LIVE_HISTORY_LIST);
         if (!wrap) return;
         const history = STATE.live.areaHistory || [];
         if (!history.length) {
@@ -1168,7 +1250,7 @@
 
     const showAreaSelectionModal = async () => {
         showLiveAreaModal();
-        const confirmBtn = document.getElementById('era-live-start-confirm');
+        const confirmBtn = document.getElementById(DOM_IDS.LIVE_START_CONFIRM);
         if (confirmBtn) {
             confirmBtn.disabled = true;
             confirmBtn.textContent = '加载中...';
@@ -1197,30 +1279,30 @@
     };
 
     const createLiveAuthModal = () => {
-        if (document.getElementById('era-live-auth-modal')) return;
+        if (document.getElementById(DOM_IDS.LIVE_AUTH_MODAL)) return;
         const html = `
-            <div id="era-live-auth-overlay"></div>
-            <div id="era-live-auth-modal">
+            <div id="${DOM_IDS.LIVE_AUTH_OVERLAY}"></div>
+            <div id="${DOM_IDS.LIVE_AUTH_MODAL}">
                 <h3>身份验证</h3>
                 <p>请使用 B 站 App 扫码完成身份验证，然后点击“我已验证”。</p>
-                <div id="era-live-auth-qrcode"></div>
+                <div id="${DOM_IDS.LIVE_AUTH_QRCODE}"></div>
                 <div class="era-live-modal-actions">
-                    <button id="era-live-auth-cancel">取消</button>
-                    <button id="era-live-auth-retry">我已验证</button>
+                    <button id="${DOM_IDS.LIVE_AUTH_CANCEL}">取消</button>
+                    <button id="${DOM_IDS.LIVE_AUTH_RETRY}">我已验证</button>
                 </div>
             </div>
         `;
         document.body.insertAdjacentHTML('beforeend', html);
-        document.getElementById('era-live-auth-overlay').addEventListener('click', hideLiveAuthModal);
-        document.getElementById('era-live-auth-cancel').addEventListener('click', hideLiveAuthModal);
+        document.getElementById(DOM_IDS.LIVE_AUTH_OVERLAY).addEventListener('click', hideLiveAuthModal);
+        document.getElementById(DOM_IDS.LIVE_AUTH_CANCEL).addEventListener('click', hideLiveAuthModal);
     };
 
     const showAuthQRCodeModal = (authUrl, roomId, areaV2) => {
         createLiveAuthModal();
-        const overlay = document.getElementById('era-live-auth-overlay');
-        const modal = document.getElementById('era-live-auth-modal');
-        const container = document.getElementById('era-live-auth-qrcode');
-        const retryBtn = document.getElementById('era-live-auth-retry');
+        const overlay = document.getElementById(DOM_IDS.LIVE_AUTH_OVERLAY);
+        const modal = document.getElementById(DOM_IDS.LIVE_AUTH_MODAL);
+        const container = document.getElementById(DOM_IDS.LIVE_AUTH_QRCODE);
+        const retryBtn = document.getElementById(DOM_IDS.LIVE_AUTH_RETRY);
         container.innerHTML = '';
         new QRCode(container, {
             text: authUrl,
@@ -1238,8 +1320,8 @@
     };
 
     const hideLiveAuthModal = () => {
-        const overlay = document.getElementById('era-live-auth-overlay');
-        const modal = document.getElementById('era-live-auth-modal');
+        const overlay = document.getElementById(DOM_IDS.LIVE_AUTH_OVERLAY);
+        const modal = document.getElementById(DOM_IDS.LIVE_AUTH_MODAL);
         if (overlay) overlay.style.display = 'none';
         if (modal) modal.style.display = 'none';
     };
@@ -1253,7 +1335,7 @@
         }
 
         STATE.live.isOperating = true;
-        renderLiveStatusCard('LIVE');
+        renderLiveStatusCard(TASK_TYPE.LIVE);
 
         const APP_KEY = 'aae92bc66f3edfab';
         const APP_SECRET = 'af125a0d5279fd576c1b4418a3e8276d';
@@ -1279,7 +1361,7 @@
 
             await makeLiveApiRequest({
                 method: 'POST',
-                url: 'https://api.live.bilibili.com/room/v1/Room/startLive',
+                url: URLS.LIVE_START,
                 data: formData.toString(),
             });
 
@@ -1292,7 +1374,7 @@
         } catch (e) {
             console.error('[任务助手] 开播失败:', e);
             if (String(e.message || '').includes('60024')) {
-                const faceAuthUrl = `https://www.bilibili.com/blackboard/live/face-auth-middle.html?source_event=400&mid=${dedeUserID}`;
+                const faceAuthUrl = buildLiveFaceAuthUrl(dedeUserID);
                 hideLiveAreaModal();
                 showAuthQRCodeModal(faceAuthUrl, roomId, areaV2);
                 showLiveToast('该分区要求身份验证，请先扫码。', 'warning', false);
@@ -1302,7 +1384,7 @@
             return false;
         } finally {
             STATE.live.isOperating = false;
-            renderLiveStatusCard('LIVE');
+            renderLiveStatusCard(TASK_TYPE.LIVE);
         }
     };
 
@@ -1313,7 +1395,7 @@
             return;
         }
         STATE.live.isOperating = true;
-        renderLiveStatusCard('LIVE');
+        renderLiveStatusCard(TASK_TYPE.LIVE);
         try {
             const roomData = await fetchLiveRoomInfo(true);
             if (!roomData?.room_id) {
@@ -1328,7 +1410,7 @@
 
             const data = await makeLiveApiRequest({
                 method: 'POST',
-                url: 'https://api.live.bilibili.com/room/v1/Room/stopLive',
+                url: URLS.LIVE_STOP,
                 data: formData.toString(),
             });
             if (data.code === 160000 || data.msg === '重复关播') {
@@ -1342,7 +1424,7 @@
             showLiveToast(`关播失败：${e.message || e}`, 'error');
         } finally {
             STATE.live.isOperating = false;
-            renderLiveStatusCard('LIVE');
+            renderLiveStatusCard(TASK_TYPE.LIVE);
         }
     };
 
@@ -1370,7 +1452,7 @@
             STATE.live.lastError = e.message || '刷新直播状态失败';
         } finally {
             STATE.live.isRefreshing = false;
-            renderLiveStatusCard('LIVE');
+            renderLiveStatusCard(TASK_TYPE.LIVE);
             updateLiveDurationTexts();
         }
     };
@@ -1384,10 +1466,10 @@
     };
 
     const renderLiveStatusCard = (tabKey) => {
-        const content = document.getElementById(`tab-content-${tabKey}`);
+        const content = document.getElementById(`${DOM_IDS.TAB_CONTENT_PREFIX}${tabKey}`);
         if (!content) return;
 
-        const cardId = `tab-live-card-${tabKey}`;
+        const cardId = `${DOM_IDS.TAB_LIVE_CARD_PREFIX}${tabKey}`;
         let card = document.getElementById(cardId);
         if (!card) {
             card = document.createElement('div');
@@ -1428,7 +1510,7 @@
                     <div class="wide-card-title">📡 直播状态</div>
                     <span class="live-state-text">${subText}</span>
                 </div>
-                <button class="live-action-btn ${isLive ? 'stop' : 'start'}" id="live-action-btn-${tabKey}" ${STATE.live.isOperating ? 'disabled' : ''}>
+                <button class="live-action-btn ${isLive ? 'stop' : 'start'}" id="${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}" ${STATE.live.isOperating ? 'disabled' : ''}>
                     ${STATE.live.isOperating ? '处理中' : (isLive ? '关播' : '开播')}
                 </button>
                 <div class="live-card-area" title="${areaText}">分区 ${areaText}</div>
@@ -1444,7 +1526,7 @@
             content.prepend(card);
         }
 
-        const btn = document.getElementById(`live-action-btn-${tabKey}`);
+        const btn = document.getElementById(`${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}`);
         if (btn) {
             btn.onclick = async (e) => {
                 e.preventDefault();
@@ -1462,13 +1544,31 @@
     // ==========================================
     // 9. 渲染引擎
     // ==========================================
+    const ensureSubmitBanner = () => {
+        const content = document.getElementById(`${DOM_IDS.TAB_CONTENT_PREFIX}${TASK_TYPE.SUBMIT}`);
+        if (!content) return null;
+        let banner = document.getElementById(DOM_IDS.SUBMIT_BANNER);
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = DOM_IDS.SUBMIT_BANNER;
+            content.insertBefore(banner, content.firstChild);
+        }
+        return banner;
+    };
+    const updateTaskCardByHash = (card, cls, html, hash) => {
+        if (card.dataset.hash === hash) return;
+        card.className = `${cls} highlight-flash`;
+        card.innerHTML = html;
+        card.dataset.hash = hash;
+        setTimeout(() => card.classList.remove('highlight-flash'), 800);
+    };
 
     /** 渲染投稿打卡大卡片（在每日必做区域） */
     const renderSubmissionCard = () => {
-        const grid = document.querySelector('#sec-daily .era-grid');
+        const grid = document.querySelector(`#${DOM_IDS.SEC_DAILY} .era-grid`);
         if (!grid) return;
 
-        let card = document.getElementById('grid-submission-card');
+        let card = document.getElementById(DOM_IDS.GRID_SUBMISSION_CARD);
         const { submitted, dayNum } = checkTodaySubmission();
         const loading = STATE.isLoadingArchives;
         const noActivity = !STATE.activityInfo;
@@ -1509,13 +1609,13 @@
             </div>
             <div class="wide-card-right">
                 ${iconHtml ? `<div class="wide-card-icon">${iconHtml}</div>` : ''}
-                <div class="wide-card-refresh" id="btn-refresh-submission" title="刷新投稿状态">${ICONS.REFRESH}</div>
+                <div class="wide-card-refresh" id="${DOM_IDS.REFRESH_SUBMISSION_BTN}" title="刷新投稿状态">${ICONS.REFRESH}</div>
             </div>
         `;
 
         if (!card) {
             card = document.createElement('div');
-            card.id = 'grid-submission-card';
+            card.id = DOM_IDS.GRID_SUBMISSION_CARD;
             grid.appendChild(card);
             card.addEventListener('click', (e) => {
                 // 点击卡片任意位置
@@ -1523,7 +1623,7 @@
 
                 // v5.3: 未完成时跳转投稿页
                 if (!submitted) {
-                    window.open('https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload', '_blank');
+                    window.open(URLS.CREATOR_UPLOAD, '_blank');
                 } else {
                     refreshArchives();
                 }
@@ -1535,7 +1635,7 @@
         card.innerHTML = html;
 
         // 绑定刷新按钮事件（虽然整体可点，但保留单独按钮逻辑以防万一）
-        const btn = card.querySelector('#btn-refresh-submission');
+        const btn = card.querySelector(`#${DOM_IDS.REFRESH_SUBMISSION_BTN}`);
         if (btn) btn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
             refreshArchives();
@@ -1545,24 +1645,18 @@
     /** 刷新稿件数据 */
     const refreshArchives = () => {
         if (STATE.isLoadingArchives) return;
-        const btn = document.getElementById('btn-refresh-submission');
+        const btn = document.getElementById(DOM_IDS.REFRESH_SUBMISSION_BTN);
         if (btn) btn.classList.add('spinning');
         fetchActivityArchives().finally(() => {
-            const btn2 = document.getElementById('btn-refresh-submission');
+            const btn2 = document.getElementById(DOM_IDS.REFRESH_SUBMISSION_BTN);
             if (btn2) btn2.classList.remove('spinning');
         });
     };
 
     /** 渲染投稿 Tab 加载状态 */
     const renderArchivesLoading = () => {
-        const content = document.getElementById('tab-content-SUBMIT');
-        if (!content) return;
-        let banner = document.getElementById('submit-stats-banner');
-        if (!banner) {
-            banner = document.createElement('div');
-            banner.id = 'submit-stats-banner';
-            content.insertBefore(banner, content.firstChild);
-        }
+        const banner = ensureSubmitBanner();
+        if (!banner) return;
         banner.className = 'submit-stats-banner';
         // v5.3: 保持布局骨架，但这有点复杂，直接显示 Loading 即可
         // 由于设置了 min-height，高度不会跳动
@@ -1596,15 +1690,8 @@
 
     /** 渲染投稿 Tab 统计 Banner */
     const renderSubmitTab = () => {
-        const content = document.getElementById('tab-content-SUBMIT');
-        if (!content) return;
-
-        let banner = document.getElementById('submit-stats-banner');
-        if (!banner) {
-            banner = document.createElement('div');
-            banner.id = 'submit-stats-banner';
-            content.insertBefore(banner, content.firstChild);
-        }
+        const banner = ensureSubmitBanner();
+        if (!banner) return;
 
         if (!STATE.activityInfo) {
             banner.className = 'submit-stats-banner';
@@ -1656,11 +1743,11 @@
 
     /** 主渲染函数 */
     const render = (sections) => {
-        const container = document.getElementById('era-scroll-view');
+        const container = document.getElementById(DOM_IDS.SCROLL_VIEW);
         if (!container) return;
 
         // ---- Daily Grid ----
-        renderGrid(sections.DAILY, container);
+        renderGrid(sections[TASK_TYPE.DAILY], container);
 
         // ---- Tabs ----
         renderTabs(sections, container);
@@ -1668,10 +1755,10 @@
 
     /** 渲染每日必做四宫格 */
     const renderGrid = (items, container) => {
-        let el = document.getElementById('sec-daily');
+        let el = document.getElementById(DOM_IDS.SEC_DAILY);
         if (!items.length && !STATE.activityInfo) { if (el) el.style.display = 'none'; return; }
         if (!el) {
-            el = document.createElement('div'); el.id = 'sec-daily';
+            el = document.createElement('div'); el.id = DOM_IDS.SEC_DAILY;
             el.innerHTML = `<div class="section-title">📅 每日必做</div><div class="era-grid"></div>`;
             container.appendChild(el);
         }
@@ -1679,8 +1766,8 @@
         const grid = el.querySelector('.era-grid');
 
         items.forEach(t => {
-            let card = document.getElementById(`grid-${t.id}`);
-            const isClaim = t.status === 2, isDone = t.status === 3;
+            let card = document.getElementById(`${DOM_IDS.GRID_TASK_PREFIX}${t.id}`);
+            const { isClaim, isDone } = getStatusFlags(t.status);
             const pColor = isClaim ? '#45bd63' : (isDone ? '#ddd' : '#00aeec');
 
             const html = `
@@ -1694,14 +1781,13 @@
                 <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${t.percent}%; background:${pColor}"></div></div>
             `;
             const cls = `grid-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
-            const hash = `${t.status}-${t.cur}`;
+            const hash = getTaskCardHash(t);
             if (!card) {
-                card = document.createElement('a'); card.id = `grid-${t.id}`; card.className = cls;
+                card = document.createElement('a'); card.id = `${DOM_IDS.GRID_TASK_PREFIX}${t.id}`; card.className = cls;
                 card.href = t.url; card.target = '_blank'; card.innerHTML = html; card.dataset.hash = hash;
                 grid.appendChild(card);
-            } else if (card.dataset.hash !== hash) {
-                card.className = `${cls} highlight-flash`; card.innerHTML = html; card.dataset.hash = hash;
-                setTimeout(() => card.classList.remove('highlight-flash'), 800);
+            } else {
+                updateTaskCardByHash(card, cls, html, hash);
             }
         });
 
@@ -1711,21 +1797,15 @@
 
     /** 渲染 Tabs 标签系统 */
     const renderTabs = (sections, container) => {
-        let tabsWrapper = document.getElementById('sec-tabs');
+        let tabsWrapper = document.getElementById(DOM_IDS.SEC_TABS);
         if (!tabsWrapper) {
             tabsWrapper = document.createElement('div');
-            tabsWrapper.id = 'sec-tabs';
-
-            const tabsDef = [
-                { key: 'SUBMIT', label: '📹 投稿' },
-                { key: 'LIVE', label: '📺 直播' },
-                { key: 'LOTTERY', label: '🎡 抽奖' },
-            ];
+            tabsWrapper.id = DOM_IDS.SEC_TABS;
 
             // 标签栏
             const tabBar = document.createElement('div');
             tabBar.className = 'era-tabs';
-            tabsDef.forEach(td => {
+            TAB_DEFINITIONS.forEach(td => {
                 const btn = document.createElement('button');
                 btn.className = `era-tab ${STATE.activeTab === td.key ? 'active' : ''}`;
                 btn.dataset.tab = td.key;
@@ -1736,9 +1816,9 @@
             tabsWrapper.appendChild(tabBar);
 
             // 标签内容区
-            tabsDef.forEach(td => {
+            TAB_DEFINITIONS.forEach(td => {
                 const content = document.createElement('div');
-                content.id = `tab-content-${td.key}`;
+                content.id = `${DOM_IDS.TAB_CONTENT_PREFIX}${td.key}`;
                 content.className = `era-tab-content ${STATE.activeTab === td.key ? 'active' : ''}`;
                 tabsWrapper.appendChild(content);
             });
@@ -1746,14 +1826,14 @@
             container.appendChild(tabsWrapper);
         }
         // 渲染各 Tab 内容
-        renderTabList('SUBMIT', sections.SUBMIT);
+        renderTabList(TASK_TYPE.SUBMIT, sections[TASK_TYPE.SUBMIT]);
         renderSubmitTab(); // 渲染投稿Card
-        renderTabList('LIVE', sections.LIVE);
-        renderTabList('LOTTERY', sections.LOTTERY);
-        const submitLiveCard = document.getElementById('tab-live-card-SUBMIT');
+        renderTabList(TASK_TYPE.LIVE, sections[TASK_TYPE.LIVE]);
+        renderTabList(TASK_TYPE.LOTTERY, sections[TASK_TYPE.LOTTERY]);
+        const submitLiveCard = document.getElementById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.SUBMIT}`);
         if (submitLiveCard) submitLiveCard.remove();
-        if (!document.getElementById('tab-live-card-LIVE')) {
-            renderLiveStatusCard('LIVE');
+        if (!document.getElementById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.LIVE}`)) {
+            renderLiveStatusCard(TASK_TYPE.LIVE);
         }
     };
 
@@ -1766,23 +1846,23 @@
             btn.classList.toggle('active', btn.dataset.tab === key);
         });
         document.querySelectorAll('.era-tab-content').forEach(el => {
-            el.classList.toggle('active', el.id === `tab-content-${key}`);
+            el.classList.toggle('active', el.id === `${DOM_IDS.TAB_CONTENT_PREFIX}${key}`);
         });
 
         // 切换到投稿 Tab 时刷新数据
-        if (key === 'SUBMIT') {
+        if (key === TASK_TYPE.SUBMIT) {
             refreshArchives();
         }
     };
 
     /** 渲染单个 Tab 内的列表 */
     const renderTabList = (tabKey, items) => {
-        const content = document.getElementById(`tab-content-${tabKey}`);
+        const content = document.getElementById(`${DOM_IDS.TAB_CONTENT_PREFIX}${tabKey}`);
         if (!content) return;
 
         items.forEach(t => {
-            let card = document.getElementById(`list-${t.id}`);
-            const isClaim = t.status === 2, isDone = t.status === 3;
+            let card = document.getElementById(`${DOM_IDS.LIST_TASK_PREFIX}${t.id}`);
+            const { isClaim, isDone } = getStatusFlags(t.status);
             const btnText = isClaim ? '领取' : (isDone ? '已完成' : '去完成');
             const btnCls = isClaim ? 'btn-claim' : '';
 
@@ -1797,19 +1877,18 @@
                     </div>
                     <div class="list-btn ${btnCls}">${btnText}</div>
                 </div>
-                ${(t.type === 'LIVE' || t.type === 'LOTTERY' || t.type === 'SUBMIT') ? `
+                ${(t.type === TASK_TYPE.LIVE || t.type === TASK_TYPE.LOTTERY || t.type === TASK_TYPE.SUBMIT) ? `
                 <div class="full-progress"><div class="full-bar" style="width:${t.percent}%"></div></div>
                 ` : ''}
             `;
             const cls = `list-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
-            const hash = `${t.status}-${t.cur}`;
+            const hash = getTaskCardHash(t);
             if (!card) {
-                card = document.createElement('a'); card.id = `list-${t.id}`; card.className = cls;
+                card = document.createElement('a'); card.id = `${DOM_IDS.LIST_TASK_PREFIX}${t.id}`; card.className = cls;
                 card.href = t.url; card.target = '_blank'; card.innerHTML = html; card.dataset.hash = hash;
                 content.appendChild(card);
-            } else if (card.dataset.hash !== hash) {
-                card.className = `${cls} highlight-flash`; card.innerHTML = html; card.dataset.hash = hash;
-                setTimeout(() => card.classList.remove('highlight-flash'), 800);
+            } else {
+                updateTaskCardByHash(card, cls, html, hash);
             }
         });
     };
@@ -1820,23 +1899,23 @@
     const init = () => {
         const div = document.createElement('div');
         div.innerHTML = `
-            <div id="era-drawer">
+            <div id="${DOM_IDS.DRAWER}">
                 <div class="era-header">
                     <div class="era-title">任务助手</div>
-                    <div id="era-close" style="cursor:pointer; opacity:0.5; font-size:18px">×</div>
+                    <div id="${DOM_IDS.CLOSE_BTN}" style="cursor:pointer; opacity:0.5; font-size:18px">×</div>
                 </div>
-                <div class="era-scroll" id="era-scroll-view"></div>
-                <div class="era-footer">刷新时间：<span id="era-clock">--:--:--</span></div>
+                <div class="era-scroll" id="${DOM_IDS.SCROLL_VIEW}"></div>
+                <div class="era-footer">刷新时间：<span id="${DOM_IDS.CLOCK}">--:--:--</span></div>
             </div>
-            <div id="era-toggle-pill">◀ 面板</div>
+            <div id="${DOM_IDS.TOGGLE_PILL}">◀ 面板</div>
         `;
         document.body.appendChild(div);
 
-        const drawer = document.getElementById('era-drawer');
-        const pill = document.getElementById('era-toggle-pill');
+        const drawer = document.getElementById(DOM_IDS.DRAWER);
+        const pill = document.getElementById(DOM_IDS.TOGGLE_PILL);
 
         pill.onclick = () => drawer.classList.toggle('hidden');
-        document.getElementById('era-close').onclick = () => drawer.classList.add('hidden');
+        document.getElementById(DOM_IDS.CLOSE_BTN).onclick = () => drawer.classList.add('hidden');
     };
 
     const loop = async () => {
@@ -1848,11 +1927,11 @@
                 // 去重 task IDs
                 const ids = [...new Set(STATE.config.map(t => t.taskId))];
                 const res = await gmFetch(
-                    `https://api.bilibili.com/x/task/totalv2?csrf=${getCookie('bili_jct')}&task_ids=${ids.join(',')}`
+                    buildTaskTotalUrl(getCookie('bili_jct'), ids)
                 );
                 if (res?.code === 0) {
                     render(processTasks(STATE.config, res.data.list));
-                    document.getElementById('era-clock').innerText = new Date().toLocaleTimeString();
+                    document.getElementById(DOM_IDS.CLOCK).innerText = new Date().toLocaleTimeString();
                 }
             }
         } catch (e) { console.error(e); }
