@@ -1,0 +1,12 @@
+{
+  "name": "bili-era-task-helper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rolldown -c",
+    "build:watch": "rolldown -c -w"
+  },
+  "devDependencies": {
+    "rolldown": "^1.0.0-beta.0"
+  }
+}
