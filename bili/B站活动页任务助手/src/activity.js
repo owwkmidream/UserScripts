@@ -52,6 +52,15 @@ const fetchTaskTotals = (csrfToken, taskIds) => gmFetch(
 // ==========================================
 // 6. 稿件获取与匹配
 // ==========================================
+const isArchiveAbnormal = (arc) => {
+    if (!arc) return true;
+    const state = Number(arc.state);
+    if (!Number.isFinite(state)) return true;
+    return state < 0;
+};
+
+const isCountableArchive = (archive) => archive?.isAbnormal !== true;
+
 const fetchActivityArchivesByInfo = async (activityInfo) => {
     if (!activityInfo) return [];
     const { id: actId, stime } = activityInfo;
@@ -82,6 +91,7 @@ const fetchActivityArchivesByInfo = async (activityInfo) => {
                         title: arc.title,
                         ptime: arc.ptime,
                         view: stat?.view || 0,
+                        isAbnormal: isArchiveAbnormal(arc),
                     });
                 }
             }
@@ -114,15 +124,16 @@ const calcActivityStats = () => {
     if (!STATE.activityInfo || !STATE.activityArchives) return null;
     const { stime, etime } = STATE.activityInfo;
     const archives = STATE.activityArchives;
+    const validArchives = archives.filter(isCountableArchive);
 
     // 当前北京时间
     const nowTs = Math.floor(Date.now() / 1000);
     // 活动进行到第几天
     const activityDays = daysBetween(stime, Math.min(nowTs, etime)) + 1;
     // 总播放量
-    const totalViews = archives.reduce((sum, a) => sum + a.view, 0);
+    const totalViews = validArchives.reduce((sum, a) => sum + a.view, 0);
     // 累计参加天数（独立日期数）
-    const uniqueDays = new Set(archives.map(a => formatBJDate(a.ptime))).size;
+    const uniqueDays = new Set(validArchives.map(a => formatBJDate(a.ptime))).size;
 
     return { activityDays, totalViews, uniqueDays };
 };
@@ -130,7 +141,9 @@ const calcActivityStats = () => {
 const checkTodaySubmission = () => {
     if (!STATE.activityArchives) return { submitted: false, dayNum: 0 };
     const { start, end } = getBJTodayRange();
-    const submitted = STATE.activityArchives.some(a => a.ptime >= start && a.ptime < end);
+    const submitted = STATE.activityArchives.some(
+        (a) => isCountableArchive(a) && a.ptime >= start && a.ptime < end
+    );
     const dayNum = STATE.activityInfo
         ? daysBetween(STATE.activityInfo.stime, Math.floor(Date.now() / 1000)) + 1
         : 0;
