@@ -3,7 +3,7 @@ import { fetchActivityId, fetchTaskTotals } from './activity.js';
 import { refreshLiveState, updateLiveDurationTexts } from './live.js';
 import { render, refreshArchives } from './render.js';
 import { STATE } from './state.js';
-import { parseConfig, processTasks } from './tasks.js';
+import { parseConfig, parseTaskContext, processTasks } from './tasks.js';
 import { getById, getCookie, LIVE_DURATION_TICK_MS, LIVE_STATUS_POLL_MS } from './utils.js';
 
 const init = () => {
@@ -32,12 +32,17 @@ const loop = async () => {
     if (STATE.isPolling) return;
     STATE.isPolling = true;
     try {
-        if (!STATE.config.length) STATE.config = parseConfig();
+        if (!STATE.taskContext.activityId || !STATE.taskContext.activityName) {
+            STATE.taskContext = parseTaskContext();
+        }
+        if (!STATE.config.length) {
+            STATE.config = parseConfig();
+        }
         if (STATE.config.length) {
             const ids = [...new Set(STATE.config.map((t) => t.taskId))];
             const res = await fetchTaskTotals(getCookie('bili_jct'), ids);
             if (res?.code === 0) {
-                render(processTasks(STATE.config, res.data.list));
+                render(processTasks(STATE.config, res.data.list, STATE.taskContext));
                 getById(DOM_IDS.CLOCK).innerText = new Date().toLocaleTimeString();
             }
         }
@@ -50,6 +55,7 @@ const loop = async () => {
 
 export const start = async () => {
     init();
+    window.addEventListener('era:task-reload', loop);
 
     setTimeout(() => {
         refreshLiveState(true);

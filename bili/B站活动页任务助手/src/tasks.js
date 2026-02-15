@@ -15,6 +15,24 @@ const parseConfig = () => {
     return t;
 };
 
+const pickString = (...vals) => vals.find(v => typeof v === 'string' && v.trim());
+
+const parseTaskContext = () => {
+    const s = unsafeWindow.__initialState || {};
+    const pageInfo = unsafeWindow.__BILIACT_PAGEINFO || {};
+    const activityId = pickString(
+        pageInfo.activity_id,
+        s.activity_id,
+        s.EraLotteryPc?.[0]?.config?.activity_id
+    ) || '';
+    const activityName = pickString(
+        pageInfo.title,
+        pageInfo.shareTitle,
+        s.BaseInfo?.title
+    ) || '';
+    return { activityId, activityName };
+};
+
 const createTaskSections = () => ({
     [TASK_TYPE.DAILY]: [],
     [TASK_TYPE.SUBMIT]: [],
@@ -64,6 +82,11 @@ const buildBaseTaskItem = (conf, api) => {
             reward: conf.awardName,
             url: buildAwardExchangeUrl(conf.taskId),
             type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT,
+            claimMeta: {
+                taskId: conf.taskId || '',
+                taskName: conf.taskName || '',
+                rewardName: conf.awardName || '',
+            },
         },
     };
 };
@@ -96,7 +119,7 @@ const sortTaskSectionList = (list) => {
         return 0;
     });
 };
-const processTasks = (configList, apiList) => {
+const processTasks = (configList, apiList, taskContext = {}) => {
     const apiMap = {};
     apiList.forEach((i) => {
         apiMap[i.task_id] = i;
@@ -118,6 +141,10 @@ const processTasks = (configList, apiList) => {
         }
 
         const { item, isDaily } = buildBaseTaskItem(conf, api);
+        if (item.claimMeta) {
+            item.claimMeta.activityId = conf.activityId || taskContext.activityId || '';
+            item.claimMeta.activityName = conf.activityName || taskContext.activityName || '';
+        }
         if (!isDaily) {
             applySubmitProgressFromTaskName(item, conf.taskName);
         }
@@ -131,5 +158,6 @@ const processTasks = (configList, apiList) => {
 
 export {
     parseConfig,
+    parseTaskContext,
     processTasks,
 };

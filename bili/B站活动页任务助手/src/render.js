@@ -3,6 +3,7 @@ import { STATE } from './state.js';
 import { formatViews, getById, getStatusFlags, getTaskCardHash } from './utils.js';
 import {
     calcActivityStats,
+    claimMissionReward,
     checkTodaySubmission,
     refreshActivityArchives,
 } from './activity.js';
@@ -22,6 +23,21 @@ const ensureSubmitBanner = () => {
     }
     return banner;
 };
+const showTaskToast = (message, type = 'info', duration = 2800) => {
+    let toast = getById(DOM_IDS.LIVE_TOAST);
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = DOM_IDS.LIVE_TOAST;
+        document.body.appendChild(toast);
+    }
+    toast.className = type;
+    toast.textContent = message;
+    toast.style.display = 'block';
+    if (toast._timer) clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => {
+        toast.style.display = 'none';
+    }, duration);
+};
 const setSubmitBannerContent = (banner, html) => {
     banner.className = 'submit-stats-banner';
     banner.innerHTML = html;
@@ -39,7 +55,7 @@ const upsertTaskAnchorCard = ({ id, container, cls, hash, html, href }) => {
         card = document.createElement('a');
         card.id = id;
         card.className = cls;
-        card.href = href;
+        card.href = href || '#';
         card.target = '_blank';
         card.innerHTML = html;
         card.dataset.hash = hash;
@@ -47,6 +63,7 @@ const upsertTaskAnchorCard = ({ id, container, cls, hash, html, href }) => {
         return card;
     }
     updateTaskCardByHash(card, cls, html, hash);
+    card.href = href || '#';
     return card;
 };
 const SUBMISSION_CARD_ICONS = Object.freeze({
@@ -246,12 +263,12 @@ const render = (sections) => {
     // ---- Tabs ----
     renderTabs(sections, container);
 };
-const buildGridTaskCardHtml = (task, isClaim, isDone, progressColor) => `
+const buildGridTaskCardHtml = (task, isClaim, isDone, progressColor, isClaiming = false) => `
     <div class="grid-title">${task.name.replace('当日', '').replace('直播间', '')}</div>
     <div class="grid-status">
         <span>${isDone ? 'Finished' : `${task.cur} / ${task.total}`}</span>
         <span style="font-weight:bold; color:${isClaim ? '#faad14' : (isDone ? '#aaa' : '#00aeec')}">
-            ${isClaim ? '待领' : (isDone ? '✓' : '进行中')}
+            ${isClaiming ? '领取中' : (isClaim ? '待领' : (isDone ? '✓' : '进行中'))}
         </span>
     </div>
     <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${task.percent}%; background:${progressColor}"></div></div>
@@ -272,6 +289,51 @@ const buildListTaskCardHtml = (task, btnCls, btnText) => `
     ` : ''}
 `;
 
+const triggerTaskReload = () => {
+    window.dispatchEvent(new CustomEvent('era:task-reload'));
+};
+
+const bindDailyTaskCardAction = (card, task, isClaim) => {
+    const isClaimableDaily = task.type === TASK_TYPE.DAILY && isClaim;
+    if (!isClaimableDaily) {
+        card.target = '_blank';
+        card.onclick = null;
+        return;
+    }
+
+    card.target = '_self';
+    card.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const taskKey = String(task.id || '');
+        if (!taskKey) {
+            showTaskToast('任务ID缺失，无法领取', 'error');
+            return;
+        }
+        if (STATE.claimingTaskIds.has(taskKey)) {
+            showTaskToast('正在领取中，请稍候...', 'info', 1600);
+            return;
+        }
+
+        STATE.claimingTaskIds.add(taskKey);
+        showTaskToast(`正在领取：${task.name}`, 'info', 1600);
+        triggerTaskReload();
+
+        try {
+            const res = await claimMissionReward(task, STATE.taskContext);
+            if (res.ok) {
+                showTaskToast(`领取成功：${task.reward || task.name}`, 'success');
+            } else {
+                showTaskToast(`领取失败：${res.message}`, res.type || 'warning', 3800);
+            }
+        } finally {
+            STATE.claimingTaskIds.delete(taskKey);
+            triggerTaskReload();
+        }
+    };
+};
+
 /** 渲染每日必做四宫格 */
 const renderGrid = (items, container) => {
     let el = getById(DOM_IDS.SEC_DAILY);
@@ -286,11 +348,12 @@ const renderGrid = (items, container) => {
 
     items.forEach(t => {
         const { isClaim, isDone } = getStatusFlags(t.status);
+        const isClaiming = STATE.claimingTaskIds.has(String(t.id || ''));
         const pColor = isClaim ? '#45bd63' : (isDone ? '#ddd' : '#00aeec');
-        const html = buildGridTaskCardHtml(t, isClaim, isDone, pColor);
+        const html = buildGridTaskCardHtml(t, isClaim, isDone, pColor, isClaiming);
         const cls = `grid-card ${isClaim ? 'status-claim' : ''} ${isDone ? 'status-done' : ''}`;
-        const hash = getTaskCardHash(t);
-        upsertTaskAnchorCard({
+        const hash = `${getTaskCardHash(t)}-${isClaiming ? 1 : 0}`;
+        const card = upsertTaskAnchorCard({
             id: `${DOM_IDS.GRID_TASK_PREFIX}${t.id}`,
             container: grid,
             cls,
@@ -298,6 +361,7 @@ const renderGrid = (items, container) => {
             html,
             href: t.url,
         });
+        bindDailyTaskCardAction(card, t, isClaim);
     });
 
     // 渲染投稿打卡大卡片

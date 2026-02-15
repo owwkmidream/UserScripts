@@ -79,7 +79,9 @@
 	});
 	const URLS = Object.freeze({
 		ACTIVITY_HOT_LIST: "https://api.bilibili.com/x/activity_components/video_activity/hot_activity",
+		WEB_NAV: "https://api.bilibili.com/x/web-interface/nav",
 		TASK_TOTAL_V2: "https://api.bilibili.com/x/task/totalv2",
+		MISSION_RECEIVE: "https://api.bilibili.com/x/activity_components/mission/receive",
 		MEMBER_ARCHIVES: "https://member.bilibili.com/x/web/archives",
 		AWARD_EXCHANGE: "https://www.bilibili.com/blackboard/era/award-exchange.html",
 		CREATOR_UPLOAD: "https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload",
@@ -192,6 +194,31 @@
 		return num.toString().replace(/\B(?=(\d{4})+(?!\d))/g, ",");
 	};
 	/** 封装 GM_xmlhttpRequest 为 Promise */
+	const gmRequest = (url, opts = {}) => new Promise((resolve, reject) => {
+		GM_xmlhttpRequest({
+			method: "GET",
+			url,
+			...opts,
+			onload: (resp) => {
+				let data = null;
+				try {
+					data = JSON.parse(resp.responseText);
+				} catch (_) {
+					data = null;
+				}
+				resolve({
+					status: resp.status,
+					data,
+					raw: resp.responseText || "",
+					headers: resp.responseHeaders || "",
+					finalUrl: resp.finalUrl || url
+				});
+			},
+			onerror: reject,
+			ontimeout: reject
+		});
+	});
+	/** 封装 GM_xmlhttpRequest 为 Promise 并返回 JSON */
 	const gmFetch = (url, opts = {}) => new Promise((resolve, reject) => {
 		GM_xmlhttpRequest({
 			method: "GET",
@@ -231,11 +258,17 @@
 //#region src/state.js
 	const STATE = {
 		config: [],
+		taskContext: {
+			activityId: "",
+			activityName: ""
+		},
 		isPolling: false,
+		claimingTaskIds: new Set(),
 		activeTab: TASK_TYPE.SUBMIT,
 		activityInfo: null,
 		activityArchives: null,
 		isLoadingArchives: false,
+		wbiKeys: null,
 		live: {
 			roomInfo: null,
 			roomExtInfo: null,
@@ -286,6 +319,248 @@
 		return null;
 	};
 	const fetchTaskTotals = (csrfToken, taskIds) => gmFetch(buildTaskTotalUrl(csrfToken, taskIds));
+	const WBI_MIXIN_KEY_ENC_TAB = [
+		46,
+		47,
+		18,
+		2,
+		53,
+		8,
+		23,
+		32,
+		15,
+		50,
+		10,
+		31,
+		58,
+		3,
+		45,
+		35,
+		27,
+		43,
+		5,
+		49,
+		33,
+		9,
+		42,
+		19,
+		29,
+		28,
+		14,
+		39,
+		12,
+		38,
+		41,
+		13,
+		37,
+		48,
+		7,
+		16,
+		24,
+		55,
+		40,
+		61,
+		26,
+		17,
+		0,
+		1,
+		60,
+		51,
+		30,
+		4,
+		22,
+		25,
+		54,
+		21,
+		56,
+		59,
+		6,
+		63,
+		57,
+		62,
+		11,
+		36,
+		20,
+		34,
+		44,
+		52
+	];
+	const stripWbiUnsafeChars = (value) => typeof value === "string" ? value.replace(/[!'()*]/g, "") : value;
+	const extractWbiKey = (url) => {
+		if (!url || typeof url !== "string") return "";
+		const fileName = url.slice(url.lastIndexOf("/") + 1);
+		const dotIndex = fileName.indexOf(".");
+		return dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
+	};
+	const getMixinKey = (origin) => {
+		const mixed = WBI_MIXIN_KEY_ENC_TAB.map((idx) => origin[idx] || "").join("");
+		return mixed.slice(0, 32);
+	};
+	const getWbiKeysFromStorage = () => {
+		try {
+			const raw = localStorage.getItem("wbi_img_urls") || "";
+			if (!raw) return null;
+			const [imgUrl, subUrl] = raw.split("-");
+			const imgKey = extractWbiKey(imgUrl);
+			const subKey = extractWbiKey(subUrl);
+			return imgKey && subKey ? {
+				imgKey,
+				subKey
+			} : null;
+		} catch (_) {
+			return null;
+		}
+	};
+	const fetchWbiKeysFromNav = async () => {
+		const res = await gmFetch(URLS.WEB_NAV);
+		if (res?.code !== 0) return null;
+		const imgKey = extractWbiKey(res.data?.wbi_img?.img_url || "");
+		const subKey = extractWbiKey(res.data?.wbi_img?.sub_url || "");
+		if (!imgKey || !subKey) return null;
+		return {
+			imgKey,
+			subKey
+		};
+	};
+	const getWbiKeys = async () => {
+		if (STATE.wbiKeys?.imgKey && STATE.wbiKeys?.subKey) return STATE.wbiKeys;
+		const localKeys = getWbiKeysFromStorage();
+		if (localKeys) {
+			STATE.wbiKeys = localKeys;
+			return localKeys;
+		}
+		const navKeys = await fetchWbiKeysFromNav();
+		if (navKeys) {
+			STATE.wbiKeys = navKeys;
+			return navKeys;
+		}
+		return null;
+	};
+	const encodeWbiQuery = (params) => Object.keys(params).sort().map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(stripWbiUnsafeChars(params[key]))}`).join("&");
+	const buildMissionReceiveUrl = async () => {
+		const keys = await getWbiKeys();
+		if (!keys) throw new Error("未获取到 WBI 密钥");
+		if (typeof md5 !== "function") throw new Error("md5 依赖未加载");
+		const wts = Math.round(Date.now() / 1e3).toString();
+		const query = encodeWbiQuery({ wts });
+		const mixinKey = getMixinKey(`${keys.imgKey}${keys.subKey}`);
+		const wRid = md5(query + mixinKey);
+		return `${URLS.MISSION_RECEIVE}?w_rid=${wRid}&wts=${wts}`;
+	};
+	const resolveMissionReceiveError = (status, payload) => {
+		if (status === 412) {
+			return {
+				message: "IP访问异常（HTTP 412）",
+				type: "warning"
+			};
+		}
+		const code = Number(payload?.code);
+		if (code === 202032) return {
+			message: "无资格领取该奖励",
+			type: "warning"
+		};
+		if (code === 202100) return {
+			message: "触发风控验证，请在活动页完成验证后重试",
+			type: "warning"
+		};
+		if (code === 202101) return {
+			message: "账号行为异常，无法领奖",
+			type: "error"
+		};
+		if (code === 202102) return {
+			message: "风控系统异常，请稍后再试",
+			type: "warning"
+		};
+		if (code === -509 || code === -702) return {
+			message: "请求过于频繁，请稍后再试",
+			type: "warning"
+		};
+		if (code === -504) return {
+			message: "服务调用超时，请稍后重试",
+			type: "warning"
+		};
+		if (payload?.message) return {
+			message: payload.message,
+			type: "warning"
+		};
+		return {
+			message: `领取失败（${Number.isFinite(code) ? code : status}）`,
+			type: "warning"
+		};
+	};
+	const claimMissionReward = async (task, taskContext = {}) => {
+		const csrf = getCookie("bili_jct");
+		const taskId = task?.claimMeta?.taskId || task?.id || "";
+		const activityId = task?.claimMeta?.activityId || taskContext.activityId || "";
+		if (!csrf) {
+			return {
+				ok: false,
+				status: 0,
+				code: -101,
+				message: "缺少登录态 csrf（bili_jct）",
+				type: "error"
+			};
+		}
+		if (!taskId || !activityId) {
+			return {
+				ok: false,
+				status: 0,
+				code: 400,
+				message: "缺少 task_id 或 activity_id，无法领取",
+				type: "error"
+			};
+		}
+		try {
+			const reqUrl = await buildMissionReceiveUrl();
+			const body = new URLSearchParams();
+			body.append("task_id", String(taskId));
+			body.append("activity_id", String(activityId));
+			body.append("activity_name", task?.claimMeta?.activityName || taskContext.activityName || "");
+			body.append("task_name", task?.claimMeta?.taskName || task?.name || "");
+			body.append("reward_name", task?.claimMeta?.rewardName || task?.reward || "");
+			body.append("gaia_vtoken", "");
+			body.append("receive_from", "missionPage");
+			body.append("csrf", csrf);
+			const resp = await gmRequest(reqUrl, {
+				method: "POST",
+				headers: {
+					accept: "*/*",
+					"content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+					referer: location.href
+				},
+				data: body.toString()
+			});
+			const payload = resp.data || {};
+			const code = Number(payload.code);
+			if (resp.status === 200 && code === 0) {
+				return {
+					ok: true,
+					status: resp.status,
+					code,
+					message: payload.message || "领取成功",
+					data: payload.data || null,
+					type: "success"
+				};
+			}
+			const resolved = resolveMissionReceiveError(resp.status, payload);
+			return {
+				ok: false,
+				status: resp.status,
+				code: Number.isFinite(code) ? code : payload.code,
+				message: resolved.message,
+				type: resolved.type,
+				data: payload.data || null
+			};
+		} catch (e) {
+			return {
+				ok: false,
+				status: 0,
+				code: 0,
+				message: `领取请求失败：${e?.message || e}`,
+				type: "error"
+			};
+		}
+	};
 	const isArchiveAbnormal = (arc) => {
 		if (!arc) return true;
 		const state = Number(arc.state);
@@ -976,6 +1251,21 @@
 		}
 		return banner;
 	};
+	const showTaskToast = (message, type = "info", duration = 2800) => {
+		let toast = getById(DOM_IDS.LIVE_TOAST);
+		if (!toast) {
+			toast = document.createElement("div");
+			toast.id = DOM_IDS.LIVE_TOAST;
+			document.body.appendChild(toast);
+		}
+		toast.className = type;
+		toast.textContent = message;
+		toast.style.display = "block";
+		if (toast._timer) clearTimeout(toast._timer);
+		toast._timer = setTimeout(() => {
+			toast.style.display = "none";
+		}, duration);
+	};
 	const setSubmitBannerContent = (banner, html) => {
 		banner.className = "submit-stats-banner";
 		banner.innerHTML = html;
@@ -993,7 +1283,7 @@
 			card = document.createElement("a");
 			card.id = id;
 			card.className = cls;
-			card.href = href;
+			card.href = href || "#";
 			card.target = "_blank";
 			card.innerHTML = html;
 			card.dataset.hash = hash;
@@ -1001,6 +1291,7 @@
 			return card;
 		}
 		updateTaskCardByHash(card, cls, html, hash);
+		card.href = href || "#";
 		return card;
 	};
 	const SUBMISSION_CARD_ICONS = Object.freeze({
@@ -1170,12 +1461,12 @@
 		renderGrid(sections[TASK_TYPE.DAILY], container);
 		renderTabs(sections, container);
 	};
-	const buildGridTaskCardHtml = (task, isClaim, isDone, progressColor) => `
+	const buildGridTaskCardHtml = (task, isClaim, isDone, progressColor, isClaiming = false) => `
     <div class="grid-title">${task.name.replace("当日", "").replace("直播间", "")}</div>
     <div class="grid-status">
         <span>${isDone ? "Finished" : `${task.cur} / ${task.total}`}</span>
         <span style="font-weight:bold; color:${isClaim ? "#faad14" : isDone ? "#aaa" : "#00aeec"}">
-            ${isClaim ? "待领" : isDone ? "✓" : "进行中"}
+            ${isClaiming ? "领取中" : isClaim ? "待领" : isDone ? "✓" : "进行中"}
         </span>
     </div>
     <div class="mini-progress-bg"><div class="mini-progress-bar" style="width:${task.percent}%; background:${progressColor}"></div></div>
@@ -1195,6 +1486,45 @@
     <div class="full-progress"><div class="full-bar" style="width:${task.percent}%"></div></div>
     ` : ""}
 `;
+	const triggerTaskReload = () => {
+		window.dispatchEvent(new CustomEvent("era:task-reload"));
+	};
+	const bindDailyTaskCardAction = (card, task, isClaim) => {
+		const isClaimableDaily = task.type === TASK_TYPE.DAILY && isClaim;
+		if (!isClaimableDaily) {
+			card.target = "_blank";
+			card.onclick = null;
+			return;
+		}
+		card.target = "_self";
+		card.onclick = async (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const taskKey = String(task.id || "");
+			if (!taskKey) {
+				showTaskToast("任务ID缺失，无法领取", "error");
+				return;
+			}
+			if (STATE.claimingTaskIds.has(taskKey)) {
+				showTaskToast("正在领取中，请稍候...", "info", 1600);
+				return;
+			}
+			STATE.claimingTaskIds.add(taskKey);
+			showTaskToast(`正在领取：${task.name}`, "info", 1600);
+			triggerTaskReload();
+			try {
+				const res = await claimMissionReward(task, STATE.taskContext);
+				if (res.ok) {
+					showTaskToast(`领取成功：${task.reward || task.name}`, "success");
+				} else {
+					showTaskToast(`领取失败：${res.message}`, res.type || "warning", 3800);
+				}
+			} finally {
+				STATE.claimingTaskIds.delete(taskKey);
+				triggerTaskReload();
+			}
+		};
+	};
 	/** 渲染每日必做四宫格 */
 	const renderGrid = (items, container) => {
 		let el = getById(DOM_IDS.SEC_DAILY);
@@ -1212,11 +1542,12 @@
 		const grid = el.querySelector(".era-grid");
 		items.forEach((t) => {
 			const { isClaim, isDone } = getStatusFlags(t.status);
+			const isClaiming = STATE.claimingTaskIds.has(String(t.id || ""));
 			const pColor = isClaim ? "#45bd63" : isDone ? "#ddd" : "#00aeec";
-			const html = buildGridTaskCardHtml(t, isClaim, isDone, pColor);
+			const html = buildGridTaskCardHtml(t, isClaim, isDone, pColor, isClaiming);
 			const cls = `grid-card ${isClaim ? "status-claim" : ""} ${isDone ? "status-done" : ""}`;
-			const hash = getTaskCardHash(t);
-			upsertTaskAnchorCard({
+			const hash = `${getTaskCardHash(t)}-${isClaiming ? 1 : 0}`;
+			const card = upsertTaskAnchorCard({
 				id: `${DOM_IDS.GRID_TASK_PREFIX}${t.id}`,
 				container: grid,
 				cls,
@@ -1224,6 +1555,7 @@
 				html,
 				href: t.url
 			});
+			bindDailyTaskCardAction(card, t, isClaim);
 		});
 		renderSubmissionCard();
 	};
@@ -1308,6 +1640,17 @@
 		if (s.EraTasklistPc) s.EraTasklistPc.forEach((c) => c.tasklist && c.tasklist.forEach(p));
 		return t;
 	};
+	const pickString = (...vals) => vals.find((v) => typeof v === "string" && v.trim());
+	const parseTaskContext = () => {
+		const s = unsafeWindow.__initialState || {};
+		const pageInfo = unsafeWindow.__BILIACT_PAGEINFO || {};
+		const activityId = pickString(pageInfo.activity_id, s.activity_id, s.EraLotteryPc?.[0]?.config?.activity_id) || "";
+		const activityName = pickString(pageInfo.title, pageInfo.shareTitle, s.BaseInfo?.title) || "";
+		return {
+			activityId,
+			activityName
+		};
+	};
 	const createTaskSections = () => ({
 		[TASK_TYPE.DAILY]: [],
 		[TASK_TYPE.SUBMIT]: [],
@@ -1359,7 +1702,12 @@
 				total: cp ? cp.list[0].limit : 1,
 				reward: conf.awardName,
 				url: buildAwardExchangeUrl(conf.taskId),
-				type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT
+				type: isDaily ? TASK_TYPE.DAILY : TASK_TYPE.SUBMIT,
+				claimMeta: {
+					taskId: conf.taskId || "",
+					taskName: conf.taskName || "",
+					rewardName: conf.awardName || ""
+				}
 			}
 		};
 	};
@@ -1392,7 +1740,7 @@
 			return 0;
 		});
 	};
-	const processTasks = (configList, apiList) => {
+	const processTasks = (configList, apiList, taskContext = {}) => {
 		const apiMap = {};
 		apiList.forEach((i) => {
 			apiMap[i.task_id] = i;
@@ -1410,6 +1758,10 @@
 				return;
 			}
 			const { item, isDaily } = buildBaseTaskItem(conf, api);
+			if (item.claimMeta) {
+				item.claimMeta.activityId = conf.activityId || taskContext.activityId || "";
+				item.claimMeta.activityName = conf.activityName || taskContext.activityName || "";
+			}
 			if (!isDaily) {
 				applySubmitProgressFromTaskName(item, conf.taskName);
 			}
@@ -1446,12 +1798,17 @@
 		if (STATE.isPolling) return;
 		STATE.isPolling = true;
 		try {
-			if (!STATE.config.length) STATE.config = parseConfig();
+			if (!STATE.taskContext.activityId || !STATE.taskContext.activityName) {
+				STATE.taskContext = parseTaskContext();
+			}
+			if (!STATE.config.length) {
+				STATE.config = parseConfig();
+			}
 			if (STATE.config.length) {
 				const ids = [...new Set(STATE.config.map((t) => t.taskId))];
 				const res = await fetchTaskTotals(getCookie("bili_jct"), ids);
 				if (res?.code === 0) {
-					render(processTasks(STATE.config, res.data.list));
+					render(processTasks(STATE.config, res.data.list, STATE.taskContext));
 					getById(DOM_IDS.CLOCK).innerText = new Date().toLocaleTimeString();
 				}
 			}
@@ -1463,6 +1820,7 @@
 	};
 	const start = async () => {
 		init();
+		window.addEventListener("era:task-reload", loop);
 		setTimeout(() => {
 			refreshLiveState(true);
 			setInterval(() => refreshLiveState(true), LIVE_STATUS_POLL_MS);

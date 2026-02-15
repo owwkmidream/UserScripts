@@ -6,11 +6,17 @@ import { getArrayStore, LIVE_AREA_HISTORY_KEY } from './utils.js';
 // ==========================================
 const STATE = {
     config: [],
+    taskContext: {
+        activityId: '',
+        activityName: '',
+    },
     isPolling: false,
+    claimingTaskIds: new Set(),
     activeTab: TASK_TYPE.SUBMIT,
     activityInfo: null,       // { id, name, stime, etime, actUrl }
     activityArchives: null,   // [{ bvid, title, ptime, view }]
     isLoadingArchives: false,
+    wbiKeys: null,            // { imgKey, subKey }
     live: {
         roomInfo: null,
         roomExtInfo: null,

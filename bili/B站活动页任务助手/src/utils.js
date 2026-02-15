@@ -93,6 +93,32 @@ const formatViews = (num) => {
 };
 
 /** 封装 GM_xmlhttpRequest 为 Promise */
+const gmRequest = (url, opts = {}) => new Promise((resolve, reject) => {
+    GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        ...opts,
+        onload: (resp) => {
+            let data = null;
+            try {
+                data = JSON.parse(resp.responseText);
+            } catch (_) {
+                data = null;
+            }
+            resolve({
+                status: resp.status,
+                data,
+                raw: resp.responseText || '',
+                headers: resp.responseHeaders || '',
+                finalUrl: resp.finalUrl || url,
+            });
+        },
+        onerror: reject,
+        ontimeout: reject,
+    });
+});
+
+/** 封装 GM_xmlhttpRequest 为 Promise 并返回 JSON */
 const gmFetch = (url, opts = {}) => new Promise((resolve, reject) => {
     GM_xmlhttpRequest({
         method: 'GET',
@@ -152,6 +178,7 @@ export {
     formatBJDate,
     daysBetween,
     formatViews,
+    gmRequest,
     gmFetch,
     LIVE_STATUS_POLL_MS,
     LIVE_DURATION_TICK_MS,

@@ -46,7 +46,9 @@ const DOM_IDS = Object.freeze({
 });
 const URLS = Object.freeze({
     ACTIVITY_HOT_LIST: 'https://api.bilibili.com/x/activity_components/video_activity/hot_activity',
+    WEB_NAV: 'https://api.bilibili.com/x/web-interface/nav',
     TASK_TOTAL_V2: 'https://api.bilibili.com/x/task/totalv2',
+    MISSION_RECEIVE: 'https://api.bilibili.com/x/activity_components/mission/receive',
     MEMBER_ARCHIVES: 'https://member.bilibili.com/x/web/archives',
     AWARD_EXCHANGE: 'https://www.bilibili.com/blackboard/era/award-exchange.html',
     CREATOR_UPLOAD: 'https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload',
