@@ -56,8 +56,10 @@
 		SEC_DAILY: "sec-daily",
 		SEC_TABS: "sec-tabs",
 		GRID_SUBMISSION_CARD: "grid-submission-card",
+		SUBMIT_REMINDER_BANNER: "submit-reminder-banner",
 		SUBMIT_BANNER: "submit-stats-banner",
 		REFRESH_SUBMISSION_BTN: "btn-refresh-submission",
+		LIVE_REMINDER_BANNER: "live-reminder-banner",
 		LIVE_TOAST: "era-live-toast",
 		LIVE_AREA_MODAL: "era-live-area-modal",
 		LIVE_AREA_OVERLAY: "era-live-area-overlay",
@@ -93,7 +95,7 @@
 		LIVE_STOP: "https://api.live.bilibili.com/room/v1/Room/stopLive",
 		LIVE_FACE_AUTH: "https://www.bilibili.com/blackboard/live/face-auth-middle.html"
 	});
-	const UI_TIMING$1 = Object.freeze({
+	const UI_TIMING = Object.freeze({
 		FLASH_HIGHLIGHT_MS: 800,
 		LIVE_BOOT_DELAY_MS: 50,
 		TASK_BOOT_DELAY_MS: 10,
@@ -1221,7 +1223,12 @@
 			card.dataset.renderHash = renderHash;
 		}
 		if (content.firstChild !== card) {
-			content.prepend(card);
+			const topBanner = getById(DOM_IDS.LIVE_REMINDER_BANNER);
+			if (topBanner && topBanner.parentElement === content) {
+				content.insertBefore(card, topBanner.nextSibling);
+			} else {
+				content.prepend(card);
+			}
 		}
 		const btn = getById(`${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}`);
 		if (btn) {
@@ -1247,9 +1254,47 @@
 		if (!banner) {
 			banner = document.createElement("div");
 			banner.id = DOM_IDS.SUBMIT_BANNER;
+			const reminder = getById(DOM_IDS.SUBMIT_REMINDER_BANNER);
+			if (reminder && reminder.parentElement === content) {
+				content.insertBefore(banner, reminder.nextSibling);
+			} else {
+				content.insertBefore(banner, content.firstChild);
+			}
+		}
+		return banner;
+	};
+	const ensureTopReminderBanner = (tabKey, bannerId) => {
+		const content = getById(`${DOM_IDS.TAB_CONTENT_PREFIX}${tabKey}`);
+		if (!content) return null;
+		let banner = getById(bannerId);
+		if (!banner) {
+			banner = document.createElement("div");
+			banner.id = bannerId;
+			content.insertBefore(banner, content.firstChild);
+		} else if (banner.parentElement === content && content.firstChild !== banner) {
 			content.insertBefore(banner, content.firstChild);
 		}
 		return banner;
+	};
+	const renderTopReminderBanner = (banner, model) => {
+		if (!banner) return;
+		if (!model) {
+			banner.style.display = "none";
+			banner.innerHTML = "";
+			banner.className = "task-reminder-banner";
+			banner.dataset.hash = "";
+			return;
+		}
+		const nextHash = `${model.type || "warn"}|${model.title || ""}|${model.text || ""}`;
+		if (banner.dataset.hash !== nextHash) {
+			banner.className = `task-reminder-banner ${model.type || "warn"}`;
+			banner.innerHTML = `
+            <span class="task-reminder-tag">${model.title || "提醒"}</span>
+            <span class="task-reminder-text">${model.text || ""}</span>
+        `;
+			banner.dataset.hash = nextHash;
+		}
+		banner.style.display = "flex";
 	};
 	const showTaskToast = (message, type = "info", duration = 2800) => {
 		let toast = getById(DOM_IDS.LIVE_TOAST);
@@ -1301,6 +1346,48 @@
 		WARN: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
 		LOADING: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon spinning"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`
 	});
+	const collectSubmitDayTargets = () => {
+		const targets = [];
+		if (!Array.isArray(STATE.config)) return targets;
+		STATE.config.forEach((t) => {
+			const m = t?.taskName?.match(/投稿.*?(\d+)天/);
+			if (!m) return;
+			const day = Number.parseInt(m[1], 10);
+			if (Number.isFinite(day) && day > 0 && !targets.includes(day)) {
+				targets.push(day);
+			}
+		});
+		return targets.sort((a, b) => a - b);
+	};
+	const buildSubmitHitReminderModel = (stats, submitted) => {
+		if (!stats) return null;
+		const settleDays = Math.max(0, stats.uniqueDays - (submitted ? 1 : 0));
+		const targets = collectSubmitDayTargets();
+		if (!targets.length) return null;
+		if (targets.includes(settleDays)) {
+			return {
+				type: "warn",
+				title: `投稿 ${settleDays} 天`,
+				text: `今天 18:00 可领取奖励`
+			};
+		}
+		return null;
+	};
+	const buildLiveHitReminderModel = (liveItems = []) => {
+		const targets = [...new Set(liveItems.map((it) => Number(it?.total)).filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
+		if (!targets.length) return null;
+		const current = liveItems.reduce((max, it) => {
+			const cur = Number(it?.cur);
+			return Number.isFinite(cur) ? Math.max(max, cur) : max;
+		}, 0);
+		const tomorrow = current + 1;
+		if (!targets.includes(tomorrow)) return null;
+		return {
+			type: "warn",
+			title: "直播 ${tomorrow} 天",
+			text: `请在 23:00 做好开播准备`
+		};
+	};
 	const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) => {
 		if (noActivity) {
 			return {
@@ -1420,16 +1507,21 @@
 	/** 渲染投稿 Tab 统计 Banner */
 	const renderSubmitTab = () => {
 		const banner = ensureSubmitBanner();
+		const reminderBanner = ensureTopReminderBanner(TASK_TYPE.SUBMIT, DOM_IDS.SUBMIT_REMINDER_BANNER);
 		if (!banner) return;
 		if (!STATE.activityInfo) {
+			renderTopReminderBanner(reminderBanner, null);
 			setSubmitBannerContent(banner, "<div class=\"stats-error\">⚠️ 未获取到活动信息</div>");
 			return;
 		}
 		const stats = calcActivityStats();
 		if (!stats) {
+			renderTopReminderBanner(reminderBanner, null);
 			setSubmitBannerContent(banner, "<div class=\"stats-loading\">暂无数据</div>");
 			return;
 		}
+		const { submitted } = checkTodaySubmission();
+		renderTopReminderBanner(reminderBanner, buildSubmitHitReminderModel(stats, submitted));
 		const wan = Math.floor(stats.totalViews / 1e4);
 		const rest = stats.totalViews % 1e4;
 		const viewsHtml = `<span class="highlight-num">${wan}</span><span style="color:var(--era-text);font-size:12px;font-weight:700">万</span><span style="font-weight:400;color:var(--era-sub);margin-left:2px">${rest.toString().padStart(4, "0")}</span>`;
@@ -1590,9 +1682,9 @@
 		renderTabList(TASK_TYPE.LOTTERY, sections[TASK_TYPE.LOTTERY]);
 		const submitLiveCard = getById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.SUBMIT}`);
 		if (submitLiveCard) submitLiveCard.remove();
-		if (!getById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.LIVE}`)) {
-			renderLiveStatusCard(TASK_TYPE.LIVE);
-		}
+		renderLiveStatusCard(TASK_TYPE.LIVE);
+		const liveReminderBanner = ensureTopReminderBanner(TASK_TYPE.LIVE, DOM_IDS.LIVE_REMINDER_BANNER);
+		renderTopReminderBanner(liveReminderBanner, buildLiveHitReminderModel(sections[TASK_TYPE.LIVE]));
 	};
 	/** 切换标签 */
 	const switchTab = (key) => {
@@ -1825,7 +1917,7 @@
 			refreshLiveState(true);
 			setInterval(() => refreshLiveState(true), LIVE_STATUS_POLL_MS);
 			setInterval(updateLiveDurationTexts, LIVE_DURATION_TICK_MS);
-		}, UI_TIMING$1.LIVE_BOOT_DELAY_MS);
+		}, UI_TIMING.LIVE_BOOT_DELAY_MS);
 		try {
 			STATE.activityInfo = await fetchActivityId();
 			if (STATE.activityInfo) {
@@ -1838,10 +1930,10 @@
 		}
 		setTimeout(() => {
 			loop();
-			setInterval(loop, UI_TIMING$1.TASK_LOOP_MS);
-		}, UI_TIMING$1.TASK_BOOT_DELAY_MS);
+			setInterval(loop, UI_TIMING.TASK_LOOP_MS);
+		}, UI_TIMING.TASK_BOOT_DELAY_MS);
 		if (STATE.activityInfo) {
-			setTimeout(() => refreshArchives(), UI_TIMING$1.ARCHIVES_BOOT_DELAY_MS);
+			setTimeout(() => refreshArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
 		}
 	};
 
@@ -1979,6 +2071,38 @@
         display: flex; justify-content: space-between; align-items: center;
         min-height: 80px; /* v5.3 防止加载跳动 */
         box-sizing: border-box;
+    }
+    .task-reminder-banner {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(0,0,0,0.08);
+        background: linear-gradient(135deg, #fff8e9, #fff3dc);
+        color: #8d5200;
+        line-height: 1.35;
+        font-size: 11px;
+    }
+    .task-reminder-banner.warn {
+        border-color: rgba(255, 196, 97, 0.68);
+        background: linear-gradient(135deg, #fff8e9, #fff3dc);
+        color: #8d5200;
+    }
+    .task-reminder-tag {
+        flex-shrink: 0;
+        font-weight: 700;
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 10px;
+        background: rgba(255, 170, 70, 0.2);
+        border: 1px solid rgba(255, 170, 70, 0.35);
+    }
+    .task-reminder-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .stats-group { display: flex; flex-direction: column; }
     .stats-group.left { align-items: flex-start; }

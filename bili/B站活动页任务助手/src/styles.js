@@ -134,6 +134,38 @@ const STYLES = `
         min-height: 80px; /* v5.3 防止加载跳动 */
         box-sizing: border-box;
     }
+    .task-reminder-banner {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(0,0,0,0.08);
+        background: linear-gradient(135deg, #fff8e9, #fff3dc);
+        color: #8d5200;
+        line-height: 1.35;
+        font-size: 11px;
+    }
+    .task-reminder-banner.warn {
+        border-color: rgba(255, 196, 97, 0.68);
+        background: linear-gradient(135deg, #fff8e9, #fff3dc);
+        color: #8d5200;
+    }
+    .task-reminder-tag {
+        flex-shrink: 0;
+        font-weight: 700;
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 10px;
+        background: rgba(255, 170, 70, 0.2);
+        border: 1px solid rgba(255, 170, 70, 0.35);
+    }
+    .task-reminder-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
     .stats-group { display: flex; flex-direction: column; }
     .stats-group.left { align-items: flex-start; }
     .stats-group.right { align-items: flex-end; text-align: right; }

@@ -645,7 +645,12 @@ const renderLiveStatusCard = (tabKey) => {
     }
 
     if (content.firstChild !== card) {
-        content.prepend(card);
+        const topBanner = getById(DOM_IDS.LIVE_REMINDER_BANNER);
+        if (topBanner && topBanner.parentElement === content) {
+            content.insertBefore(card, topBanner.nextSibling);
+        } else {
+            content.prepend(card);
+        }
     }
 
     const btn = getById(`${DOM_IDS.LIVE_ACTION_BTN_PREFIX}${tabKey}`);

@@ -1,4 +1,4 @@
-import { DOM_IDS, TAB_DEFINITIONS, TASK_TYPE, URLS } from './constants.js';
+import { DOM_IDS, TAB_DEFINITIONS, TASK_TYPE, UI_TIMING, URLS } from './constants.js';
 import { STATE } from './state.js';
 import { formatViews, getById, getStatusFlags, getTaskCardHash } from './utils.js';
 import {
@@ -19,9 +19,47 @@ const ensureSubmitBanner = () => {
     if (!banner) {
         banner = document.createElement('div');
         banner.id = DOM_IDS.SUBMIT_BANNER;
+        const reminder = getById(DOM_IDS.SUBMIT_REMINDER_BANNER);
+        if (reminder && reminder.parentElement === content) {
+            content.insertBefore(banner, reminder.nextSibling);
+        } else {
+            content.insertBefore(banner, content.firstChild);
+        }
+    }
+    return banner;
+};
+const ensureTopReminderBanner = (tabKey, bannerId) => {
+    const content = getById(`${DOM_IDS.TAB_CONTENT_PREFIX}${tabKey}`);
+    if (!content) return null;
+    let banner = getById(bannerId);
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = bannerId;
+        content.insertBefore(banner, content.firstChild);
+    } else if (banner.parentElement === content && content.firstChild !== banner) {
         content.insertBefore(banner, content.firstChild);
     }
     return banner;
+};
+const renderTopReminderBanner = (banner, model) => {
+    if (!banner) return;
+    if (!model) {
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+        banner.className = 'task-reminder-banner';
+        banner.dataset.hash = '';
+        return;
+    }
+    const nextHash = `${model.type || 'warn'}|${model.title || ''}|${model.text || ''}`;
+    if (banner.dataset.hash !== nextHash) {
+        banner.className = `task-reminder-banner ${model.type || 'warn'}`;
+        banner.innerHTML = `
+            <span class="task-reminder-tag">${model.title || '提醒'}</span>
+            <span class="task-reminder-text">${model.text || ''}</span>
+        `;
+        banner.dataset.hash = nextHash;
+    }
+    banner.style.display = 'flex';
 };
 const showTaskToast = (message, type = 'info', duration = 2800) => {
     let toast = getById(DOM_IDS.LIVE_TOAST);
@@ -73,6 +111,52 @@ const SUBMISSION_CARD_ICONS = Object.freeze({
     WARN: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
     LOADING: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="era-icon spinning"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
 });
+const collectSubmitDayTargets = () => {
+    const targets = [];
+    if (!Array.isArray(STATE.config)) return targets;
+    STATE.config.forEach((t) => {
+        const m = t?.taskName?.match(/投稿.*?(\d+)天/);
+        if (!m) return;
+        const day = Number.parseInt(m[1], 10);
+        if (Number.isFinite(day) && day > 0 && !targets.includes(day)) {
+            targets.push(day);
+        }
+    });
+    return targets.sort((a, b) => a - b);
+};
+const buildSubmitHitReminderModel = (stats, submitted) => {
+    if (!stats) return null;
+    const settleDays = Math.max(0, stats.uniqueDays - (submitted ? 1 : 0));
+    const targets = collectSubmitDayTargets();
+    if (!targets.length) return null;
+    if (targets.includes(settleDays)) {
+        return {
+            type: 'warn',
+            title: `投稿 ${settleDays} 天`,
+            text: `今天 18:00 可领取奖励`,
+        };
+    }
+    return null;
+};
+const buildLiveHitReminderModel = (liveItems = []) => {
+    const targets = [...new Set(
+        liveItems
+            .map((it) => Number(it?.total))
+            .filter((n) => Number.isFinite(n) && n > 0)
+    )].sort((a, b) => a - b);
+    if (!targets.length) return null;
+    const current = liveItems.reduce((max, it) => {
+        const cur = Number(it?.cur);
+        return Number.isFinite(cur) ? Math.max(max, cur) : max;
+    }, 0);
+    const tomorrow = current + 1;
+    if (!targets.includes(tomorrow)) return null;
+    return {
+        type: 'warn',
+        title: '直播 ${tomorrow} 天',
+        text: `请在 23:00 做好开播准备`,
+    };
+};
 const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) => {
     if (noActivity) {
         return {
@@ -205,18 +289,23 @@ const calcNextTarget = (currentViews) => {
 /** 渲染投稿 Tab 统计 Banner */
 const renderSubmitTab = () => {
     const banner = ensureSubmitBanner();
+    const reminderBanner = ensureTopReminderBanner(TASK_TYPE.SUBMIT, DOM_IDS.SUBMIT_REMINDER_BANNER);
     if (!banner) return;
 
     if (!STATE.activityInfo) {
+        renderTopReminderBanner(reminderBanner, null);
         setSubmitBannerContent(banner, '<div class="stats-error">⚠️ 未获取到活动信息</div>');
         return;
     }
 
     const stats = calcActivityStats();
     if (!stats) {
+        renderTopReminderBanner(reminderBanner, null);
         setSubmitBannerContent(banner, '<div class="stats-loading">暂无数据</div>');
         return;
     }
+    const { submitted } = checkTodaySubmission();
+    renderTopReminderBanner(reminderBanner, buildSubmitHitReminderModel(stats, submitted));
 
     // 格式化播放量：只醒目万位
     const wan = Math.floor(stats.totalViews / 10000);
@@ -405,9 +494,9 @@ const renderTabs = (sections, container) => {
     renderTabList(TASK_TYPE.LOTTERY, sections[TASK_TYPE.LOTTERY]);
     const submitLiveCard = getById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.SUBMIT}`);
     if (submitLiveCard) submitLiveCard.remove();
-    if (!getById(`${DOM_IDS.TAB_LIVE_CARD_PREFIX}${TASK_TYPE.LIVE}`)) {
-        renderLiveStatusCard(TASK_TYPE.LIVE);
-    }
+    renderLiveStatusCard(TASK_TYPE.LIVE);
+    const liveReminderBanner = ensureTopReminderBanner(TASK_TYPE.LIVE, DOM_IDS.LIVE_REMINDER_BANNER);
+    renderTopReminderBanner(liveReminderBanner, buildLiveHitReminderModel(sections[TASK_TYPE.LIVE]));
 };
 
 /** 切换标签 */
