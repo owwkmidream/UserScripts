@@ -157,7 +157,7 @@ const buildLiveHitReminderModel = (liveItems = []) => {
         text: `请在 23:00 做好开播准备`,
     };
 };
-const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) => {
+const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum, hasArchiveData }) => {
     if (noActivity) {
         return {
             statusClass: '', // 使用默认白色，避免歧义
@@ -165,7 +165,7 @@ const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) 
             subText: '未获取到活动',
         };
     }
-    if (loading) {
+    if (loading && !hasArchiveData) {
         return {
             statusClass: '', // 加载中使用默认白色背景
             iconHtml: SUBMISSION_CARD_ICONS.LOADING,
@@ -205,8 +205,15 @@ const renderSubmissionCard = () => {
     const { submitted, dayNum } = checkTodaySubmission();
     const loading = STATE.isLoadingArchives;
     const noActivity = !STATE.activityInfo;
+    const hasArchiveData = Array.isArray(STATE.activityArchives);
 
-    const submissionCardState = resolveSubmissionCardState({ noActivity, loading, submitted, dayNum });
+    const submissionCardState = resolveSubmissionCardState({
+        noActivity,
+        loading,
+        submitted,
+        dayNum,
+        hasArchiveData,
+    });
     const html = buildSubmissionCardHtml(submissionCardState);
 
     if (!card) {
@@ -243,7 +250,9 @@ const refreshArchives = () => {
     if (STATE.isLoadingArchives) return;
     const btn = getById(DOM_IDS.REFRESH_SUBMISSION_BTN);
     if (btn) btn.classList.add('spinning');
-    renderArchivesLoading();
+    if (!Array.isArray(STATE.activityArchives)) {
+        renderArchivesLoading();
+    }
     refreshActivityArchives().finally(() => {
         renderSubmitTab();
         renderSubmissionCard();
@@ -512,7 +521,7 @@ const switchTab = (key) => {
     });
 
     // 切换到投稿 Tab 时刷新数据
-    if (key === TASK_TYPE.SUBMIT) {
+    if (key === TASK_TYPE.SUBMIT && !Array.isArray(STATE.activityArchives)) {
         refreshArchives();
     }
 };

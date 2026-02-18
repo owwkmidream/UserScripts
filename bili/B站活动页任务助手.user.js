@@ -1388,7 +1388,7 @@
 			text: `请在 23:00 做好开播准备`
 		};
 	};
-	const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum }) => {
+	const resolveSubmissionCardState = ({ noActivity, loading, submitted, dayNum, hasArchiveData }) => {
 		if (noActivity) {
 			return {
 				statusClass: "",
@@ -1396,7 +1396,7 @@
 				subText: "未获取到活动"
 			};
 		}
-		if (loading) {
+		if (loading && !hasArchiveData) {
 			return {
 				statusClass: "",
 				iconHtml: SUBMISSION_CARD_ICONS.LOADING,
@@ -1434,11 +1434,13 @@
 		const { submitted, dayNum } = checkTodaySubmission();
 		const loading = STATE.isLoadingArchives;
 		const noActivity = !STATE.activityInfo;
+		const hasArchiveData = Array.isArray(STATE.activityArchives);
 		const submissionCardState = resolveSubmissionCardState({
 			noActivity,
 			loading,
 			submitted,
-			dayNum
+			dayNum,
+			hasArchiveData
 		});
 		const html = buildSubmissionCardHtml(submissionCardState);
 		if (!card) {
@@ -1469,7 +1471,9 @@
 		if (STATE.isLoadingArchives) return;
 		const btn = getById(DOM_IDS.REFRESH_SUBMISSION_BTN);
 		if (btn) btn.classList.add("spinning");
-		renderArchivesLoading();
+		if (!Array.isArray(STATE.activityArchives)) {
+			renderArchivesLoading();
+		}
 		refreshActivityArchives().finally(() => {
 			renderSubmitTab();
 			renderSubmissionCard();
@@ -1695,7 +1699,7 @@
 		document.querySelectorAll(".era-tab-content").forEach((el) => {
 			el.classList.toggle("active", el.id === `${DOM_IDS.TAB_CONTENT_PREFIX}${key}`);
 		});
-		if (key === TASK_TYPE.SUBMIT) {
+		if (key === TASK_TYPE.SUBMIT && !Array.isArray(STATE.activityArchives)) {
 			refreshArchives();
 		}
 	};
