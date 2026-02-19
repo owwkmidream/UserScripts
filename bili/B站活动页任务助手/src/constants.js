@@ -68,6 +68,7 @@ const UI_TIMING = Object.freeze({
     TASK_BOOT_DELAY_MS: 10,
     TASK_LOOP_MS: 1000,
     ARCHIVES_BOOT_DELAY_MS: 0,
+    ARCHIVES_POLL_MS: 60000,
 });
 
 export {

@@ -100,7 +100,8 @@
 		LIVE_BOOT_DELAY_MS: 50,
 		TASK_BOOT_DELAY_MS: 10,
 		TASK_LOOP_MS: 1e3,
-		ARCHIVES_BOOT_DELAY_MS: 0
+		ARCHIVES_BOOT_DELAY_MS: 0,
+		ARCHIVES_POLL_MS: 6e4
 	});
 
 //#endregion
@@ -1938,6 +1939,7 @@
 		}, UI_TIMING.TASK_BOOT_DELAY_MS);
 		if (STATE.activityInfo) {
 			setTimeout(() => refreshArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
+			setInterval(() => refreshArchives(), UI_TIMING.ARCHIVES_POLL_MS);
 		}
 	};
 

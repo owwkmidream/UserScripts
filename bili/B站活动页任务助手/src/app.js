@@ -81,5 +81,6 @@ export const start = async () => {
 
     if (STATE.activityInfo) {
         setTimeout(() => refreshArchives(), UI_TIMING.ARCHIVES_BOOT_DELAY_MS);
+        setInterval(() => refreshArchives(), UI_TIMING.ARCHIVES_POLL_MS);
     }
 };
