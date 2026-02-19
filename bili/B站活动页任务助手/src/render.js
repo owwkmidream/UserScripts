@@ -1,4 +1,4 @@
-import { DOM_IDS, TAB_DEFINITIONS, TASK_TYPE, UI_TIMING, URLS } from './constants.js';
+import { DOM_IDS, TAB_DEFINITIONS, TASK_STATUS, TASK_TYPE, UI_TIMING, URLS } from './constants.js';
 import { STATE } from './state.js';
 import { formatViews, getById, getStatusFlags, getTaskCardHash } from './utils.js';
 import {
@@ -75,6 +75,66 @@ const showTaskToast = (message, type = 'info', duration = 2800) => {
     toast._timer = setTimeout(() => {
         toast.style.display = 'none';
     }, duration);
+};
+const DAILY_COMPLETION_TARGET_COUNT = 5;
+const getDailyCompletionSummary = (items = []) => {
+    const dailyDoneCount = items.filter((task) => task.status === TASK_STATUS.DONE).length;
+    const { submitted } = checkTodaySubmission();
+    const totalCount = items.length + 1;
+    const doneCount = dailyDoneCount + (submitted ? 1 : 0);
+    return {
+        totalCount,
+        doneCount,
+        isAllDoneTarget: (
+            totalCount === DAILY_COMPLETION_TARGET_COUNT
+            && doneCount === DAILY_COMPLETION_TARGET_COUNT
+            && dailyDoneCount === items.length
+            && submitted
+        ),
+    };
+};
+const buildDailyCompleteMaskHtml = () => `
+    <div id="${DOM_IDS.DAILY_COMPLETE_MODAL}" aria-hidden="true">
+        <div id="${DOM_IDS.DAILY_COMPLETE_BADGE}" class="era-daily-complete-badge">
+            <svg class="era-daily-complete-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 12.5L9.5 18L20 6"></path>
+            </svg>
+        </div>
+    </div>
+`;
+const hideDailyCompleteMask = () => {
+    const overlay = getById(DOM_IDS.DAILY_COMPLETE_OVERLAY);
+    if (overlay) overlay.style.display = 'none';
+};
+const ensureDailyCompleteMask = (dailySectionEl) => {
+    if (!dailySectionEl) return null;
+    let overlay = getById(DOM_IDS.DAILY_COMPLETE_OVERLAY);
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = DOM_IDS.DAILY_COMPLETE_OVERLAY;
+        overlay.innerHTML = buildDailyCompleteMaskHtml();
+        dailySectionEl.appendChild(overlay);
+    } else if (overlay.parentElement !== dailySectionEl) {
+        dailySectionEl.appendChild(overlay);
+    }
+    return overlay;
+};
+const showDailyCompleteMask = (summary, dailySectionEl) => {
+    const overlay = ensureDailyCompleteMask(dailySectionEl);
+    if (!overlay) return;
+    const badge = getById(DOM_IDS.DAILY_COMPLETE_BADGE);
+    if (badge) {
+        badge.title = `每日任务进度 ${summary.doneCount}/${summary.totalCount}`;
+    }
+    overlay.style.display = 'flex';
+};
+const renderDailyCompleteMask = (items = [], dailySectionEl = null) => {
+    const summary = getDailyCompletionSummary(items);
+    if (!summary.isAllDoneTarget || !dailySectionEl) {
+        hideDailyCompleteMask();
+        return;
+    }
+    showDailyCompleteMask(summary, dailySectionEl);
 };
 const setSubmitBannerContent = (banner, html) => {
     banner.className = 'submit-stats-banner';
@@ -464,6 +524,7 @@ const renderGrid = (items, container) => {
 
     // 渲染投稿打卡大卡片
     renderSubmissionCard();
+    renderDailyCompleteMask(items, el);
 };
 
 /** 渲染 Tabs 标签系统 */

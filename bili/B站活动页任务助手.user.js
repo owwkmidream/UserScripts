@@ -73,6 +73,9 @@
 		LIVE_AUTH_CANCEL: "era-live-auth-cancel",
 		LIVE_AUTH_RETRY: "era-live-auth-retry",
 		LIVE_AUTH_QRCODE: "era-live-auth-qrcode",
+		DAILY_COMPLETE_OVERLAY: "era-daily-complete-overlay",
+		DAILY_COMPLETE_MODAL: "era-daily-complete-modal",
+		DAILY_COMPLETE_BADGE: "era-daily-complete-badge",
 		TAB_CONTENT_PREFIX: "tab-content-",
 		TAB_LIVE_CARD_PREFIX: "tab-live-card-",
 		LIVE_ACTION_BTN_PREFIX: "live-action-btn-",
@@ -1312,6 +1315,61 @@
 			toast.style.display = "none";
 		}, duration);
 	};
+	const DAILY_COMPLETION_TARGET_COUNT = 5;
+	const getDailyCompletionSummary = (items = []) => {
+		const dailyDoneCount = items.filter((task) => task.status === TASK_STATUS.DONE).length;
+		const { submitted } = checkTodaySubmission();
+		const totalCount = items.length + 1;
+		const doneCount = dailyDoneCount + (submitted ? 1 : 0);
+		return {
+			totalCount,
+			doneCount,
+			isAllDoneTarget: totalCount === DAILY_COMPLETION_TARGET_COUNT && doneCount === DAILY_COMPLETION_TARGET_COUNT && dailyDoneCount === items.length && submitted
+		};
+	};
+	const buildDailyCompleteMaskHtml = () => `
+    <div id="${DOM_IDS.DAILY_COMPLETE_MODAL}" aria-hidden="true">
+        <div id="${DOM_IDS.DAILY_COMPLETE_BADGE}" class="era-daily-complete-badge">
+            <svg class="era-daily-complete-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 12.5L9.5 18L20 6"></path>
+            </svg>
+        </div>
+    </div>
+`;
+	const hideDailyCompleteMask = () => {
+		const overlay = getById(DOM_IDS.DAILY_COMPLETE_OVERLAY);
+		if (overlay) overlay.style.display = "none";
+	};
+	const ensureDailyCompleteMask = (dailySectionEl) => {
+		if (!dailySectionEl) return null;
+		let overlay = getById(DOM_IDS.DAILY_COMPLETE_OVERLAY);
+		if (!overlay) {
+			overlay = document.createElement("div");
+			overlay.id = DOM_IDS.DAILY_COMPLETE_OVERLAY;
+			overlay.innerHTML = buildDailyCompleteMaskHtml();
+			dailySectionEl.appendChild(overlay);
+		} else if (overlay.parentElement !== dailySectionEl) {
+			dailySectionEl.appendChild(overlay);
+		}
+		return overlay;
+	};
+	const showDailyCompleteMask = (summary, dailySectionEl) => {
+		const overlay = ensureDailyCompleteMask(dailySectionEl);
+		if (!overlay) return;
+		const badge = getById(DOM_IDS.DAILY_COMPLETE_BADGE);
+		if (badge) {
+			badge.title = `每日任务进度 ${summary.doneCount}/${summary.totalCount}`;
+		}
+		overlay.style.display = "flex";
+	};
+	const renderDailyCompleteMask = (items = [], dailySectionEl = null) => {
+		const summary = getDailyCompletionSummary(items);
+		if (!summary.isAllDoneTarget || !dailySectionEl) {
+			hideDailyCompleteMask();
+			return;
+		}
+		showDailyCompleteMask(summary, dailySectionEl);
+	};
 	const setSubmitBannerContent = (banner, html) => {
 		banner.className = "submit-stats-banner";
 		banner.innerHTML = html;
@@ -1655,6 +1713,7 @@
 			bindDailyTaskCardAction(card, t, isClaim);
 		});
 		renderSubmissionCard();
+		renderDailyCompleteMask(items, el);
 	};
 	/** 渲染 Tabs 标签系统 */
 	const renderTabs = (sections, container) => {
@@ -2277,6 +2336,54 @@
     }
     .live-action-btn.stop:hover {
         background: #389f56;
+    }
+
+    /* 每日任务完成轻提醒（可点击穿透） */
+    #sec-daily {
+        position: relative;
+    }
+    #era-daily-complete-overlay {
+        display: none;
+        position: absolute;
+        inset: 0;
+        z-index: 12;
+        pointer-events: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        background: linear-gradient(180deg, rgba(120, 128, 138, 0.28), rgba(120, 128, 138, 0.18));
+    }
+    #era-daily-complete-modal {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px;
+        box-sizing: border-box;
+    }
+    .era-daily-complete-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: none;
+        background: transparent;
+        box-shadow: none;
+    }
+    .era-daily-complete-icon {
+        width: 96px;
+        height: 96px;
+        color: rgba(243, 243, 243, 0.66);
+        display: block;
+        filter: none;
+    }
+    .era-daily-complete-icon path {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2.4;
+        stroke-linecap: square;
+        stroke-linejoin: miter;
     }
 
     /* 直播分区选择弹窗 */

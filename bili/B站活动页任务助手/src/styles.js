@@ -335,6 +335,54 @@ const STYLES = `
         background: #389f56;
     }
 
+    /* 每日任务完成轻提醒（可点击穿透） */
+    #sec-daily {
+        position: relative;
+    }
+    #era-daily-complete-overlay {
+        display: none;
+        position: absolute;
+        inset: 0;
+        z-index: 12;
+        pointer-events: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        background: linear-gradient(180deg, rgba(120, 128, 138, 0.28), rgba(120, 128, 138, 0.18));
+    }
+    #era-daily-complete-modal {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px;
+        box-sizing: border-box;
+    }
+    .era-daily-complete-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: none;
+        background: transparent;
+        box-shadow: none;
+    }
+    .era-daily-complete-icon {
+        width: 96px;
+        height: 96px;
+        color: rgba(243, 243, 243, 0.66);
+        display: block;
+        filter: none;
+    }
+    .era-daily-complete-icon path {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2.4;
+        stroke-linecap: square;
+        stroke-linejoin: miter;
+    }
+
     /* 直播分区选择弹窗 */
     #era-live-area-overlay,
     #era-live-auth-overlay {
