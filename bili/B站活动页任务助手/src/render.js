@@ -213,7 +213,7 @@ const buildLiveHitReminderModel = (liveItems = []) => {
     if (!targets.includes(tomorrow)) return null;
     return {
         type: 'warn',
-        title: '直播 ${tomorrow} 天',
+        title: `直播 ${tomorrow} 天`,
         text: `请在 23:00 做好开播准备`,
     };
 };
