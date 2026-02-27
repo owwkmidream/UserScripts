@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站活动页任务助手
 // @namespace    http://tampermonkey.net/
-// @version      5.6
+// @version      5.7
 // @description  悬浮面板，Tabs标签切换，活动稿件投稿打卡与统计。
 // @author       Gemini_Refactored
 // @include      /^https:\/\/www\.bilibili\.com\/blackboard\/era\/[a-zA-Z0-9]+\.html$/

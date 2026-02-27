@@ -30,6 +30,17 @@ const STATE = {
         lastError: '',
         lastSyncAt: 0,
         areaHistory: getArrayStore(LIVE_AREA_HISTORY_KEY),
+        task60: {
+            exists: false,
+            name: '',
+            cur: 0,
+            total: 3600,
+            status: 0,
+            lastSeenAt: 0,
+            lastCurChangeAt: 0,
+            refreshIntervals: [],
+            completedAt: 0,
+        },
     }
 };
 

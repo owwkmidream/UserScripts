@@ -223,7 +223,7 @@ const STYLES = `
             "area dur"
             "sync sync";
         align-items: center;
-        row-gap: 2px;
+        row-gap: 4px;
         column-gap: 8px;
     }
     .tab-live-card.live-on {
@@ -276,6 +276,16 @@ const STYLES = `
         font-size: 10px;
         color: #8f96a0;
         line-height: 1.35;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 10px;
+        row-gap: 2px;
+    }
+    .live-card-sync-item {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .live-duration-line {
         grid-area: dur;

@@ -1,4 +1,4 @@
-import { DOM_IDS, TASK_TYPE, URLS } from './constants.js';
+import { DOM_IDS, TASK_STATUS, TASK_TYPE, URLS } from './constants.js';
 import { STATE } from './state.js';
 import {
     buildLiveFaceAuthUrl,
@@ -14,6 +14,13 @@ import {
     showById,
     showElement,
 } from './utils.js';
+
+const LIVE_TASK_60_NAME_RE = /开播\s*60\s*分钟/;
+const LIVE_TASK_60_LIMIT_SECONDS = 3600;
+const LIVE_TASK_REFRESH_DEFAULT_SECONDS = 300;
+const LIVE_TASK_REFRESH_MIN_SECONDS = 60;
+const LIVE_TASK_REFRESH_MAX_SECONDS = 900;
+const LIVE_TASK_REFRESH_SAMPLE_LIMIT = 8;
 
 const getFixedBuvid = () => {
     let cachedBuvid = GM_getValue(LIVE_BUVID_KEY, null);
@@ -164,6 +171,186 @@ const formatDuration = (sec) => {
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+};
+
+const createDefaultLiveTask60State = () => ({
+    exists: false,
+    name: '',
+    cur: 0,
+    total: LIVE_TASK_60_LIMIT_SECONDS,
+    status: 0,
+    lastSeenAt: 0,
+    lastCurChangeAt: 0,
+    refreshIntervals: [],
+    completedAt: 0,
+});
+
+const getNowTs = () => Math.floor(Date.now() / 1000);
+
+const normalizePositiveInt = (val, fallback = 0) => {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.floor(n));
+};
+
+const formatTimeByTs = (ts) => {
+    if (!Number.isFinite(ts) || ts <= 0) return '--:--:--';
+    return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false });
+};
+
+const isLiveTask60 = (task) => {
+    const name = String(task?.name || '');
+    const total = normalizePositiveInt(task?.total, 0);
+    return LIVE_TASK_60_NAME_RE.test(name) && total === LIVE_TASK_60_LIMIT_SECONDS;
+};
+
+const getMedian = (nums = []) => {
+    if (!nums.length) return null;
+    const sorted = [...nums].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) return sorted[mid];
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+const estimateTaskRefreshIntervalSeconds = (task60) => {
+    const samples = Array.isArray(task60?.refreshIntervals)
+        ? task60.refreshIntervals.filter((n) => Number.isFinite(n) && n > 0)
+        : [];
+    if (!samples.length) return LIVE_TASK_REFRESH_DEFAULT_SECONDS;
+    const median = getMedian(samples);
+    if (!Number.isFinite(median)) return LIVE_TASK_REFRESH_DEFAULT_SECONDS;
+    return Math.max(
+        LIVE_TASK_REFRESH_MIN_SECONDS,
+        Math.min(LIVE_TASK_REFRESH_MAX_SECONDS, Math.round(median))
+    );
+};
+
+const alignToNextSlot = (targetTs, baseTs, intervalSec) => {
+    if (!Number.isFinite(targetTs) || !Number.isFinite(baseTs) || !Number.isFinite(intervalSec)) return null;
+    if (baseTs <= 0 || intervalSec <= 0) return null;
+    if (targetTs <= baseTs) return baseTs;
+    const step = Math.ceil((targetTs - baseTs) / intervalSec);
+    return baseTs + step * intervalSec;
+};
+
+const resetLiveTask60State = () => {
+    STATE.live.task60 = createDefaultLiveTask60State();
+};
+
+const updateLiveTask60Progress = (dailyItems = []) => {
+    const missionTask = Array.isArray(dailyItems) ? dailyItems.find(isLiveTask60) : null;
+    if (!missionTask) {
+        resetLiveTask60State();
+        return;
+    }
+
+    const nowTs = getNowTs();
+    const nextCur = normalizePositiveInt(missionTask.cur, 0);
+    const nextTotal = normalizePositiveInt(missionTask.total, LIVE_TASK_60_LIMIT_SECONDS) || LIVE_TASK_60_LIMIT_SECONDS;
+    const nextStatus = normalizePositiveInt(missionTask.status, 0);
+    const prev = STATE.live.task60 && typeof STATE.live.task60 === 'object'
+        ? STATE.live.task60
+        : createDefaultLiveTask60State();
+    const shouldReset = !prev.exists || nextTotal !== prev.total || nextCur < prev.cur;
+
+    const nextState = shouldReset
+        ? createDefaultLiveTask60State()
+        : {
+            ...prev,
+            refreshIntervals: [...(prev.refreshIntervals || [])],
+        };
+
+    if (shouldReset) {
+        nextState.lastCurChangeAt = nextCur > 0 ? nowTs : 0;
+        nextState.completedAt = 0;
+    } else if (nextCur > nextState.cur) {
+        const gap = nowTs - normalizePositiveInt(nextState.lastCurChangeAt, 0);
+        if (gap >= LIVE_TASK_REFRESH_MIN_SECONDS && gap <= LIVE_TASK_REFRESH_MAX_SECONDS) {
+            nextState.refreshIntervals.push(gap);
+            if (nextState.refreshIntervals.length > LIVE_TASK_REFRESH_SAMPLE_LIMIT) {
+                nextState.refreshIntervals = nextState.refreshIntervals.slice(-LIVE_TASK_REFRESH_SAMPLE_LIMIT);
+            }
+        }
+        nextState.lastCurChangeAt = nowTs;
+    }
+
+    if (nextStatus === TASK_STATUS.DONE || nextCur >= nextTotal) {
+        if (!nextState.completedAt) nextState.completedAt = nowTs;
+    } else if (nextStatus !== TASK_STATUS.DONE) {
+        nextState.completedAt = 0;
+    }
+
+    nextState.exists = true;
+    nextState.name = String(missionTask.name || '');
+    nextState.cur = nextCur;
+    nextState.total = nextTotal;
+    nextState.status = nextStatus;
+    nextState.lastSeenAt = nowTs;
+
+    STATE.live.task60 = nextState;
+};
+
+const getOneHourEtaTs = (isLive, task60) => {
+    if (!isLive) return null;
+    if (Number.isFinite(STATE.live.liveStartTs) && STATE.live.liveStartTs > 0) {
+        return STATE.live.liveStartTs + LIVE_TASK_60_LIMIT_SECONDS;
+    }
+    if (task60?.exists) {
+        return getNowTs() + Math.max(0, LIVE_TASK_60_LIMIT_SECONDS - normalizePositiveInt(task60.cur, 0));
+    }
+    return null;
+};
+
+const estimateTask60DoneEtaTs = (task60, localOneHourTs) => {
+    if (!task60?.exists || !Number.isFinite(localOneHourTs) || localOneHourTs <= 0) return null;
+    if (task60.status === TASK_STATUS.DONE || task60.cur >= task60.total) {
+        return task60.completedAt || task60.lastSeenAt || getNowTs();
+    }
+    const nowTs = getNowTs();
+    const intervalSec = estimateTaskRefreshIntervalSeconds(task60);
+    if (task60.lastCurChangeAt > 0) {
+        let eta = alignToNextSlot(localOneHourTs, task60.lastCurChangeAt, intervalSec);
+        if (eta !== null && eta < nowTs) {
+            eta = alignToNextSlot(nowTs, task60.lastCurChangeAt, intervalSec);
+        }
+        return eta;
+    }
+    if (task60.lastSeenAt > 0) {
+        const eta = alignToNextSlot(localOneHourTs, task60.lastSeenAt, intervalSec);
+        if (eta !== null) return eta;
+    }
+    return localOneHourTs + intervalSec;
+};
+
+const buildLiveStatusLines = ({
+    isLive,
+    syncTimeText,
+    startTs,
+    oneHourEtaTs,
+    task60,
+    task60DoneEtaTs,
+}) => {
+    const lines = [
+        { text: `更新 ${syncTimeText}`, title: '直播状态同步时间（自动轮询）' },
+        {
+            text: `开播 ${isLive ? formatTimeByTs(startTs) : '--:--:--'}`,
+            title: isLive ? '本场直播开播时间' : '当前未开播',
+        },
+        {
+            text: `满1h ${isLive ? formatTimeByTs(oneHourEtaTs) : '--:--:--'}`,
+            title: isLive ? '本地估算：直播时长达到 60 分钟的时间' : '当前未开播',
+        },
+    ];
+    if (task60?.exists) {
+        const isTaskDone = task60.status === TASK_STATUS.DONE || task60.cur >= task60.total;
+        lines.push({
+            text: `${isTaskDone ? '任务' : '任务'} ${formatTimeByTs(task60DoneEtaTs)}`,
+            title: isTaskDone
+                ? '每日任务“开播 60 分钟”已完成'
+                : '后台约 5 分钟刷新一次 CUR，按观测节奏估算任务完成时间',
+        });
+    }
+    return lines;
 };
 
 const findAreaBySubId = (subAreaId, areas = STATE.live.areaList) => {
@@ -585,17 +772,31 @@ const getLiveStatusSubText = (isLive) => {
 const getLiveStatusViewModel = () => {
     const isLive = STATE.live.liveStatus === 1;
     const roomInfo = STATE.live.roomInfo;
+    const task60 = STATE.live.task60 && typeof STATE.live.task60 === 'object'
+        ? STATE.live.task60
+        : createDefaultLiveTask60State();
     const areaText = roomInfo?.parent_name && roomInfo?.area_v2_name
         ? `${roomInfo.parent_name} / ${roomInfo.area_v2_name}`
         : '分区信息待获取';
     const syncTimeText = STATE.live.lastSyncAt
-        ? new Date(STATE.live.lastSyncAt).toLocaleTimeString()
+        ? formatTimeByTs(Math.floor(STATE.live.lastSyncAt / 1000))
         : '--:--:--';
+    const oneHourEtaTs = getOneHourEtaTs(isLive, task60);
+    const task60DoneEtaTs = estimateTask60DoneEtaTs(task60, oneHourEtaTs);
+    const statusLines = buildLiveStatusLines({
+        isLive,
+        syncTimeText,
+        startTs: STATE.live.liveStartTs,
+        oneHourEtaTs,
+        task60,
+        task60DoneEtaTs,
+    });
+
     return {
         isLive,
         duration: isLive ? formatDuration(getLiveDurationSeconds()) : '--:--:--',
         areaText,
-        syncTimeText,
+        statusLines,
         subText: getLiveStatusSubText(isLive),
         isOperating: STATE.live.isOperating,
     };
@@ -604,7 +805,7 @@ const getLiveStatusRenderHash = (viewModel) => ([
     viewModel.isLive ? 1 : 0,
     viewModel.subText,
     viewModel.areaText,
-    viewModel.syncTimeText,
+    (viewModel.statusLines || []).map((line) => line.text).join(','),
     viewModel.isOperating ? 1 : 0,
 ].join('|'));
 const buildLiveStatusCardHtml = (tabKey, viewModel) => `
@@ -620,7 +821,11 @@ const buildLiveStatusCardHtml = (tabKey, viewModel) => `
     <div class="live-duration-line">
         <span class="label">本场时长</span><span class="live-duration-value">${viewModel.duration}</span>
     </div>
-    <div class="live-card-sync" title="15秒自动轮询更新">更新于 ${viewModel.syncTimeText}</div>
+    <div class="live-card-sync">
+        ${(viewModel.statusLines || [])
+            .map((line) => `<span class="live-card-sync-item" title="${line.title || line.text}">${line.text}</span>`)
+            .join('')}
+    </div>
 `;
 
 const renderLiveStatusCard = (tabKey) => {
@@ -672,4 +877,5 @@ export {
     refreshLiveState,
     updateLiveDurationTexts,
     renderLiveStatusCard,
+    updateLiveTask60Progress,
 };

@@ -7,7 +7,7 @@ import {
     checkTodaySubmission,
     refreshActivityArchives,
 } from './activity.js';
-import { renderLiveStatusCard } from './live.js';
+import { renderLiveStatusCard, updateLiveTask60Progress } from './live.js';
 
 // ==========================================
 // 9. 渲染引擎
@@ -414,6 +414,7 @@ const renderSubmitTab = () => {
 const render = (sections) => {
     const container = getById(DOM_IDS.SCROLL_VIEW);
     if (!container) return;
+    updateLiveTask60Progress(sections[TASK_TYPE.DAILY] || []);
 
     // ---- Daily Grid ----
     renderGrid(sections[TASK_TYPE.DAILY], container);
