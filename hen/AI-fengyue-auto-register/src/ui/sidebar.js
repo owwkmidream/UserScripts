@@ -11,6 +11,14 @@ function getAutoRegister() {
     return APP_STATE.refs.autoRegister;
 }
 
+function getIframeExtractor() {
+    return APP_STATE.refs.iframeExtractor;
+}
+
+function getModelPopupSorter() {
+    return APP_STATE.refs.modelPopupSorter;
+}
+
 export const Sidebar = {
     element: null,
     isOpen: false,
@@ -105,7 +113,7 @@ export const Sidebar = {
                 <div class="aifengyue-section">
                     <div class="aifengyue-section-title">操作</div>
                     <button class="aifengyue-btn aifengyue-btn-primary" id="aifengyue-start">
-                        🚀 开始自动注册
+                        🚀 开始注册（注册页辅助）
                     </button>
                     <div class="aifengyue-btn-group">
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-refresh-email">
@@ -115,8 +123,42 @@ export const Sidebar = {
                             📩 获取验证码
                         </button>
                     </div>
+                    <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick" style="margin-top: 10px; width: 100%;">
+                        ⚡ 一键注册（接口）
+                    </button>
                     <div class="aifengyue-hint" style="margin-top: 12px; font-size: 12px; color: #8a8aaa; line-height: 1.6;">
-                        💡 提示：点击"开始自动注册"后，将自动完成发送验证码、轮询邮箱、提交注册，并把返回 data（兼容 data.token）写入 localStorage 的 console_token；随后自动调用 gender、favorite_tags、extend_set 跳过首次引导。
+                        💡 注册页模式：填表后由你完成人机验证并提交。非注册页可用"一键注册（接口）"。
+                    </div>
+                </div>
+
+                <div class="aifengyue-divider"></div>
+
+                <div class="aifengyue-section">
+                    <div class="aifengyue-section-title">页面工具</div>
+                    <div class="aifengyue-status-card" style="margin-bottom: 10px;">
+                        <div class="aifengyue-info-row">
+                            <span class="aifengyue-info-label">详情页检测</span>
+                            <span class="aifengyue-info-value" id="aifengyue-detail-status">否</span>
+                        </div>
+                        <div class="aifengyue-info-row">
+                            <span class="aifengyue-info-label">可提取 HTML</span>
+                            <span class="aifengyue-info-value" id="aifengyue-extract-status">否</span>
+                        </div>
+                        <div class="aifengyue-info-row">
+                            <span class="aifengyue-info-label">自动排序开关</span>
+                            <label style="display:flex;align-items:center;gap:6px;color:#c0c0dc;">
+                                <input type="checkbox" id="aifengyue-sort-toggle">
+                                启用
+                            </label>
+                        </div>
+                    </div>
+                    <div class="aifengyue-btn-group">
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-extract-html">
+                            📄 提取 HTML
+                        </button>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-sort-now">
+                            ↕️ 立即排序
+                        </button>
                     </div>
                 </div>
             </div>
@@ -155,6 +197,10 @@ export const Sidebar = {
             getAutoRegister()?.start();
         });
 
+        this.element.querySelector('#aifengyue-start-oneclick').addEventListener('click', () => {
+            getAutoRegister()?.startOneClickRegister();
+        });
+
         this.element.querySelector('#aifengyue-refresh-email').addEventListener('click', () => {
             getAutoRegister()?.generateNewEmail();
         });
@@ -189,6 +235,32 @@ export const Sidebar = {
                 getToast()?.success('统计已重置');
             }
         });
+
+        this.element.querySelector('#aifengyue-extract-html').addEventListener('click', () => {
+            const extractor = getIframeExtractor();
+            if (!extractor) return;
+            if (!extractor.isExtractAvailable()) {
+                getToast()?.warning('当前页面没有可提取的 iframe srcdoc');
+                this.updateToolPanel();
+                return;
+            }
+            extractor.extractAndSave();
+            this.updateToolPanel();
+        });
+
+        this.element.querySelector('#aifengyue-sort-now').addEventListener('click', () => {
+            const sorter = getModelPopupSorter();
+            if (!sorter) return;
+            sorter.sortPopup();
+            getToast()?.info('已触发一次模型排序');
+        });
+
+        this.element.querySelector('#aifengyue-sort-toggle').addEventListener('change', (e) => {
+            const sorter = getModelPopupSorter();
+            if (!sorter) return;
+            sorter.setSortEnabled(!!e.target.checked);
+            getToast()?.info(`自动排序已${e.target.checked ? '开启' : '关闭'}`);
+        });
     },
 
     loadSavedData() {
@@ -197,6 +269,7 @@ export const Sidebar = {
             this.element.querySelector('#aifengyue-api-key').value = apiKey;
         }
         this.updateUsageDisplay();
+        this.updateToolPanel();
     },
 
     updateUsageDisplay() {
@@ -287,5 +360,31 @@ export const Sidebar = {
         if (username) username.textContent = this.state.username || '未生成';
         if (password) password.textContent = this.state.password || '未生成';
         if (code) code.textContent = this.state.verificationCode || '等待中...';
+        this.updateToolPanel();
+    },
+
+    updateToolPanel() {
+        if (!this.element) return;
+
+        const autoRegister = getAutoRegister();
+        const extractor = getIframeExtractor();
+        const sorter = getModelPopupSorter();
+
+        const detailStatus = this.element.querySelector('#aifengyue-detail-status');
+        const extractStatus = this.element.querySelector('#aifengyue-extract-status');
+        const sortToggle = this.element.querySelector('#aifengyue-sort-toggle');
+        const startBtn = this.element.querySelector('#aifengyue-start');
+
+        const onRegisterPage = !!autoRegister?.isRegisterPage();
+        if (startBtn) {
+            startBtn.textContent = onRegisterPage ? '🚀 开始注册（注册页辅助）' : '🚀 开始注册（自动模式）';
+        }
+
+        const isDetail = !!extractor?.checkDetailPage();
+        const canExtract = !!extractor?.isExtractAvailable();
+
+        if (detailStatus) detailStatus.textContent = isDetail ? '是' : '否';
+        if (extractStatus) extractStatus.textContent = canExtract ? '是' : '否';
+        if (sortToggle) sortToggle.checked = sorter?.isSortEnabled?.() ?? true;
     },
 };

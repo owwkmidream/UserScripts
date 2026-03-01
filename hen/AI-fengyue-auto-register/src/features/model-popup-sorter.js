@@ -1,10 +1,20 @@
 import { IframeExtractor } from './iframe-extractor.js';
+import { CONFIG } from '../constants.js';
+import { gmGetValue, gmSetValue } from '../gm.js';
 
 export const ModelPopupSorter = {
     sortScheduled: false,
 
+    isSortEnabled() {
+        return gmGetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, true);
+    },
+
+    setSortEnabled(enabled) {
+        gmSetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, !!enabled);
+    },
+
     isEnabled() {
-        return IframeExtractor.checkDetailPage();
+        return this.isSortEnabled() && IframeExtractor.checkDetailPage();
     },
 
     scheduleSort() {

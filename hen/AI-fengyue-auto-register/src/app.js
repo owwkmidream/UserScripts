@@ -14,6 +14,8 @@ function init() {
     APP_STATE.refs.iframeExtractor = IframeExtractor;
     APP_STATE.refs.modelPopupSorter = ModelPopupSorter;
 
+    Sidebar.init();
+
     SPAWatcher.startObserver();
     registerMenuCommands();
 
@@ -28,6 +30,7 @@ function init() {
 
         IframeExtractor.checkAndUpdate();
         ModelPopupSorter.scheduleSort();
+        Sidebar.updateToolPanel();
     }, 800);
 
     console.log('[AI风月注册助手] 已加载 (SPA 模式)');

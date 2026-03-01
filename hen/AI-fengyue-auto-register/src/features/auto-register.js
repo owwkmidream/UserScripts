@@ -58,6 +58,23 @@ export const AutoRegister = {
         simulateInput(element, value);
     },
 
+    findAndClickSendCodeButton() {
+        const buttons = document.querySelectorAll('button, a, span[role="button"]');
+        for (const btn of buttons) {
+            const text = (btn.textContent || btn.innerText || '').trim();
+            const ariaLabel = btn.getAttribute('aria-label') || '';
+
+            if (text.includes('发送') || text.includes('获取') || text.includes('验证码') ||
+                text.includes('Send') || text.includes('Code') || text.includes('Get') ||
+                ariaLabel.includes('验证码') || ariaLabel.toLowerCase().includes('code')) {
+                if (!btn.disabled && !btn.classList.contains('disabled')) {
+                    return { clicked: true, text, element: btn };
+                }
+            }
+        }
+        return { clicked: false, text: '', element: null };
+    },
+
     async requestSiteApi(path, options = {}, runCtx, step = 'SITE_API') {
         const strictCode = options.strictCode === true;
         const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
@@ -274,10 +291,72 @@ export const AutoRegister = {
         return null;
     },
 
-    async start() {
+    async startLegacyRegisterAssist() {
+        const runCtx = createRunContext('LEGACY');
+        let currentStep = '初始化';
+        logInfo(runCtx, 'START', '注册页模式：填表辅助 + 用户手动过验证码');
+        try {
+            if (!this.isRegisterPage()) {
+                throw new Error('当前不在注册页，请使用一键注册（接口）');
+            }
+
+            currentStep = '生成临时邮箱';
+            Sidebar.updateState({
+                status: 'generating',
+                statusMessage: '正在生成临时邮箱...',
+            });
+
+            this.registrationStartTime = Math.floor(Date.now() / 1000);
+            gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
+
+            const email = await ApiService.generateEmail();
+            const username = generateUsername();
+            const password = generatePassword();
+            logInfo(runCtx, 'GENERATE', '生成注册信息完成', { email, username, password });
+
+            Sidebar.updateState({ email, username, password, statusMessage: '正在填充表单...' });
+
+            gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
+            gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
+            gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
+
+            this.fillForm(email, username, password);
+
+            currentStep = '触发发送验证码';
+            const sendResult = this.findAndClickSendCodeButton();
+            if (sendResult.clicked) {
+                sendResult.element?.click();
+                Sidebar.updateState({
+                    status: 'waiting',
+                    statusMessage: '表单已填充并触发发送验证码，请完成人机验证后点击页面注册',
+                    verificationCode: '',
+                });
+                Toast.info('已填表并尝试发送验证码，请你完成人机验证后提交注册', 5000);
+                logInfo(runCtx, 'SEND_CODE', '已触发页面发送验证码按钮', { text: sendResult.text });
+            } else {
+                Sidebar.updateState({
+                    status: 'waiting',
+                    statusMessage: '表单已填充，请手动点击发送验证码并完成人机验证',
+                    verificationCode: '',
+                });
+                Toast.warning('已填表，但未找到发送验证码按钮，请手动操作', 5000);
+                logWarn(runCtx, 'SEND_CODE', '未找到发送验证码按钮');
+            }
+        } catch (error) {
+            const message = `${currentStep}失败: ${error.message}`;
+            Sidebar.updateState({ status: 'error', statusMessage: message });
+            Toast.error(message);
+            logError(runCtx, 'FAIL', message, {
+                errorName: error?.name,
+                stack: error?.stack,
+            });
+        }
+    },
+
+    async startOneClickRegister() {
         const runCtx = createRunContext('REG');
         let currentStep = '初始化';
-        logInfo(runCtx, 'START', '开始自动注册流程', {
+        logInfo(runCtx, 'START', '开始一键注册流程', {
             href: window.location.href,
             debugEnabled: isDebugEnabled(),
         });
@@ -397,6 +476,14 @@ export const AutoRegister = {
                 errorName: error?.name,
                 stack: error?.stack,
             });
+        }
+    },
+
+    async start() {
+        if (this.isRegisterPage()) {
+            await this.startLegacyRegisterAssist();
+        } else {
+            await this.startOneClickRegister();
         }
     },
 

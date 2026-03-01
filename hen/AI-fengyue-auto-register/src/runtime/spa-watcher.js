@@ -50,13 +50,11 @@ export const SPAWatcher = {
                     }
                 } else {
                     console.log('[AI风月注册助手] 离开注册页面');
-                    if (Sidebar.element && Sidebar.isOpen) {
-                        Sidebar.close();
-                    }
                 }
 
                 IframeExtractor.checkAndUpdate();
                 ModelPopupSorter.scheduleSort();
+                Sidebar.updateToolPanel();
             }, 500);
         }
     },
@@ -78,6 +76,7 @@ export const SPAWatcher = {
                     }
                     IframeExtractor.checkAndUpdate();
                     ModelPopupSorter.scheduleSort();
+                    Sidebar.updateToolPanel();
                 });
             }
         });

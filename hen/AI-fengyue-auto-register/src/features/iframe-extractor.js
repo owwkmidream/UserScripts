@@ -15,6 +15,10 @@ export const IframeExtractor = {
         return iframes.length > 0 ? iframes[0] : null;
     },
 
+    isExtractAvailable() {
+        return this.checkDetailPage() && this.findSrcdocIframe() !== null;
+    },
+
     createStyles() {
         gmAddStyle(`
             #aifengyue-extract-btn {
@@ -115,17 +119,9 @@ export const IframeExtractor = {
     },
 
     checkAndUpdate() {
-        const isDetailPage = this.checkDetailPage();
-        const hasIframe = this.findSrcdocIframe() !== null;
-
-        if (isDetailPage && hasIframe) {
-            if (!this.button) {
-                this.createButton();
-                console.log('[Iframe 提取器] 检测到详情页,已显示提取按钮');
-            }
-        } else if (this.button) {
+        this.isDetailPage = this.checkDetailPage();
+        if (this.button) {
             this.removeButton();
-            console.log('[Iframe 提取器] 离开详情页,已隐藏提取按钮');
         }
     },
 };
