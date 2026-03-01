@@ -1342,6 +1342,149 @@
         }
     };
 
+    // ==================== 详情页模型悬浮窗排序器 ====================
+    const ModelPopupSorter = {
+        _sortScheduled: false,
+
+        // 仅在详情页启用
+        isEnabled() {
+            return IframeExtractor.checkDetailPage();
+        },
+
+        // 调度排序，避免高频 mutation 触发重复计算
+        scheduleSort() {
+            if (!this.isEnabled() || this._sortScheduled) return;
+            this._sortScheduled = true;
+
+            requestAnimationFrame(() => {
+                this._sortScheduled = false;
+                this.sortPopup();
+            });
+        },
+
+        // 定位模型悬浮窗（优先命中用户提供的 id）
+        findPopup() {
+            let popup = document.querySelector('div[id=":rb0:"][data-floating-ui-portal]');
+            if (popup) return popup;
+
+            const portals = document.querySelectorAll('div[data-floating-ui-portal]');
+            for (const portal of portals) {
+                const hasTabs = portal.querySelector('[role="tablist"]');
+                if (!hasTabs) continue;
+                if ((portal.textContent || '').includes('价格系数')) {
+                    return portal;
+                }
+            }
+            return null;
+        },
+
+        // 提取模型项的价格系数，找不到时返回 Infinity
+        extractPrice(itemEl) {
+            if (!itemEl) return Number.POSITIVE_INFINITY;
+
+            const text = (itemEl.textContent || '').replace(/\s+/g, ' ');
+            const textMatch = text.match(/价格系数[：:]\s*([0-9]+(?:\.[0-9]+)?)/);
+            if (textMatch) {
+                const value = parseFloat(textMatch[1]);
+                if (Number.isFinite(value)) return value;
+            }
+
+            const titleNode = itemEl.querySelector('span[title]');
+            if (titleNode) {
+                const titleValue = parseFloat(titleNode.getAttribute('title') || '');
+                if (Number.isFinite(titleValue)) return titleValue;
+            }
+
+            return Number.POSITIVE_INFINITY;
+        },
+
+        // 识别分类块（Accordion 外层）
+        findCategoryBlocks(popup) {
+            const blocks = Array.from(popup.querySelectorAll('div.w-full.cursor-pointer.block'));
+            return blocks.filter((block) => {
+                return Boolean(
+                    block.querySelector('.MuiAccordionSummary-root') &&
+                    block.querySelector('.MuiAccordionDetails-root') &&
+                    (block.textContent || '').includes('价格系数')
+                );
+            });
+        },
+
+        // 获取某个分类的信息与条目
+        buildCategoryMeta(block, blockIndex) {
+            const details = block.querySelector('.MuiAccordionDetails-root');
+            if (!details) return null;
+
+            const items = Array.from(details.children).filter((child) => {
+                return child.nodeType === 1 && (child.textContent || '').includes('价格系数');
+            });
+            if (items.length === 0) return null;
+
+            const itemMetas = items.map((item, index) => ({
+                item,
+                index,
+                price: this.extractPrice(item)
+            }));
+
+            const minPrice = itemMetas.reduce((min, meta) => Math.min(min, meta.price), Number.POSITIVE_INFINITY);
+
+            return {
+                block,
+                blockIndex,
+                details,
+                itemMetas,
+                minPrice
+            };
+        },
+
+        // 分类内部按价格系数升序
+        sortItemsInCategory(meta) {
+            const sorted = [...meta.itemMetas].sort((a, b) => {
+                if (a.price !== b.price) return a.price - b.price;
+                return a.index - b.index;
+            });
+
+            const needReorder = sorted.some((entry, index) => entry.item !== meta.itemMetas[index].item);
+            if (!needReorder) return;
+
+            const frag = document.createDocumentFragment();
+            sorted.forEach((entry) => frag.appendChild(entry.item));
+            meta.details.appendChild(frag);
+        },
+
+        // 先做分类内排序，再按分类最低价排序分类
+        sortPopup() {
+            const popup = this.findPopup();
+            if (!popup) return;
+
+            const blocks = this.findCategoryBlocks(popup);
+            if (blocks.length === 0) return;
+
+            const parent = blocks[0].parentElement;
+            if (!parent) return;
+
+            const metas = blocks
+                .map((block, index) => this.buildCategoryMeta(block, index))
+                .filter(Boolean);
+
+            if (metas.length === 0) return;
+
+            metas.forEach((meta) => this.sortItemsInCategory(meta));
+
+            const sortedCategories = [...metas].sort((a, b) => {
+                if (a.minPrice !== b.minPrice) return a.minPrice - b.minPrice;
+                return a.blockIndex - b.blockIndex;
+            });
+
+            const needReorderCategory = sortedCategories.some((entry, index) => entry.block !== metas[index].block);
+            if (!needReorderCategory) return;
+
+            const frag = document.createDocumentFragment();
+            sortedCategories.forEach((entry) => frag.appendChild(entry.block));
+            parent.appendChild(frag);
+        }
+    };
+
     // ==================== SPA 监听与 DOM 保护 ====================
     const SPAWatcher = {
         observer: null,
@@ -1404,6 +1547,8 @@
 
                     // 检查 iframe 提取器
                     IframeExtractor.checkAndUpdate();
+                    // 检查并排序详情页模型悬浮窗
+                    ModelPopupSorter.scheduleSort();
                 }, 500);
             }
         },
@@ -1427,6 +1572,8 @@
                         }
                         // 检查 iframe 提取器
                         IframeExtractor.checkAndUpdate();
+                        // 检查并排序详情页模型悬浮窗
+                        ModelPopupSorter.scheduleSort();
                     });
                 }
             });
@@ -1523,6 +1670,8 @@
 
             // 检查 iframe 提取器
             IframeExtractor.checkAndUpdate();
+            // 检查并排序详情页模型悬浮窗
+            ModelPopupSorter.scheduleSort();
         }, 800);
 
         console.log('[AI风月注册助手] 已加载 (SPA 模式)');
