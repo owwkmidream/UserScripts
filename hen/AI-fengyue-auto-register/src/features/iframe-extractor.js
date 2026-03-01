@@ -6,7 +6,7 @@ export const IframeExtractor = {
     isDetailPage: false,
 
     checkDetailPage() {
-        const urlPattern = /\/zh\/explore\/installed\/[0-9a-f-]+$/i;
+        const urlPattern = /\/zh\/explore\/(?:test-)?installed\/[0-9a-f-]+$/i;
         return urlPattern.test(window.location.pathname);
     },
 

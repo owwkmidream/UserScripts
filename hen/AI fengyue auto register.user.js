@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.5
+// @version      2.0.6
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
@@ -1187,7 +1187,7 @@
 		button: null,
 		isDetailPage: false,
 		checkDetailPage() {
-			const urlPattern = /\/zh\/explore\/installed\/[0-9a-f-]+$/i;
+			const urlPattern = /\/zh\/explore\/(?:test-)?installed\/[0-9a-f-]+$/i;
 			return urlPattern.test(window.location.pathname);
 		},
 		findSrcdocIframe() {
