@@ -116,7 +116,7 @@ export const Sidebar = {
                         </button>
                     </div>
                     <div class="aifengyue-hint" style="margin-top: 12px; font-size: 12px; color: #8a8aaa; line-height: 1.6;">
-                        💡 提示：点击"开始自动注册"后，脚本会自动点击"发送验证码"按钮，并在 2 秒后自动获取验证码。您只需完成人机验证即可。如果自动获取失败，可手动点击"获取验证码"重试。
+                        💡 提示：点击"开始自动注册"后，将自动完成发送验证码、轮询邮箱、提交注册，并把返回 data（兼容 data.token）写入 localStorage 的 console_token，无需手动过验证码。
                     </div>
                 </div>
             </div>

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.0
+// @version      2.0.3
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
@@ -30,7 +30,8 @@
 			GENERATED_USERNAME: "generated_username",
 			REGISTRATION_START_TIME: "registration_start_time",
 			API_USAGE_COUNT: "api_usage_count",
-			API_USAGE_RESET_DATE: "api_usage_reset_date"
+			API_USAGE_RESET_DATE: "api_usage_reset_date",
+			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled"
 		},
 		API_QUOTA_LIMIT: 1e3,
 		VERIFICATION_CODE_PATTERNS: [
@@ -77,6 +78,57 @@
 	const gmRegisterMenuCommand = (name, handler) => GM_registerMenuCommand(name, handler);
 	const gmXmlHttpRequest = (options) => GM_xmlhttpRequest(options);
 	const gmAddStyle = (styles) => GM_addStyle(styles);
+	function parseHeaders(rawHeaders) {
+		const headers = {};
+		const lines = (rawHeaders || "").split(/\r?\n/);
+		for (const line of lines) {
+			if (!line) continue;
+			const idx = line.indexOf(":");
+			if (idx <= 0) continue;
+			const key = line.slice(0, idx).trim().toLowerCase();
+			const value = line.slice(idx + 1).trim();
+			if (key) headers[key] = value;
+		}
+		return headers;
+	}
+	function gmRequest(options) {
+		return new Promise((resolve, reject) => {
+			gmXmlHttpRequest({
+				...options,
+				onload: (response) => resolve(response),
+				onerror: (error) => reject(new Error(error?.error || "GM 请求失败")),
+				ontimeout: () => reject(new Error("GM 请求超时")),
+				onabort: () => reject(new Error("GM 请求已中止"))
+			});
+		});
+	}
+	async function gmRequestJson(options) {
+		const method = options.method || "GET";
+		const response = await gmRequest({
+			method,
+			url: options.url,
+			headers: options.headers || {},
+			data: options.body ? JSON.stringify(options.body) : undefined,
+			timeout: options.timeout ?? 3e4,
+			anonymous: options.anonymous ?? false
+		});
+		const raw = response.responseText || "";
+		let json = null;
+		if (raw) {
+			try {
+				json = JSON.parse(raw);
+			} catch {
+				json = null;
+			}
+		}
+		return {
+			status: response.status || 0,
+			statusText: response.statusText || "",
+			headers: parseHeaders(response.responseHeaders || ""),
+			raw,
+			json
+		};
+	}
 
 //#endregion
 //#region src/services/api-service.js
@@ -263,7 +315,7 @@
                         </button>
                     </div>
                     <div class="aifengyue-hint" style="margin-top: 12px; font-size: 12px; color: #8a8aaa; line-height: 1.6;">
-                        💡 提示：点击"开始自动注册"后，脚本会自动点击"发送验证码"按钮，并在 2 秒后自动获取验证码。您只需完成人机验证即可。如果自动获取失败，可手动点击"获取验证码"重试。
+                        💡 提示：点击"开始自动注册"后，将自动完成发送验证码、轮询邮箱、提交注册，并把返回 data（兼容 data.token）写入 localStorage 的 console_token，无需手动过验证码。
                     </div>
                 </div>
             </div>
@@ -643,7 +695,81 @@
 	}
 
 //#endregion
+//#region src/utils/logger.js
+	const PREFIX = "AI风月注册助手";
+	function output(level, text, meta) {
+		if (level === "ERROR") {
+			if (meta === undefined) console.error(text);
+			else console.error(text, meta);
+			return;
+		}
+		if (level === "WARN") {
+			if (meta === undefined) console.warn(text);
+			else console.warn(text, meta);
+			return;
+		}
+		if (level === "DEBUG") {
+			if (meta === undefined) console.debug(text);
+			else console.debug(text, meta);
+			return;
+		}
+		if (meta === undefined) console.log(text);
+		else console.log(text, meta);
+	}
+	function baseLog(level, runCtx, step, message, meta) {
+		const runId = runCtx?.runId || "NO-RUN";
+		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
+		output(level, tag, meta);
+	}
+	function createRunContext(prefix = "AR") {
+		const stamp = Date.now().toString(36);
+		const rand = Math.random().toString(36).slice(2, 6);
+		return {
+			runId: `${prefix}-${stamp}-${rand}`,
+			startedAt: Date.now()
+		};
+	}
+	function isDebugEnabled() {
+		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
+	}
+	function setDebugEnabled(enabled) {
+		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
+	}
+	function toggleDebugEnabled() {
+		const next = !isDebugEnabled();
+		setDebugEnabled(next);
+		return next;
+	}
+	function logInfo(runCtx, step, message, meta) {
+		baseLog("INFO", runCtx, step, message, meta);
+	}
+	function logWarn(runCtx, step, message, meta) {
+		baseLog("WARN", runCtx, step, message, meta);
+	}
+	function logError(runCtx, step, message, meta) {
+		baseLog("ERROR", runCtx, step, message, meta);
+	}
+	function logDebug(runCtx, step, message, meta) {
+		if (!isDebugEnabled()) return;
+		baseLog("DEBUG", runCtx, step, message, meta);
+	}
+
+//#endregion
 //#region src/features/auto-register.js
+	const X_LANGUAGE = "zh-Hans";
+	const SITE_ENDPOINTS = {
+		SEND_CODE: "/console/api/register/email",
+		SLIDE_GET: "/go/api/slide/get",
+		REGISTER: "/console/api/register"
+	};
+	function readErrorMessage(payload, fallback) {
+		if (!payload || typeof payload !== "object") return fallback;
+		const raw = payload.error ?? payload.message ?? payload.msg ?? payload.detail ?? payload.errmsg;
+		if (typeof raw !== "string") return fallback;
+		const message = raw.trim();
+		if (!message || /^(ok|success)$/i.test(message)) return fallback;
+		return message;
+	}
 	const AutoRegister = {
 		registrationStartTime: null,
 		isRegisterPage() {
@@ -660,28 +786,157 @@
 		simulateInput(element, value) {
 			simulateInput(element, value);
 		},
-		findAndClickSendCodeButton() {
-			const buttons = document.querySelectorAll("button, a, span[role=\"button\"]");
-			for (const btn of buttons) {
-				const text = (btn.textContent || btn.innerText || "").trim();
-				const ariaLabel = btn.getAttribute("aria-label") || "";
-				if (text.includes("发送") || text.includes("获取") || text.includes("验证码") || text.includes("Send") || text.includes("Code") || text.includes("Get") || ariaLabel.includes("验证码") || ariaLabel.includes("code")) {
-					if (!btn.disabled && !btn.classList.contains("disabled")) {
-						console.log("[自动注册] 找到发送验证码按钮:", text);
-						btn.click();
-						return true;
+		async requestSiteApi(path, options = {}, runCtx, step = "SITE_API") {
+			const strictCode = options.strictCode === true;
+			const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
+			const method = options.method || "GET";
+			const url = `${window.location.origin}${path}`;
+			logInfo(runCtx, step, `${method} ${path} 请求开始`);
+			logDebug(runCtx, step, "请求详情", {
+				url,
+				headers: {
+					"Content-Type": "application/json",
+					"X-Language": X_LANGUAGE,
+					...options.headers || {}
+				},
+				body: options.body ?? null,
+				anonymous: true
+			});
+			const response = await gmRequestJson({
+				method,
+				url,
+				headers: {
+					"Content-Type": "application/json",
+					"X-Language": X_LANGUAGE,
+					...options.headers || {}
+				},
+				body: options.body,
+				timeout: options.timeout ?? 3e4,
+				anonymous: true
+			});
+			const payload = response.json;
+			logInfo(runCtx, step, `${method} ${path} 响应`, {
+				httpStatus: response.status,
+				statusField: payload?.status,
+				result: payload?.result,
+				success: payload?.success,
+				code: payload?.code,
+				message: payload?.message
+			});
+			logDebug(runCtx, step, "原始响应内容", {
+				raw: response.raw,
+				json: payload
+			});
+			if (response.status < 200 || response.status >= 300) {
+				throw new Error(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`));
+			}
+			if (payload === null) {
+				throw new Error(`接口 ${path} 返回非 JSON 响应`);
+			}
+			if (payload?.success === false) {
+				throw new Error(readErrorMessage(payload, `接口 ${path} 返回失败`));
+			}
+			if (typeof payload?.result === "string" && !/^(success|ok)$/i.test(payload.result.trim())) {
+				throw new Error(readErrorMessage(payload, `接口 ${path} 返回 result=${payload.result}`));
+			}
+			if (typeof payload?.status === "number" && payload.status >= 400) {
+				throw new Error(readErrorMessage(payload, `接口 ${path} 返回 status=${payload.status}`));
+			}
+			if (strictCode && typeof payload?.code === "number" && !acceptableCodes.includes(payload.code)) {
+				throw new Error(readErrorMessage(payload, `接口 ${path} 返回 code=${payload.code}`));
+			}
+			return payload;
+		},
+		async sendRegisterEmailCode(email, runCtx) {
+			const payload = await this.requestSiteApi(SITE_ENDPOINTS.SEND_CODE, {
+				method: "POST",
+				body: {
+					email,
+					lang: X_LANGUAGE
+				}
+			}, runCtx, "SEND_CODE");
+			if (typeof payload?.code === "number" && payload.code !== 0 && payload.code !== 200) {
+				logWarn(runCtx, "SEND_CODE", "发送验证码接口返回非 0 code，继续执行", payload);
+			}
+			return payload;
+		},
+		async getRegToken(runCtx) {
+			const payload = await this.requestSiteApi(SITE_ENDPOINTS.SLIDE_GET, { method: "GET" }, runCtx, "GET_REG_TOKEN");
+			const regToken = payload?.data?.reg_token;
+			if (!regToken) {
+				throw new Error("未获取到 reg_token");
+			}
+			logInfo(runCtx, "GET_REG_TOKEN", "reg_token 获取成功");
+			logDebug(runCtx, "GET_REG_TOKEN", "reg_token 完整值", { regToken });
+			return regToken;
+		},
+		async registerWithCode({ username, email, password, code, regToken }, runCtx) {
+			const payload = await this.requestSiteApi(SITE_ENDPOINTS.REGISTER, {
+				method: "POST",
+				body: {
+					name: username,
+					email,
+					password,
+					code,
+					remember_me: true,
+					interface_language: X_LANGUAGE,
+					client: "web_pc",
+					is_web3_account: false,
+					reg_token: regToken
+				}
+			}, runCtx, "REGISTER");
+			const token = typeof payload?.data === "string" ? payload.data.trim() : typeof payload?.data?.token === "string" ? payload.data.token.trim() : "";
+			if (!token) {
+				throw new Error("注册成功但未返回 token（支持 data 或 data.token）");
+			}
+			logInfo(runCtx, "REGISTER", "注册接口返回 token");
+			logDebug(runCtx, "REGISTER", "token 完整值", { token });
+			return token;
+		},
+		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
+				});
+				logInfo(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
+				const emails = await ApiService.getEmails(email);
+				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+				logDebug(runCtx, "POLL_CODE", "邮件列表详情", {
+					count: sortedEmails.length,
+					emails: sortedEmails
+				});
+				for (const mail of sortedEmails) {
+					const mailTime = mail.timestamp || 0;
+					if (startTime && mailTime < startTime - 60) {
+						continue;
+					}
+					const content = mail.content || mail.html_content || "";
+					const subject = mail.subject || "";
+					const code = extractVerificationCode(content) || extractVerificationCode(subject);
+					if (code) {
+						logInfo(runCtx, "POLL_CODE", `提取到验证码（第 ${attempt} 次轮询）`);
+						logDebug(runCtx, "POLL_CODE", "验证码完整值", { code });
+						return code;
 					}
 				}
+				if (attempt < maxAttempts) {
+					logWarn(runCtx, "POLL_CODE", `本轮未获取到验证码，${intervalMs}ms 后重试`);
+					await delay(intervalMs);
+				}
 			}
-			console.log("[自动注册] 未找到发送验证码按钮");
-			return false;
+			logError(runCtx, "POLL_CODE", "轮询窗口结束，仍未获取验证码");
+			return null;
 		},
 		async start() {
-			if (!this.isRegisterPage()) {
-				Toast.error("请在注册页面使用此功能");
-				return;
-			}
+			const runCtx = createRunContext("REG");
+			let currentStep = "初始化";
+			logInfo(runCtx, "START", "开始自动注册流程", {
+				href: window.location.href,
+				debugEnabled: isDebugEnabled()
+			});
 			try {
+				currentStep = "生成临时邮箱";
 				Sidebar.updateState({
 					status: "generating",
 					statusMessage: "正在生成临时邮箱..."
@@ -691,6 +946,11 @@
 				const email = await ApiService.generateEmail();
 				const username = generateUsername();
 				const password = generatePassword();
+				logInfo(runCtx, "GENERATE", "生成注册信息完成", {
+					email,
+					username,
+					password
+				});
 				Sidebar.updateState({
 					email,
 					username,
@@ -701,38 +961,76 @@
 				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
 				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
 				this.fillForm(email, username, password);
-				await delay(500);
+				currentStep = "发送验证码";
 				Sidebar.updateState({
-					status: "waiting",
-					statusMessage: "表单已填充，正在尝试点击发送验证码按钮...",
+					status: "fetching",
+					statusMessage: "正在发送验证码...",
 					verificationCode: ""
 				});
-				const clicked = this.findAndClickSendCodeButton();
-				if (clicked) {
-					Toast.success("已自动点击发送验证码！请完成人机验证，2秒后自动获取验证码...", 3e3);
-					Sidebar.updateState({
-						status: "waiting",
-						statusMessage: "已点击发送验证码，等待 2 秒后自动获取..."
-					});
-					await delay(2e3);
-					Sidebar.updateState({ statusMessage: "正在自动获取验证码..." });
-					await this.fetchVerificationCode();
-				} else {
-					Toast.warning("未找到发送验证码按钮，请手动点击后再点击\"获取验证码\"", 5e3);
-					Sidebar.updateState({
-						status: "waiting",
-						statusMessage: "表单已填充。请手动点击页面上的\"发送验证码\"，然后点击侧边栏的\"获取验证码\""
-					});
+				await this.sendRegisterEmailCode(email, runCtx);
+				currentStep = "轮询邮箱验证码";
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: "验证码已发送，正在自动轮询邮箱..."
+				});
+				const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2e3, runCtx);
+				if (!code) {
+					throw new Error("未在轮询窗口内获取到验证码");
 				}
+				Sidebar.updateState({
+					verificationCode: code,
+					statusMessage: `验证码已获取: ${code}`
+				});
+				const { codeInput } = this.getFormElements();
+				if (codeInput) {
+					this.simulateInput(codeInput, code);
+					logInfo(runCtx, "FORM", "验证码已自动填充到输入框");
+				} else {
+					logWarn(runCtx, "FORM", "未找到验证码输入框，跳过自动填充");
+				}
+				currentStep = "获取注册令牌";
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: "正在获取注册令牌..."
+				});
+				const regToken = await this.getRegToken(runCtx);
+				currentStep = "提交注册";
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: "正在提交注册..."
+				});
+				const token = await this.registerWithCode({
+					username,
+					email,
+					password,
+					code,
+					regToken
+				}, runCtx);
+				localStorage.setItem("console_token", token);
+				logInfo(runCtx, "AUTH", "已写入 localStorage.console_token");
+				logDebug(runCtx, "AUTH", "localStorage 写入 token 完整值", { token });
+				Sidebar.updateState({
+					status: "success",
+					statusMessage: "注册成功，已写入 localStorage.console_token"
+				});
+				Toast.success("注册成功，已完成登录态写入（console_token）", 5e3);
+				logInfo(runCtx, "DONE", "自动注册流程完成");
 			} catch (error) {
+				const message = `${currentStep}失败: ${error.message}`;
 				Sidebar.updateState({
 					status: "error",
-					statusMessage: `错误: ${error.message}`
+					statusMessage: message
 				});
-				Toast.error(`生成失败: ${error.message}`);
+				Toast.error(message);
+				logError(runCtx, "FAIL", message, {
+					errorName: error?.name,
+					stack: error?.stack
+				});
 			}
 		},
 		async generateNewEmail() {
+			const runCtx = createRunContext("MAIL");
+			logInfo(runCtx, "START", "开始生成新邮箱");
 			try {
 				Sidebar.updateState({
 					status: "generating",
@@ -751,12 +1049,18 @@
 				const { emailInput } = this.getFormElements();
 				if (emailInput) this.simulateInput(emailInput, email);
 				Toast.success("新邮箱已生成并填充");
+				logInfo(runCtx, "DONE", "新邮箱生成成功", { email });
 			} catch (error) {
 				Sidebar.updateState({
 					status: "error",
 					statusMessage: `错误: ${error.message}`
 				});
 				Toast.error(`生成失败: ${error.message}`);
+				logError(runCtx, "FAIL", "新邮箱生成失败", {
+					errorName: error?.name,
+					message: error?.message,
+					stack: error?.stack
+				});
 			}
 		},
 		fillForm(email, username, password) {
@@ -766,9 +1070,11 @@
 			if (passwordInput) this.simulateInput(passwordInput, password);
 		},
 		async fetchVerificationCode() {
+			const runCtx = createRunContext("CODE");
 			const email = gmGetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, "");
 			if (!email) {
 				Toast.error("请先生成临时邮箱");
+				logWarn(runCtx, "PRECHECK", "未找到当前邮箱，无法获取验证码");
 				return;
 			}
 			const startTime = gmGetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, 0);
@@ -778,52 +1084,45 @@
 					statusMessage: "正在获取验证码邮件..."
 				});
 				Toast.info("正在获取邮件...");
-				const emails = await ApiService.getEmails(email);
-				if (!emails || emails.length === 0) {
+				logInfo(runCtx, "START", "手动获取验证码开始", {
+					email,
+					startTime
+				});
+				const code = await this.pollVerificationCode(email, startTime, 1, 0, runCtx);
+				if (!code) {
 					Sidebar.updateState({
 						status: "waiting",
-						statusMessage: "未收到邮件，请确认已点击\"发送验证码\"，稍后再试"
+						statusMessage: "未找到验证码，请稍后重试"
 					});
-					Toast.warning("未收到邮件，请稍后再试");
+					Toast.warning("未找到验证码，请稍后再试");
+					logWarn(runCtx, "DONE", "手动获取验证码未命中");
 					return;
 				}
-				const sortedEmails = emails.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-				for (const mail of sortedEmails) {
-					const mailTime = mail.timestamp || 0;
-					if (startTime && mailTime < startTime - 60) {
-						console.log(`[验证码] 跳过旧邮件 ${mailTime} < ${startTime}`);
-						continue;
-					}
-					const content = mail.content || mail.html_content || "";
-					const subject = mail.subject || "";
-					const code = extractVerificationCode(content) || extractVerificationCode(subject);
-					if (code) {
-						Sidebar.updateState({
-							status: "success",
-							statusMessage: `验证码: ${code}`,
-							verificationCode: code
-						});
-						const { codeInput } = this.getFormElements();
-						if (codeInput) {
-							this.simulateInput(codeInput, code);
-							Toast.success(`验证码 ${code} 已填充！可以注册了`, 5e3);
-						} else {
-							Toast.success(`验证码: ${code}，请手动输入`, 5e3);
-						}
-						return;
-					}
-				}
 				Sidebar.updateState({
-					status: "waiting",
-					statusMessage: "未找到验证码，请稍后重试"
+					status: "success",
+					statusMessage: `验证码: ${code}`,
+					verificationCode: code
 				});
-				Toast.warning("未找到验证码，请稍后再试");
+				const { codeInput } = this.getFormElements();
+				if (codeInput) {
+					this.simulateInput(codeInput, code);
+					Toast.success(`验证码 ${code} 已填充！`, 5e3);
+					logInfo(runCtx, "DONE", "验证码已填充");
+				} else {
+					Toast.success(`验证码: ${code}，请手动输入`, 5e3);
+					logWarn(runCtx, "DONE", "找到验证码但未找到输入框");
+				}
 			} catch (error) {
 				Sidebar.updateState({
 					status: "error",
 					statusMessage: `获取失败: ${error.message}`
 				});
 				Toast.error(`获取验证码失败: ${error.message}`);
+				logError(runCtx, "FAIL", "手动获取验证码失败", {
+					errorName: error?.name,
+					message: error?.message,
+					stack: error?.stack
+				});
 			}
 		}
 	};
@@ -1047,6 +1346,13 @@
 //#endregion
 //#region src/menu/menu-commands.js
 	function registerMenuCommands() {
+		gmRegisterMenuCommand("🪵 切换调试日志", () => {
+			const enabled = toggleDebugEnabled();
+			Toast.info(`调试日志已${enabled ? "开启" : "关闭"}`);
+		});
+		gmRegisterMenuCommand(`🔍 调试日志状态: ${isDebugEnabled() ? "ON" : "OFF"}`, () => {
+			Toast.info(`当前调试日志: ${isDebugEnabled() ? "ON" : "OFF"}`);
+		});
 		gmRegisterMenuCommand("⚙️ 设置 API Key", () => {
 			const currentKey = ApiService.getApiKey();
 			const newKey = prompt("请输入 GPTMail API Key:", currentKey);
