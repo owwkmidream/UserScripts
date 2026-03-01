@@ -20,6 +20,9 @@ const SITE_ENDPOINTS = {
     SEND_CODE: '/console/api/register/email',
     SLIDE_GET: '/go/api/slide/get',
     REGISTER: '/console/api/register',
+    ACCOUNT_GENDER: '/console/api/account/gender',
+    FAVORITE_TAGS: '/console/api/account_extend/favorite_tags',
+    ACCOUNT_EXTEND_SET: '/console/api/account/extend_set',
 };
 
 function readErrorMessage(payload, fallback) {
@@ -182,6 +185,54 @@ export const AutoRegister = {
         return token;
     },
 
+    async setAccountGender(token, runCtx) {
+        await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_GENDER, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            body: {
+                gender: 1,
+            },
+        }, runCtx, 'SET_GENDER');
+        logInfo(runCtx, 'SET_GENDER', '首次引导-性别设置完成');
+    },
+
+    async submitFavoriteTags(token, runCtx) {
+        await this.requestSiteApi(SITE_ENDPOINTS.FAVORITE_TAGS, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            body: {
+                tag_names: [],
+            },
+        }, runCtx, 'SET_FAVORITE_TAGS');
+        logInfo(runCtx, 'SET_FAVORITE_TAGS', '首次引导-标签提交完成');
+    },
+
+    async setFirstVisitFlag(token, runCtx) {
+        await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            body: {
+                key: 'is_first_visit',
+                value: true,
+            },
+        }, runCtx, 'SET_FIRST_VISIT');
+        logInfo(runCtx, 'SET_FIRST_VISIT', '首次引导-is_first_visit 设置完成');
+    },
+
+    async skipFirstGuide(token, runCtx) {
+        logInfo(runCtx, 'SKIP_GUIDE', '开始跳过首次引导');
+        await this.setAccountGender(token, runCtx);
+        await this.submitFavoriteTags(token, runCtx);
+        await this.setFirstVisitFlag(token, runCtx);
+        logInfo(runCtx, 'SKIP_GUIDE', '首次引导跳过完成');
+    },
+
     async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2000, runCtx) {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             Sidebar.updateState({
@@ -309,11 +360,34 @@ export const AutoRegister = {
             logInfo(runCtx, 'AUTH', '已写入 localStorage.console_token');
             logDebug(runCtx, 'AUTH', 'localStorage 写入 token 完整值', { token });
 
+            currentStep = '跳过首次引导';
+            Sidebar.updateState({
+                status: 'fetching',
+                statusMessage: '注册成功，正在跳过首次引导...',
+            });
+
+            let guideSkipped = true;
+            try {
+                await this.skipFirstGuide(token, runCtx);
+            } catch (guideError) {
+                guideSkipped = false;
+                logError(runCtx, 'SKIP_GUIDE', '首次引导跳过失败', {
+                    errorName: guideError?.name,
+                    message: guideError?.message,
+                    stack: guideError?.stack,
+                });
+                Toast.warning(`注册成功，但跳过首次引导失败: ${guideError.message}`, 6000);
+            }
+
             Sidebar.updateState({
                 status: 'success',
-                statusMessage: '注册成功，已写入 localStorage.console_token',
+                statusMessage: guideSkipped
+                    ? '注册成功，已写入 console_token 并跳过首次引导'
+                    : '注册成功，已写入 console_token（首次引导跳过失败）',
             });
-            Toast.success('注册成功，已完成登录态写入（console_token）', 5000);
+            Toast.success(guideSkipped
+                ? '注册成功，已自动跳过首次引导并写入登录态'
+                : '注册成功，已写入登录态；首次引导跳过失败', 5000);
             logInfo(runCtx, 'DONE', '自动注册流程完成');
         } catch (error) {
             const message = `${currentStep}失败: ${error.message}`;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.3
+// @version      2.0.5
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
@@ -315,7 +315,7 @@
                         </button>
                     </div>
                     <div class="aifengyue-hint" style="margin-top: 12px; font-size: 12px; color: #8a8aaa; line-height: 1.6;">
-                        💡 提示：点击"开始自动注册"后，将自动完成发送验证码、轮询邮箱、提交注册，并把返回 data（兼容 data.token）写入 localStorage 的 console_token，无需手动过验证码。
+                        💡 提示：点击"开始自动注册"后，将自动完成发送验证码、轮询邮箱、提交注册，并把返回 data（兼容 data.token）写入 localStorage 的 console_token；随后自动调用 gender、favorite_tags、extend_set 跳过首次引导。
                     </div>
                 </div>
             </div>
@@ -760,7 +760,10 @@
 	const SITE_ENDPOINTS = {
 		SEND_CODE: "/console/api/register/email",
 		SLIDE_GET: "/go/api/slide/get",
-		REGISTER: "/console/api/register"
+		REGISTER: "/console/api/register",
+		ACCOUNT_GENDER: "/console/api/account/gender",
+		FAVORITE_TAGS: "/console/api/account_extend/favorite_tags",
+		ACCOUNT_EXTEND_SET: "/console/api/account/extend_set"
 	};
 	function readErrorMessage(payload, fallback) {
 		if (!payload || typeof payload !== "object") return fallback;
@@ -893,6 +896,40 @@
 			logDebug(runCtx, "REGISTER", "token 完整值", { token });
 			return token;
 		},
+		async setAccountGender(token, runCtx) {
+			await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_GENDER, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+				body: { gender: 1 }
+			}, runCtx, "SET_GENDER");
+			logInfo(runCtx, "SET_GENDER", "首次引导-性别设置完成");
+		},
+		async submitFavoriteTags(token, runCtx) {
+			await this.requestSiteApi(SITE_ENDPOINTS.FAVORITE_TAGS, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+				body: { tag_names: [] }
+			}, runCtx, "SET_FAVORITE_TAGS");
+			logInfo(runCtx, "SET_FAVORITE_TAGS", "首次引导-标签提交完成");
+		},
+		async setFirstVisitFlag(token, runCtx) {
+			await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+				body: {
+					key: "is_first_visit",
+					value: true
+				}
+			}, runCtx, "SET_FIRST_VISIT");
+			logInfo(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
+		},
+		async skipFirstGuide(token, runCtx) {
+			logInfo(runCtx, "SKIP_GUIDE", "开始跳过首次引导");
+			await this.setAccountGender(token, runCtx);
+			await this.submitFavoriteTags(token, runCtx);
+			await this.setFirstVisitFlag(token, runCtx);
+			logInfo(runCtx, "SKIP_GUIDE", "首次引导跳过完成");
+		},
 		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				Sidebar.updateState({
@@ -1009,11 +1046,28 @@
 				localStorage.setItem("console_token", token);
 				logInfo(runCtx, "AUTH", "已写入 localStorage.console_token");
 				logDebug(runCtx, "AUTH", "localStorage 写入 token 完整值", { token });
+				currentStep = "跳过首次引导";
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: "注册成功，正在跳过首次引导..."
+				});
+				let guideSkipped = true;
+				try {
+					await this.skipFirstGuide(token, runCtx);
+				} catch (guideError) {
+					guideSkipped = false;
+					logError(runCtx, "SKIP_GUIDE", "首次引导跳过失败", {
+						errorName: guideError?.name,
+						message: guideError?.message,
+						stack: guideError?.stack
+					});
+					Toast.warning(`注册成功，但跳过首次引导失败: ${guideError.message}`, 6e3);
+				}
 				Sidebar.updateState({
 					status: "success",
-					statusMessage: "注册成功，已写入 localStorage.console_token"
+					statusMessage: guideSkipped ? "注册成功，已写入 console_token 并跳过首次引导" : "注册成功，已写入 console_token（首次引导跳过失败）"
 				});
-				Toast.success("注册成功，已完成登录态写入（console_token）", 5e3);
+				Toast.success(guideSkipped ? "注册成功，已自动跳过首次引导并写入登录态" : "注册成功，已写入登录态；首次引导跳过失败", 5e3);
 				logInfo(runCtx, "DONE", "自动注册流程完成");
 			} catch (error) {
 				const message = `${currentStep}失败: ${error.message}`;
