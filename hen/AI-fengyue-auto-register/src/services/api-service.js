@@ -2,6 +2,8 @@ import { CONFIG } from '../constants.js';
 import { gmGetValue, gmSetValue, gmXmlHttpRequest } from '../gm.js';
 import { APP_STATE } from '../state.js';
 
+const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
+
 export const ApiService = {
     getApiKey() {
         return gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, CONFIG.DEFAULT_API_KEY);
@@ -37,7 +39,48 @@ export const ApiService = {
         return this.getUsageCount() >= CONFIG.API_QUOTA_LIMIT;
     },
 
-    request(endpoint, options = {}) {
+    resolveRetryAttempts(maxAttempts) {
+        const parsed = Number(maxAttempts);
+        if (Number.isInteger(parsed) && parsed >= 1) {
+            return parsed;
+        }
+        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+    },
+
+    isObjectiveRetryError(error) {
+        const message = String(error?.message || '').toLowerCase();
+        if (!message) return false;
+        return (
+            message.includes('timeout') ||
+            message.includes('超时') ||
+            message.includes('network') ||
+            message.includes('网络') ||
+            message.includes('failed') ||
+            message.includes('中止') ||
+            message.includes('abort')
+        );
+    },
+
+    async request(endpoint, options = {}) {
+        const attempts = this.resolveRetryAttempts(options.maxAttempts);
+        let lastError = null;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return await this.requestOnce(endpoint, options);
+            } catch (error) {
+                lastError = error;
+                const hasNext = attempt < attempts;
+                if (!hasNext || !this.isObjectiveRetryError(error)) {
+                    throw error;
+                }
+                const waitMs = 700 * attempt;
+                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
+        }
+        throw lastError || new Error('请求失败');
+    },
+
+    requestOnce(endpoint, options = {}) {
         return new Promise((resolve, reject) => {
             if (this.isQuotaExceeded()) {
                 reject(new Error(`API 配额已用完 (${this.getUsageCount()}/${CONFIG.API_QUOTA_LIMIT})`));
@@ -55,6 +98,7 @@ export const ApiService = {
                     ...options.headers,
                 },
                 data: options.body ? JSON.stringify(options.body) : undefined,
+                timeout: options.timeout ?? 30000,
                 onload: (response) => {
                     try {
                         const data = JSON.parse(response.responseText);
@@ -68,8 +112,14 @@ export const ApiService = {
                         reject(new Error('解析响应失败'));
                     }
                 },
-                onerror: () => {
-                    reject(new Error('网络请求失败'));
+                onerror: (error) => {
+                    reject(new Error(error?.error || '网络请求失败'));
+                },
+                ontimeout: () => {
+                    reject(new Error('网络请求超时'));
+                },
+                onabort: () => {
+                    reject(new Error('网络请求被中止'));
                 },
             });
         });

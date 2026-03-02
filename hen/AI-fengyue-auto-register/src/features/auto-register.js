@@ -23,10 +23,12 @@ const SITE_ENDPOINTS = {
     ACCOUNT_GENDER: '/console/api/account/gender',
     FAVORITE_TAGS: '/console/api/account_extend/favorite_tags',
     ACCOUNT_EXTEND_SET: '/console/api/account/extend_set',
+    ACCOUNT_PROFILE: '/go/api/account/profile',
     APPS: '/console/api/apps',
     INSTALLED_MESSAGES: '/console/api/installed-apps',
     CHAT_MESSAGES: '/console/api/installed-apps',
 };
+const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
 
 function readErrorMessage(payload, fallback) {
     if (!payload || typeof payload !== 'object') return fallback;
@@ -105,9 +107,79 @@ function randomConversationSuffix(length = 3) {
     return output;
 }
 
+function withHttpStatusError(message, httpStatus) {
+    const error = new Error(message);
+    if (typeof httpStatus === 'number' && Number.isFinite(httpStatus)) {
+        error.httpStatus = httpStatus;
+    }
+    return error;
+}
+
 export const AutoRegister = {
     registrationStartTime: null,
     switchingAccount: false,
+
+    resolveRetryAttempts(maxAttempts) {
+        const parsed = Number(maxAttempts);
+        if (Number.isInteger(parsed) && parsed >= 1) {
+            return parsed;
+        }
+        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+    },
+
+    isObjectiveRetryError(error) {
+        const status = Number(error?.httpStatus || 0);
+        if (status === 408 || status === 429 || status >= 500) {
+            return true;
+        }
+
+        const message = String(error?.message || '').toLowerCase();
+        if (!message) return false;
+
+        return (
+            message.includes('timeout') ||
+            message.includes('超时') ||
+            message.includes('network') ||
+            message.includes('网络') ||
+            message.includes('gm 请求失败') ||
+            message.includes('failed') ||
+            message.includes('中止') ||
+            message.includes('abort')
+        );
+    },
+
+    async runWithObjectiveRetries(task, {
+        runCtx,
+        step = 'RETRY',
+        actionName = '请求',
+        maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
+        baseDelayMs = 800,
+    } = {}) {
+        const attempts = this.resolveRetryAttempts(maxAttempts);
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return await task(attempt, attempts);
+            } catch (error) {
+                lastError = error;
+                const retriable = this.isObjectiveRetryError(error);
+                const hasNext = attempt < attempts;
+                if (!retriable || !hasNext) {
+                    throw error;
+                }
+
+                const waitMs = baseDelayMs * attempt;
+                logWarn(runCtx, step, `${actionName} 发生客观错误，${waitMs}ms 后重试 (${attempt + 1}/${attempts})`, {
+                    message: error?.message || String(error),
+                    httpStatus: Number(error?.httpStatus || 0) || null,
+                });
+                await delay(waitMs);
+            }
+        }
+
+        throw lastError || new Error(`${actionName} 执行失败`);
+    },
 
     isRegisterPage() {
         return !!document.querySelector('input#name') &&
@@ -148,6 +220,19 @@ export const AutoRegister = {
     },
 
     async requestSiteApi(path, options = {}, runCtx, step = 'SITE_API') {
+        const attempts = this.resolveRetryAttempts(options.maxAttempts);
+        return this.runWithObjectiveRetries(
+            () => this.requestSiteApiOnce(path, options, runCtx, step),
+            {
+                runCtx,
+                step,
+                actionName: `${options.method || 'GET'} ${path}`,
+                maxAttempts: attempts,
+            }
+        );
+    },
+
+    async requestSiteApiOnce(path, options = {}, runCtx, step = 'SITE_API') {
         const strictCode = options.strictCode === true;
         const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
         const method = options.method || 'GET';
@@ -193,7 +278,10 @@ export const AutoRegister = {
         });
 
         if (response.status < 200 || response.status >= 300) {
-            throw new Error(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`));
+            throw withHttpStatusError(
+                readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`),
+                response.status
+            );
         }
 
         if (payload === null) {
@@ -308,10 +396,91 @@ export const AutoRegister = {
             },
             body: {
                 key: 'is_first_visit',
-                value: true,
+                // 首次引导结束后应标记为非首次访问，避免重复进入引导
+                value: false,
             },
         }, runCtx, 'SET_FIRST_VISIT');
         logInfo(runCtx, 'SET_FIRST_VISIT', '首次引导-is_first_visit 设置完成');
+
+        await this.verifyAccountExtendFlag({
+            token,
+            key: 'is_first_visit',
+            expectedValue: false,
+            runCtx,
+            step: 'VERIFY_FIRST_VISIT',
+        });
+    },
+
+    normalizeAccountExtendValue(value) {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') {
+            if (value === 1) return true;
+            if (value === 0) return false;
+        }
+        if (typeof value === 'string') {
+            const normalized = value.trim().toLowerCase();
+            if (normalized === 'true' || normalized === '1') return true;
+            if (normalized === 'false' || normalized === '0') return false;
+        }
+        return null;
+    },
+
+    async fetchAccountProfile({ token, runCtx, step = 'GET_ACCOUNT_PROFILE', maxAttempts = 1 }) {
+        const payload = await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_PROFILE, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            maxAttempts,
+        }, runCtx, step);
+
+        const profile = payload?.data;
+        if (!profile || typeof profile !== 'object') {
+            throw new Error('account/profile 返回 data 为空');
+        }
+        return profile;
+    },
+
+    async verifyAccountExtendFlag({ token, key, expectedValue, runCtx, step }) {
+        try {
+            // 校验为附加能力，失败不影响主流程
+            const profile = await this.fetchAccountProfile({
+                token,
+                runCtx,
+                step,
+                maxAttempts: 1,
+            });
+            const extend = profile?.extend && typeof profile.extend === 'object' ? profile.extend : {};
+            const resolvedValue = Object.prototype.hasOwnProperty.call(extend, key) ? extend[key] : null;
+            const normalized = this.normalizeAccountExtendValue(resolvedValue);
+            const expected = this.normalizeAccountExtendValue(expectedValue);
+
+            if (resolvedValue === null) {
+                logWarn(runCtx, step, `${key} 在 profile.extend 中不存在`, {
+                    key,
+                    expected: expectedValue,
+                });
+                return;
+            }
+
+            if (normalized === expected) {
+                logInfo(runCtx, step, `${key} 校验通过`, {
+                    key,
+                    value: resolvedValue,
+                });
+            } else {
+                logWarn(runCtx, step, `${key} 校验值与预期不一致`, {
+                    key,
+                    expected: expectedValue,
+                    actual: resolvedValue,
+                });
+            }
+        } catch (error) {
+            logWarn(runCtx, step, `${key} 校验失败（不影响主流程）`, {
+                key,
+                message: error?.message || String(error),
+            });
+        }
     },
 
     async setHideRefreshConfirmFlag(token, runCtx) {
@@ -325,16 +494,81 @@ export const AutoRegister = {
                 value: true,
             },
         }, runCtx, 'SET_HIDE_REFRESH_CONFIRM');
-        logInfo(runCtx, 'SET_HIDE_REFRESH_CONFIRM', '首次引导-hide_refresh_confirm 设置完成');
+        logInfo(runCtx, 'SET_HIDE_REFRESH_CONFIRM', '首次引导-hide_refresh_confirm 设置完成（已执行 extend_set）');
+
+        await this.verifyAccountExtendFlag({
+            token,
+            key: 'hide_refresh_confirm',
+            expectedValue: true,
+            runCtx,
+            step: 'VERIFY_HIDE_REFRESH_CONFIRM',
+        });
     },
 
-    async skipFirstGuide(token, runCtx) {
-        logInfo(runCtx, 'SKIP_GUIDE', '开始跳过首次引导');
+    async skipFirstGuideOnce(token, runCtx) {
         await this.setAccountGender(token, runCtx);
         await this.submitFavoriteTags(token, runCtx);
         await this.setFirstVisitFlag(token, runCtx);
         await this.setHideRefreshConfirmFlag(token, runCtx);
-        logInfo(runCtx, 'SKIP_GUIDE', '首次引导跳过完成');
+    },
+
+    async verifyGuideByProfile({ token, runCtx, step = 'VERIFY_GUIDE_BY_PROFILE' }) {
+        const profile = await this.fetchAccountProfile({
+            token,
+            runCtx,
+            step,
+            maxAttempts: 1,
+        });
+        const extend = profile?.extend && typeof profile.extend === 'object' ? profile.extend : {};
+        const hideRefreshConfirm = this.normalizeAccountExtendValue(extend.hide_refresh_confirm);
+        const isFirstVisit = this.normalizeAccountExtendValue(extend.is_first_visit);
+
+        const checks = {
+            hideRefreshConfirm: hideRefreshConfirm === true,
+            isFirstVisit: isFirstVisit === false,
+        };
+
+        const ok = checks.hideRefreshConfirm && checks.isFirstVisit;
+        logInfo(runCtx, step, ok ? 'profile 校验通过' : 'profile 校验未通过', {
+            hide_refresh_confirm: extend.hide_refresh_confirm ?? null,
+            is_first_visit: extend.is_first_visit ?? null,
+            checks,
+        });
+
+        return { ok, checks, profile };
+    },
+
+    async skipFirstGuide(token, runCtx) {
+        const maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+        logInfo(runCtx, 'SKIP_GUIDE', `开始跳过首次引导，最多尝试 ${maxAttempts} 次`);
+
+        let lastVerify = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            logInfo(runCtx, 'SKIP_GUIDE', `执行第 ${attempt}/${maxAttempts} 轮首次引导设置`);
+            if (attempt > 1) {
+                Toast.info(`跳过首次引导重试中（${attempt}/${maxAttempts}）`, 1800);
+            }
+            await this.skipFirstGuideOnce(token, runCtx);
+
+            lastVerify = await this.verifyGuideByProfile({
+                token,
+                runCtx,
+                step: `VERIFY_GUIDE_BY_PROFILE_${attempt}`,
+            });
+            if (lastVerify.ok) {
+                logInfo(runCtx, 'SKIP_GUIDE', `首次引导跳过完成（第 ${attempt} 轮校验通过）`);
+                return;
+            }
+
+            if (attempt < maxAttempts) {
+                const waitMs = 800 * attempt;
+                logWarn(runCtx, 'SKIP_GUIDE', `第 ${attempt} 轮校验未通过，${waitMs}ms 后重试`);
+                await delay(waitMs);
+            }
+        }
+
+        const checks = lastVerify?.checks || {};
+        throw new Error(`首次引导校验未通过（已重试 ${maxAttempts} 次）：hide_refresh_confirm=${checks.hideRefreshConfirm === true}，is_first_visit=${checks.isFirstVisit === true}`);
     },
 
     async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2000, runCtx) {
@@ -542,10 +776,16 @@ export const AutoRegister = {
             status: 'fetching',
             statusMessage: `${flowName}：注册成功，正在跳过首次引导...`,
         });
+        if (showStepToasts) {
+            Toast.info(`${flowName}：正在跳过首次引导（最多${DEFAULT_OBJECTIVE_RETRY_ATTEMPTS}次）`, 2600);
+        }
 
         let guideSkipped = true;
         try {
             await this.skipFirstGuide(token, runCtx);
+            if (showStepToasts) {
+                Toast.success(`${flowName}：首次引导已跳过`, 1800);
+            }
         } catch (guideError) {
             guideSkipped = false;
             logError(runCtx, 'SKIP_GUIDE', `${flowName} 首次引导跳过失败`, {
@@ -611,6 +851,72 @@ export const AutoRegister = {
         }
 
         return conversationId;
+    },
+
+    parseConversationIdFromEventStream(rawText) {
+        if (typeof rawText !== 'string' || !rawText.trim()) return '';
+
+        const lines = rawText.split(/\r?\n/);
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line.startsWith('data:')) continue;
+
+            const dataText = line.slice(5).trim();
+            if (!dataText || dataText === '[DONE]') continue;
+
+            try {
+                const data = JSON.parse(dataText);
+                const parsed = typeof data?.conversation_id === 'string'
+                    ? data.conversation_id.trim()
+                    : (typeof data?.conversationId === 'string' ? data.conversationId.trim() : '');
+                if (parsed) return parsed;
+            } catch {
+                const fallback = dataText.match(/"conversation_id"\s*:\s*"([^"]+)"/i);
+                if (fallback?.[1]) {
+                    return fallback[1].trim();
+                }
+            }
+        }
+
+        const globalMatch = rawText.match(/"conversation_id"\s*:\s*"([^"]+)"/i);
+        return globalMatch?.[1] ? globalMatch[1].trim() : '';
+    },
+
+    upsertConversationIdInfo(appId, conversationId, runCtx) {
+        const normalizedAppId = typeof appId === 'string' ? appId.trim() : '';
+        const normalizedConversationId = typeof conversationId === 'string' ? conversationId.trim() : '';
+        if (!normalizedAppId || !normalizedConversationId) {
+            return false;
+        }
+
+        let mapping = {};
+        const raw = localStorage.getItem('conversationIdInfo');
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    mapping = { ...parsed };
+                } else {
+                    logWarn(runCtx, 'SWITCH_CHAT', 'conversationIdInfo 不是对象，已重建');
+                }
+            } catch {
+                logWarn(runCtx, 'SWITCH_CHAT', 'conversationIdInfo 解析失败，已重建');
+            }
+        }
+
+        const previousConversationId = typeof mapping[normalizedAppId] === 'string'
+            ? mapping[normalizedAppId].trim()
+            : '';
+
+        mapping[normalizedAppId] = normalizedConversationId;
+        localStorage.setItem('conversationIdInfo', JSON.stringify(mapping));
+
+        logInfo(runCtx, 'SWITCH_CHAT', '已写入 localStorage.conversationIdInfo', {
+            appId: normalizedAppId,
+            conversationId: normalizedConversationId,
+            previousConversationId: previousConversationId || null,
+        });
+        return true;
     },
 
     async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
@@ -706,29 +1012,87 @@ export const AutoRegister = {
         });
         logDebug(runCtx, 'SWITCH_CHAT', 'chat-messages 请求体', body);
 
+        const responseMeta = await this.runWithObjectiveRetries(
+            (attempt, attempts) => {
+                if (attempt > 1) {
+                    logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 重试中 (${attempt}/${attempts})`);
+                }
+                return this.sendChatMessagesOnce({
+                    appId,
+                    token,
+                    url,
+                    body,
+                    runCtx,
+                });
+            },
+            {
+                runCtx,
+                step: 'SWITCH_CHAT',
+                actionName: 'chat-messages',
+                maxAttempts: DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
+            }
+        );
+
+        const status = Number(responseMeta?.status || 0);
+        const hasStatus = Number.isFinite(status) && status > 0;
+        const isSuccess = hasStatus && status >= 200 && status < 300;
+        const statusText = hasStatus ? `HTTP ${status}` : '未知状态';
+        logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到响应（${statusText}），1秒后刷新`, responseMeta);
+        if (!responseMeta?.conversationId) {
+            logWarn(runCtx, 'SWITCH_CHAT', '本次 chat-messages 未解析到 conversation_id，已保留原有 conversationIdInfo');
+        }
+
+        Sidebar.updateState({
+            status: 'success',
+            statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`,
+        });
+        Toast.info(
+            `chat-messages 已收到${isSuccess ? '成功' : '失败'}响应（${statusText}），1秒后刷新`,
+            3500
+        );
+        setTimeout(() => {
+            window.location.reload();
+        }, 1000);
+
+        return { status, isSuccess, conversationId: responseMeta?.conversationId || '' };
+    },
+
+    sendChatMessagesOnce({ appId, token, url, body, runCtx }) {
         return new Promise((resolve, reject) => {
             let settled = false;
+            let fallbackTimer = null;
+            let capturedConversationId = '';
 
-            const finishAndReload = (trigger, responseMeta = {}) => {
+            const clearFallbackTimer = () => {
+                if (fallbackTimer) {
+                    clearTimeout(fallbackTimer);
+                    fallbackTimer = null;
+                }
+            };
+
+            const tryCaptureConversationId = (rawText, trigger) => {
+                if (capturedConversationId) return capturedConversationId;
+                const conversationId = this.parseConversationIdFromEventStream(rawText);
+                if (!conversationId) return '';
+
+                capturedConversationId = conversationId;
+                this.upsertConversationIdInfo(appId, conversationId, runCtx);
+                logInfo(runCtx, 'SWITCH_CHAT', `已从 ${trigger} 解析 conversation_id`, {
+                    appId,
+                    conversationId,
+                });
+                return capturedConversationId;
+            };
+
+            const finish = (trigger, responseMeta = {}) => {
                 if (settled) return;
                 settled = true;
-                const status = Number(responseMeta?.status || 0);
-                const hasStatus = Number.isFinite(status) && status > 0;
-                const isSuccess = hasStatus && status >= 200 && status < 300;
-                const statusText = hasStatus ? `HTTP ${status}` : '未知状态';
-                logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到 ${trigger} 响应（${statusText}），1秒后刷新`, responseMeta);
-                Sidebar.updateState({
-                    status: 'success',
-                    statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`,
+                clearFallbackTimer();
+                resolve({
+                    trigger,
+                    ...responseMeta,
+                    conversationId: capturedConversationId || responseMeta?.conversationId || '',
                 });
-                Toast.info(
-                    `chat-messages 已收到${isSuccess ? '成功' : '失败'}响应（${statusText}），1秒后刷新`,
-                    3500
-                );
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
-                resolve({ status, isSuccess });
             };
 
             gmXmlHttpRequest({
@@ -745,27 +1109,44 @@ export const AutoRegister = {
                 onprogress: (response) => {
                     if (settled) return;
                     const status = Number(response?.status || 0);
-                    const textLength = (response?.responseText || '').length;
-                    if (status > 0 || textLength > 0) {
-                        finishAndReload('onprogress', { status, textLength });
+                    const responseText = response?.responseText || '';
+                    const textLength = responseText.length;
+
+                    tryCaptureConversationId(responseText, 'onprogress');
+
+                    if (capturedConversationId) {
+                        finish('onprogress', { status, textLength, conversationId: capturedConversationId });
+                        return;
+                    }
+
+                    // 已收到流数据但尚未解析出 conversation_id：短暂等待更多 chunk，再兜底结束。
+                    if (textLength > 0 && !fallbackTimer) {
+                        fallbackTimer = setTimeout(() => {
+                            finish('onprogress-fallback', { status, textLength });
+                        }, 1200);
                     }
                 },
                 onload: (response) => {
                     if (settled) return;
                     const status = Number(response?.status || 0);
-                    const textLength = (response?.responseText || '').length;
-                    finishAndReload('onload', { status, textLength });
+                    const responseText = response?.responseText || '';
+                    const textLength = responseText.length;
+                    tryCaptureConversationId(responseText, 'onload');
+                    finish('onload', { status, textLength, conversationId: capturedConversationId });
                 },
                 onerror: (error) => {
                     if (settled) return;
-                    reject(new Error(error?.error || 'chat-messages 网络请求失败'));
+                    clearFallbackTimer();
+                    reject(withHttpStatusError(error?.error || 'chat-messages 网络请求失败', Number(error?.status || 0)));
                 },
                 ontimeout: () => {
                     if (settled) return;
+                    clearFallbackTimer();
                     reject(new Error('chat-messages 请求超时'));
                 },
                 onabort: () => {
                     if (settled) return;
+                    clearFallbackTimer();
                     reject(new Error('chat-messages 请求被中止'));
                 },
             });
@@ -886,6 +1267,9 @@ export const AutoRegister = {
                 showStepToasts: true,
                 markSuccess: false,
             });
+            if (!registerResult.guideSkipped) {
+                throw new Error('更换账号终止：首次引导未跳过成功，不发送 chat-messages');
+            }
 
             Sidebar.updateState({
                 status: 'fetching',
