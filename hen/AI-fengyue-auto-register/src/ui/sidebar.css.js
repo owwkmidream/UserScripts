@@ -86,10 +86,10 @@ const SIDEBAR_STYLES = `
     /* ============================
        Global / Layout
        ============================ */
-    html.aifengyue-sidebar-inline-mode,
     body.aifengyue-sidebar-inline-mode {
-        margin-right: 372px !important;
-        transition: margin-right 0.3s var(--af-ease, ease);
+        padding-right: 372px !important;
+        box-sizing: border-box;
+        transition: padding-right 0.3s var(--af-ease, ease);
     }
 
     /* --- Toggle 按钮 --- */

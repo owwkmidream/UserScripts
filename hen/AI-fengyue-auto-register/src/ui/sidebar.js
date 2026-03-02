@@ -398,7 +398,7 @@ export const Sidebar = {
 
     syncInlineSpaceClass() {
         const isInlineOpen = this.layoutMode === 'inline' && this.isOpen;
-        document.documentElement.classList.toggle('aifengyue-sidebar-inline-mode', isInlineOpen);
+        document.documentElement.classList.remove('aifengyue-sidebar-inline-mode');
         document.body.classList.toggle('aifengyue-sidebar-inline-mode', isInlineOpen);
     },
 

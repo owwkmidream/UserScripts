@@ -578,7 +578,7 @@
 		},
 		syncInlineSpaceClass() {
 			const isInlineOpen = this.layoutMode === "inline" && this.isOpen;
-			document.documentElement.classList.toggle("aifengyue-sidebar-inline-mode", isInlineOpen);
+			document.documentElement.classList.remove("aifengyue-sidebar-inline-mode");
 			document.body.classList.toggle("aifengyue-sidebar-inline-mode", isInlineOpen);
 		},
 		updateUsageDisplay() {
@@ -2364,10 +2364,10 @@
     /* ============================
        Global / Layout
        ============================ */
-    html.aifengyue-sidebar-inline-mode,
     body.aifengyue-sidebar-inline-mode {
-        margin-right: 372px !important;
-        transition: margin-right 0.3s var(--af-ease, ease);
+        padding-right: 372px !important;
+        box-sizing: border-box;
+        transition: padding-right 0.3s var(--af-ease, ease);
     }
 
     /* --- Toggle 按钮 --- */
