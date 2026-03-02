@@ -34,7 +34,8 @@
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
 			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
 			SIDEBAR_THEME: "aifengyue_sidebar_theme",
-			SIDEBAR_DEFAULT_TAB: "aifengyue_sidebar_default_tab"
+			SIDEBAR_DEFAULT_TAB: "aifengyue_sidebar_default_tab",
+			SIDEBAR_DEFAULT_OPEN: "aifengyue_sidebar_default_open"
 		},
 		API_QUOTA_LIMIT: 1e3,
 		VERIFICATION_CODE_PATTERNS: [
@@ -1323,6 +1324,11 @@
 			this.applyLayoutModeClass();
 			this.applyTheme();
 			this.setActiveTab(this.activeTab);
+			if (this.getDefaultOpen()) {
+				this.open();
+			} else {
+				this.close();
+			}
 		},
 		createSidebar() {
 			const existing = document.getElementById("aifengyue-sidebar");
@@ -1534,6 +1540,13 @@
                                 <option value="settings">设置</option>
                             </select>
                         </div>
+                        <div class="aifengyue-input-group">
+                            <label>侧边栏默认打开</label>
+                            <select id="aifengyue-default-open">
+                                <option value="closed">关闭</option>
+                                <option value="open">打开</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1626,6 +1639,17 @@
 				const tab = typeof e?.target?.value === "string" ? e.target.value : "register";
 				this.setDefaultTab(tab);
 				getToast()?.success(`默认 Tab 已设置为「${this.tabLabel(this.getDefaultTab())}」`);
+			});
+			this.element.querySelector("#aifengyue-default-open").addEventListener("change", (e) => {
+				const value = typeof e?.target?.value === "string" ? e.target.value : "closed";
+				const shouldOpen = value === "open";
+				this.setDefaultOpen(shouldOpen);
+				if (shouldOpen) {
+					this.open();
+				} else {
+					this.close();
+				}
+				getToast()?.success(`侧边栏默认已设置为「${shouldOpen ? "打开" : "关闭"}」`);
 			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
@@ -1748,6 +1772,10 @@
 			const defaultTabInput = this.element.querySelector("#aifengyue-default-tab");
 			if (defaultTabInput) {
 				defaultTabInput.value = this.getDefaultTab();
+			}
+			const defaultOpenInput = this.element.querySelector("#aifengyue-default-open");
+			if (defaultOpenInput) {
+				defaultOpenInput.value = this.getDefaultOpen() ? "open" : "closed";
 			}
 			this.updateUsageDisplay();
 			this.render();
@@ -2060,6 +2088,18 @@
 			const input = this.element?.querySelector?.("#aifengyue-default-tab");
 			if (input) {
 				input.value = normalized;
+			}
+		},
+		getDefaultOpen() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_OPEN, false);
+			return saved === true || saved === "true" || saved === 1 || saved === "1";
+		},
+		setDefaultOpen(defaultOpen) {
+			const normalized = !!defaultOpen;
+			gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_OPEN, normalized);
+			const input = this.element?.querySelector?.("#aifengyue-default-open");
+			if (input) {
+				input.value = normalized ? "open" : "closed";
 			}
 		},
 		setLayoutMode(mode) {
@@ -3752,7 +3792,8 @@
 					},
 					data: JSON.stringify(body),
 					timeout: 2e4,
-					anonymous: true,
+					anonymous: false,
+					fetch: false,
 					onreadystatechange: (response) => {
 						if (settled) return;
 						const meta = callbackMeta(response);
