@@ -437,7 +437,7 @@ export const Sidebar = {
         this.element.classList.add('open');
         const toggle = document.getElementById('aifengyue-sidebar-toggle');
         if (toggle) {
-            toggle.classList.add('hidden');
+            toggle.classList.add('is-open');
             toggle.textContent = '收起助手';
         }
         this.isOpen = true;
@@ -449,7 +449,7 @@ export const Sidebar = {
         this.element.classList.remove('open');
         const toggle = document.getElementById('aifengyue-sidebar-toggle');
         if (toggle) {
-            toggle.classList.remove('hidden');
+            toggle.classList.remove('is-open');
             toggle.textContent = '打开助手';
         }
         this.isOpen = false;

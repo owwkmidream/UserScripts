@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "rolldown -c",
+    "postbuild": "node ./scripts/open-userscript.mjs",
     "build:watch": "rolldown -c -w"
   },
   "devDependencies": {

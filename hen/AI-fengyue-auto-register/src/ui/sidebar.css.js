@@ -112,14 +112,16 @@ const SIDEBAR_STYLES = `
         font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
         letter-spacing: 2px;
         box-shadow: -3px 0 20px rgba(99, 102, 241, 0.35);
-        transition: width 0.25s ease, box-shadow 0.25s ease;
+        transition: right 0.25s ease, width 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
     }
     #aifengyue-sidebar-toggle:hover {
         width: 46px;
         box-shadow: -4px 0 28px rgba(99, 102, 241, 0.5);
     }
-    #aifengyue-sidebar-toggle.hidden {
-        transform: translateY(-50%) translateX(100%);
+    #aifengyue-sidebar-toggle.is-open {
+        right: 372px;
+        background: linear-gradient(135deg, #4b5563 0%, #334155 100%);
+        box-shadow: -3px 0 18px rgba(51, 65, 85, 0.45);
     }
 
     /* --- 侧边栏容器 --- */
