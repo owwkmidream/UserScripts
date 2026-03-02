@@ -958,7 +958,7 @@ export const AutoRegister = {
         token,
         runCtx,
         step = 'SWITCH_FETCH_MESSAGES',
-        limit = 500,
+        limit = 100,
         type = 'recent',
         maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
     }) {
@@ -1122,7 +1122,7 @@ export const AutoRegister = {
             token,
             runCtx,
             step: 'SWITCH_FETCH_MESSAGES',
-            limit: 500,
+            limit: 100,
             type: 'recent',
         });
         const messages = result.messages;
@@ -1453,7 +1453,7 @@ export const AutoRegister = {
                 token: oldToken,
                 runCtx,
                 step: 'SWITCH_FETCH_MESSAGES',
-                limit: 500,
+                limit: 100,
                 type: 'recent',
             });
             if (!oldConversation.messages.length) {
@@ -1714,7 +1714,7 @@ export const AutoRegister = {
                     token,
                     runCtx,
                     step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
-                    limit: 500,
+                    limit: 100,
                     type: 'recent',
                 });
                 totalFetched += result.messages.length;

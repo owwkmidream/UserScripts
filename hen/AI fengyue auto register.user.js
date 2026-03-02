@@ -2681,7 +2681,7 @@
 			}
 			throw new Error("messages 中所有 answer 均为空，已停止更换账号流程");
 		},
-		async fetchConversationMessages({ appId, conversationId, token, runCtx, step = "SWITCH_FETCH_MESSAGES", limit = 500, type = "recent", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
+		async fetchConversationMessages({ appId, conversationId, token, runCtx, step = "SWITCH_FETCH_MESSAGES", limit = 100, type = "recent", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
 			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=${encodeURIComponent(limit)}&type=${encodeURIComponent(type)}`;
 			const payload = await this.requestSiteApi(path, {
 				method: "GET",
@@ -2792,7 +2792,7 @@
 				token,
 				runCtx,
 				step: "SWITCH_FETCH_MESSAGES",
-				limit: 500,
+				limit: 100,
 				type: "recent"
 			});
 			const messages = result.messages;
@@ -3092,7 +3092,7 @@
 					token: oldToken,
 					runCtx,
 					step: "SWITCH_FETCH_MESSAGES",
-					limit: 500,
+					limit: 100,
 					type: "recent"
 				});
 				if (!oldConversation.messages.length) {
@@ -3313,7 +3313,7 @@
 						token,
 						runCtx,
 						step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
-						limit: 500,
+						limit: 100,
 						type: "recent"
 					});
 					totalFetched += result.messages.length;
