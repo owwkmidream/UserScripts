@@ -213,7 +213,7 @@ const SIDEBAR_STYLES = `
     /* --- Tab 导航 --- */
     .aifengyue-sidebar-tabs {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
         gap: 4px;
         padding: 8px 12px;
         border-bottom: 1px solid var(--af-border);
@@ -557,6 +557,21 @@ const SIDEBAR_STYLES = `
         height: 16px;
         accent-color: var(--af-primary);
         cursor: pointer;
+    }
+
+    /* --- 会话面板 --- */
+    .aifengyue-conversation-viewer {
+        width: 100%;
+        min-height: 360px;
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: #fff;
+    }
+    #aifengyue-conversation-chain:disabled,
+    #aifengyue-conversation-refresh:disabled,
+    #aifengyue-conversation-sync:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
     }
 
     /* --- 配额统计 --- */

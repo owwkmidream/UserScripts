@@ -2,8 +2,9 @@ import { CONFIG, SIDEBAR_INITIAL_STATE } from '../constants.js';
 import { APP_STATE } from '../state.js';
 import { gmGetValue, gmSetValue } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
+import { ChatHistoryService } from '../services/chat-history-service.js';
 
-const VALID_TABS = ['register', 'tools', 'settings'];
+const VALID_TABS = ['register', 'tools', 'conversation', 'settings'];
 
 function getToast() {
     return APP_STATE.refs.toast;
@@ -28,6 +29,12 @@ export const Sidebar = {
     activeTab: 'register',
     theme: 'light',
     state: APP_STATE.sidebar.state,
+    conversation: {
+        appId: '',
+        chains: [],
+        activeChainId: '',
+        loading: false,
+    },
 
     init() {
         if (this.element && document.body.contains(this.element) && document.getElementById('aifengyue-sidebar-toggle')) {
@@ -61,6 +68,7 @@ export const Sidebar = {
             <div class="aifengyue-sidebar-tabs">
                 <button class="aifengyue-tab-btn active" data-tab="register">注册</button>
                 <button class="aifengyue-tab-btn" data-tab="tools">工具</button>
+                <button class="aifengyue-tab-btn" data-tab="conversation">会话</button>
                 <button class="aifengyue-tab-btn" data-tab="settings">设置</button>
             </div>
 
@@ -157,6 +165,33 @@ export const Sidebar = {
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-sort-now">
                             📊 立即排序
                         </button>
+                    </div>
+                </div>
+
+                <div class="aifengyue-panel" data-panel="conversation">
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">本地会话链</div>
+                        <div class="aifengyue-input-group">
+                            <label>选择链路</label>
+                            <select id="aifengyue-conversation-chain">
+                                <option value="">暂无链路</option>
+                            </select>
+                        </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-refresh">
+                                🔄 刷新链路
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-sync">
+                                ⬇ 手动同步
+                            </button>
+                        </div>
+                        <div class="aifengyue-hint" id="aifengyue-conversation-status">
+                            仅在应用详情页可用，会显示本地保存的链式会话。
+                        </div>
+                    </div>
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">会话预览</div>
+                        <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
                     </div>
                 </div>
 
@@ -297,7 +332,7 @@ export const Sidebar = {
             const extractor = getIframeExtractor();
             if (!extractor) return;
             if (!extractor.isExtractAvailable()) {
-                getToast()?.warning('当前页面没有可提取的 iframe srcdoc');
+                getToast()?.warning('当前页面不是可提取的应用详情页');
                 this.updateToolPanel();
                 return;
             }
@@ -317,6 +352,22 @@ export const Sidebar = {
             if (!sorter) return;
             sorter.setSortEnabled(!!e.target.checked);
             getToast()?.info(`自动排序已${e.target.checked ? '开启' : '关闭'}`);
+        });
+
+        this.element.querySelector('#aifengyue-conversation-chain').addEventListener('change', async (e) => {
+            const chainId = e.target.value || '';
+            if (!chainId || !this.conversation.appId) return;
+            this.conversation.activeChainId = chainId;
+            ChatHistoryService.setActiveChainId(this.conversation.appId, chainId);
+            await this.renderConversationViewer();
+        });
+
+        this.element.querySelector('#aifengyue-conversation-refresh').addEventListener('click', async () => {
+            await this.refreshConversationPanel({ showToast: true, keepSelection: true });
+        });
+
+        this.element.querySelector('#aifengyue-conversation-sync').addEventListener('click', async () => {
+            await this.syncConversationPanel();
         });
     },
 
@@ -346,6 +397,168 @@ export const Sidebar = {
         this.element.querySelectorAll('.aifengyue-panel').forEach((panel) => {
             panel.classList.toggle('active', panel.dataset.panel === this.activeTab);
         });
+
+        if (this.activeTab === 'conversation') {
+            this.refreshConversationPanel({ showToast: false, keepSelection: true }).catch((error) => {
+                this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+            });
+        }
+    },
+
+    setConversationStatus(message) {
+        const statusEl = this.element?.querySelector('#aifengyue-conversation-status');
+        if (statusEl) {
+            statusEl.textContent = message;
+        }
+    },
+
+    setConversationBusy(busy) {
+        this.conversation.loading = !!busy;
+        const chainSelect = this.element?.querySelector('#aifengyue-conversation-chain');
+        const refreshBtn = this.element?.querySelector('#aifengyue-conversation-refresh');
+        const syncBtn = this.element?.querySelector('#aifengyue-conversation-sync');
+        if (chainSelect) chainSelect.disabled = !!busy;
+        if (refreshBtn) refreshBtn.disabled = !!busy;
+        if (syncBtn) syncBtn.disabled = !!busy;
+    },
+
+    renderConversationSelectOptions() {
+        const select = this.element?.querySelector('#aifengyue-conversation-chain');
+        if (!select) return;
+
+        select.innerHTML = '';
+        if (!this.conversation.chains.length) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = '暂无链路';
+            select.appendChild(option);
+            select.value = '';
+            return;
+        }
+
+        this.conversation.chains.forEach((chain, index) => {
+            const option = document.createElement('option');
+            option.value = chain.chainId;
+            const conversationCount = Array.isArray(chain.conversationIds) ? chain.conversationIds.length : 0;
+            const updatedAt = chain.updatedAt ? new Date(chain.updatedAt).toLocaleString() : '-';
+            option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${updatedAt}`;
+            select.appendChild(option);
+        });
+
+        if (this.conversation.activeChainId) {
+            select.value = this.conversation.activeChainId;
+        }
+    },
+
+    async renderConversationViewer() {
+        const viewer = this.element?.querySelector('#aifengyue-conversation-viewer');
+        if (!viewer) return;
+
+        if (!this.conversation.appId || !this.conversation.activeChainId) {
+            viewer.srcdoc = '<html><body><p style="font-family:Segoe UI;padding:16px;">暂无可展示会话。</p></body></html>';
+            return;
+        }
+
+        const autoRegister = getAutoRegister();
+        if (!autoRegister) {
+            viewer.srcdoc = '<html><body><p style="font-family:Segoe UI;padding:16px;">AutoRegister 未初始化。</p></body></html>';
+            return;
+        }
+
+        const html = await autoRegister.getConversationViewerHtml({
+            appId: this.conversation.appId,
+            chainId: this.conversation.activeChainId,
+        });
+        viewer.srcdoc = html;
+    },
+
+    async refreshConversationPanel({ showToast = false, keepSelection = true } = {}) {
+        if (!this.element) return;
+
+        const autoRegister = getAutoRegister();
+        if (!autoRegister) {
+            this.setConversationStatus('AutoRegister 未初始化');
+            return;
+        }
+
+        this.setConversationBusy(true);
+        try {
+            const previousChainId = keepSelection ? this.conversation.activeChainId : '';
+            const result = await autoRegister.loadConversationChainsForCurrentApp();
+
+            this.conversation.appId = result.appId || '';
+            this.conversation.chains = Array.isArray(result.chains) ? result.chains : [];
+            this.conversation.activeChainId = '';
+
+            if (previousChainId && this.conversation.chains.some((chain) => chain.chainId === previousChainId)) {
+                this.conversation.activeChainId = previousChainId;
+            } else if (result.activeChainId) {
+                this.conversation.activeChainId = result.activeChainId;
+            } else if (this.conversation.chains[0]?.chainId) {
+                this.conversation.activeChainId = this.conversation.chains[0].chainId;
+            }
+
+            if (this.conversation.appId && this.conversation.activeChainId) {
+                ChatHistoryService.setActiveChainId(this.conversation.appId, this.conversation.activeChainId);
+            }
+
+            this.renderConversationSelectOptions();
+            await this.renderConversationViewer();
+
+            if (!this.conversation.appId) {
+                this.setConversationStatus('当前页面不是应用详情页，无法读取会话链。');
+            } else if (!this.conversation.chains.length) {
+                this.setConversationStatus('本地暂无会话链，可先执行“更换账号”或手动同步。');
+            } else {
+                const lastSync = this.conversation.activeChainId
+                    ? ChatHistoryService.getChainLastSync(this.conversation.activeChainId)
+                    : 0;
+                const lastSyncText = lastSync ? new Date(lastSync).toLocaleString() : '未同步';
+                this.setConversationStatus(`已加载 ${this.conversation.chains.length} 条链路，最近同步: ${lastSyncText}`);
+            }
+
+            if (showToast) {
+                getToast()?.success('会话链路已刷新');
+            }
+        } catch (error) {
+            this.setConversationStatus(`刷新失败: ${error.message}`);
+            getToast()?.error(`会话刷新失败: ${error.message}`);
+        } finally {
+            this.setConversationBusy(false);
+        }
+    },
+
+    async syncConversationPanel() {
+        const autoRegister = getAutoRegister();
+        if (!autoRegister) {
+            this.setConversationStatus('AutoRegister 未初始化');
+            return;
+        }
+
+        this.setConversationBusy(true);
+        try {
+            const summary = await autoRegister.manualSyncConversationChain({
+                appId: this.conversation.appId,
+                chainId: this.conversation.activeChainId,
+            });
+
+            const message = `同步完成: 成功 ${summary.successCount}/${summary.conversationIds.length}，抓取 ${summary.totalFetched} 条，写入 ${summary.totalSaved} 条`;
+            this.setConversationStatus(message);
+            getToast()?.success(message);
+            if (summary.hasIncomplete) {
+                getToast()?.warning('检测到 has_past_record/is_earliest_data_page 异常，历史可能仍不完整');
+            }
+            if (summary.failedCount > 0) {
+                getToast()?.warning(`有 ${summary.failedCount} 个会话同步失败`);
+            }
+
+            await this.refreshConversationPanel({ showToast: false, keepSelection: true });
+        } catch (error) {
+            this.setConversationStatus(`手动同步失败: ${error.message}`);
+            getToast()?.error(`手动同步失败: ${error.message}`);
+        } finally {
+            this.setConversationBusy(false);
+        }
     },
 
     getLayoutMode() {
@@ -545,6 +758,15 @@ export const Sidebar = {
         }
         if (sortToggle) {
             sortToggle.checked = sorter?.isSortEnabled?.() ?? true;
+        }
+
+        if (this.activeTab === 'conversation' && !this.conversation.loading) {
+            const currentAppId = autoRegister?.extractInstalledAppId?.() || '';
+            if (currentAppId !== this.conversation.appId) {
+                this.refreshConversationPanel({ showToast: false, keepSelection: false }).catch((error) => {
+                    this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+                });
+            }
         }
     },
 };

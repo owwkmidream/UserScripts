@@ -1,6 +1,7 @@
 import { CONFIG } from '../constants.js';
 import { gmGetValue, gmRequestJson, gmSetValue, gmXmlHttpRequest } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
+import { ChatHistoryService } from '../services/chat-history-service.js';
 import { Sidebar } from '../ui/sidebar.js';
 import { Toast } from '../ui/toast.js';
 import { generateUsername, generatePassword, delay } from '../utils/random.js';
@@ -24,6 +25,7 @@ const SITE_ENDPOINTS = {
     FAVORITE_TAGS: '/console/api/account_extend/favorite_tags',
     ACCOUNT_EXTEND_SET: '/console/api/account/extend_set',
     ACCOUNT_PROFILE: '/go/api/account/profile',
+    APP_DETAILS: '/go/api/apps',
     APPS: '/console/api/apps',
     INSTALLED_MESSAGES: '/console/api/installed-apps',
     CHAT_MESSAGES: '/console/api/installed-apps',
@@ -396,8 +398,8 @@ export const AutoRegister = {
             },
             body: {
                 key: 'is_first_visit',
-                // 首次引导结束后应标记为非首次访问，避免重复进入引导
-                value: false,
+                // 用户反馈该站点以 true 作为“已跳过引导”的实际生效值
+                value: true,
             },
         }, runCtx, 'SET_FIRST_VISIT');
         logInfo(runCtx, 'SET_FIRST_VISIT', '首次引导-is_first_visit 设置完成');
@@ -405,7 +407,7 @@ export const AutoRegister = {
         await this.verifyAccountExtendFlag({
             token,
             key: 'is_first_visit',
-            expectedValue: false,
+            expectedValue: true,
             runCtx,
             step: 'VERIFY_FIRST_VISIT',
         });
@@ -525,7 +527,7 @@ export const AutoRegister = {
 
         const checks = {
             hideRefreshConfirm: hideRefreshConfirm === true,
-            isFirstVisit: isFirstVisit === false,
+            isFirstVisit: isFirstVisit === true,
         };
 
         const ok = checks.hideRefreshConfirm && checks.isFirstVisit;
@@ -853,6 +855,14 @@ export const AutoRegister = {
         return conversationId;
     },
 
+    readConversationIdByAppIdSafe(appId) {
+        try {
+            return this.readConversationIdByAppId(appId);
+        } catch {
+            return '';
+        }
+    },
+
     parseConversationIdFromEventStream(rawText) {
         if (typeof rawText !== 'string' || !rawText.trim()) return '';
 
@@ -919,27 +929,12 @@ export const AutoRegister = {
         return true;
     },
 
-    async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
-        const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=20&type=recent`;
-        const payload = await this.requestSiteApi(path, {
-            method: 'GET',
-            headers: {
-                Authorization: `Bearer ${token}`,
-            },
-        }, runCtx, 'SWITCH_FETCH_MESSAGES');
-
-        const messages = Array.isArray(payload?.data)
-            ? payload.data
-            : (Array.isArray(payload?.data?.data) ? payload.data.data : []);
-        if (!messages.length) {
-            throw new Error('messages 接口未返回可用 data');
-        }
-
+    extractLatestAnswerFromMessages(messages, runCtx, step = 'SWITCH_FETCH_MESSAGES') {
         const sorted = [...messages].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at));
         for (const item of sorted) {
             const answer = item?.answer;
             if (isAnswerEmpty(answer)) {
-                logWarn(runCtx, 'SWITCH_FETCH_MESSAGES', '检测到空 answer，继续向后查找', {
+                logWarn(runCtx, step, '检测到空 answer，继续向后查找', {
                     createdAt: item?.created_at ?? null,
                     answerType: typeof answer,
                     answerPreview: typeof answer === 'string' ? answer.slice(0, 60) : answer,
@@ -955,6 +950,187 @@ export const AutoRegister = {
         }
 
         throw new Error('messages 中所有 answer 均为空，已停止更换账号流程');
+    },
+
+    async fetchConversationMessages({
+        appId,
+        conversationId,
+        token,
+        runCtx,
+        step = 'SWITCH_FETCH_MESSAGES',
+        limit = 500,
+        type = 'recent',
+        maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
+    }) {
+        const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=${encodeURIComponent(limit)}&type=${encodeURIComponent(type)}`;
+        const payload = await this.requestSiteApi(path, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            maxAttempts,
+        }, runCtx, step);
+
+        const payloadData = payload?.data;
+        const messages = Array.isArray(payloadData)
+            ? payloadData
+            : (Array.isArray(payloadData?.data) ? payloadData.data : []);
+
+        return {
+            messages,
+            total: Number(payloadData?.total ?? payload?.total ?? messages.length),
+            hasPastRecord: Boolean(payloadData?.has_past_record ?? payload?.has_past_record ?? false),
+            isEarliestDataPage: payloadData?.is_earliest_data_page ?? payload?.is_earliest_data_page ?? null,
+            raw: payload,
+        };
+    },
+
+    async fetchInstalledConversations({
+        appId,
+        token,
+        runCtx,
+        step = 'SWITCH_LIST_CONVERSATIONS',
+        limit = 500,
+        pinned = false,
+        maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
+    }) {
+        const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/conversations?limit=${encodeURIComponent(limit)}&pinned=${pinned ? 'true' : 'false'}`;
+        const payload = await this.requestSiteApi(path, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            maxAttempts,
+        }, runCtx, step);
+
+        const list = Array.isArray(payload?.data)
+            ? payload.data
+            : (Array.isArray(payload?.data?.data) ? payload.data.data : []);
+
+        return [...list].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at));
+    },
+
+    async pollConversationIdFromConversations({
+        appId,
+        token,
+        runCtx,
+        baselineConversationIds = [],
+        maxAttempts = 10,
+        intervalMs = 700,
+    }) {
+        const baseline = new Set(
+            (baselineConversationIds || [])
+                .map((item) => (typeof item === 'string' ? item.trim() : ''))
+                .filter(Boolean)
+        );
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const conversations = await this.fetchInstalledConversations({
+                appId,
+                token,
+                runCtx,
+                step: `SWITCH_LIST_CONVERSATIONS_${attempt}`,
+                limit: 500,
+                pinned: false,
+                maxAttempts: 1,
+            });
+
+            const firstNew = conversations.find((item) => {
+                const id = typeof item?.id === 'string' ? item.id.trim() : '';
+                return !!id && !baseline.has(id);
+            });
+            if (firstNew?.id) {
+                return {
+                    conversationId: firstNew.id.trim(),
+                    source: 'polling-new',
+                    attempt,
+                };
+            }
+
+            if (baseline.size === 0 && conversations[0]?.id) {
+                return {
+                    conversationId: String(conversations[0].id).trim(),
+                    source: 'polling-latest',
+                    attempt,
+                };
+            }
+
+            if (attempt < maxAttempts) {
+                await delay(intervalMs);
+            }
+        }
+
+        return {
+            conversationId: '',
+            source: 'polling-none',
+            attempt: maxAttempts,
+        };
+    },
+
+    async fetchAppDetails({ appId, token, runCtx, step = 'SWITCH_GET_APP_DETAILS' }) {
+        const path = `${SITE_ENDPOINTS.APP_DETAILS}/${appId}`;
+        const payload = await this.requestSiteApi(path, {
+            method: 'GET',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }, runCtx, step);
+
+        const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+        const appInfo = data?.apps && typeof data.apps === 'object'
+            ? data.apps
+            : (data?.app && typeof data.app === 'object' ? data.app : {});
+        const modelConfig = data?.model_config && typeof data.model_config === 'object'
+            ? data.model_config
+            : (data?.modelConfig && typeof data.modelConfig === 'object' ? data.modelConfig : {});
+
+        return {
+            appId,
+            name: decodeEscapedText(typeof appInfo?.name === 'string' ? appInfo.name : ''),
+            description: decodeEscapedText(typeof appInfo?.description === 'string' ? appInfo.description : ''),
+            builtInCss: decodeEscapedText(typeof modelConfig?.built_in_css === 'string' ? modelConfig.built_in_css : ''),
+            raw: payload,
+        };
+    },
+
+    async syncAppMetaToLocalHistory({ appId, token, runCtx, step = 'SWITCH_SYNC_APP_META' }) {
+        try {
+            const details = await this.fetchAppDetails({
+                appId,
+                token,
+                runCtx,
+                step,
+            });
+
+            await ChatHistoryService.upsertAppMeta({
+                appId,
+                name: details.name,
+                description: details.description,
+                builtInCss: details.builtInCss,
+            });
+            return details;
+        } catch (error) {
+            logWarn(runCtx, step, '同步应用元数据到本地失败（不影响主流程）', {
+                message: error?.message || String(error),
+            });
+            return null;
+        }
+    },
+
+    async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
+        const result = await this.fetchConversationMessages({
+            appId,
+            conversationId,
+            token,
+            runCtx,
+            step: 'SWITCH_FETCH_MESSAGES',
+            limit: 500,
+            type: 'recent',
+        });
+        const messages = result.messages;
+        if (!messages.length) {
+            throw new Error('messages 接口未返回可用 data');
+        }
+
+        return this.extractLatestAnswerFromMessages(messages, runCtx, 'SWITCH_FETCH_MESSAGES');
     },
 
     async fetchUserAppModelConfig({ appId, token, runCtx }) {
@@ -1012,13 +1188,32 @@ export const AutoRegister = {
         });
         logDebug(runCtx, 'SWITCH_CHAT', 'chat-messages 请求体', body);
 
+        let baselineConversationIds = [];
+        try {
+            const baselineList = await this.fetchInstalledConversations({
+                appId,
+                token,
+                runCtx,
+                step: 'SWITCH_LIST_CONVERSATIONS_BASELINE',
+                limit: 500,
+                pinned: false,
+                maxAttempts: 1,
+            });
+            baselineConversationIds = baselineList
+                .map((item) => (typeof item?.id === 'string' ? item.id.trim() : ''))
+                .filter(Boolean);
+        } catch (error) {
+            logWarn(runCtx, 'SWITCH_CHAT', '读取会话基线列表失败，将继续请求 chat-messages', {
+                message: error?.message || String(error),
+            });
+        }
+
         const responseMeta = await this.runWithObjectiveRetries(
             (attempt, attempts) => {
                 if (attempt > 1) {
                     logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 重试中 (${attempt}/${attempts})`);
                 }
                 return this.sendChatMessagesOnce({
-                    appId,
                     token,
                     url,
                     body,
@@ -1037,27 +1232,35 @@ export const AutoRegister = {
         const hasStatus = Number.isFinite(status) && status > 0;
         const isSuccess = hasStatus && status >= 200 && status < 300;
         const statusText = hasStatus ? `HTTP ${status}` : '未知状态';
-        logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到响应（${statusText}），1秒后刷新`, responseMeta);
-        if (!responseMeta?.conversationId) {
-            logWarn(runCtx, 'SWITCH_CHAT', '本次 chat-messages 未解析到 conversation_id，已保留原有 conversationIdInfo');
+
+        let conversationId = typeof responseMeta?.conversationId === 'string'
+            ? responseMeta.conversationId.trim()
+            : '';
+        let source = conversationId ? 'sse' : 'none';
+
+        if (!conversationId) {
+            const polled = await this.pollConversationIdFromConversations({
+                appId,
+                token,
+                runCtx,
+                baselineConversationIds,
+                maxAttempts: 8,
+                intervalMs: 650,
+            });
+            conversationId = polled.conversationId;
+            source = polled.source;
         }
 
-        Sidebar.updateState({
-            status: 'success',
-            statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`,
+        logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到响应（${statusText}）`, {
+            ...responseMeta,
+            conversationId: conversationId || null,
+            source,
         });
-        Toast.info(
-            `chat-messages 已收到${isSuccess ? '成功' : '失败'}响应（${statusText}），1秒后刷新`,
-            3500
-        );
-        setTimeout(() => {
-            window.location.reload();
-        }, 1000);
 
-        return { status, isSuccess, conversationId: responseMeta?.conversationId || '' };
+        return { status, isSuccess, conversationId: conversationId || '', source };
     },
 
-    sendChatMessagesOnce({ appId, token, url, body, runCtx }) {
+    sendChatMessagesOnce({ token, url, body, runCtx }) {
         return new Promise((resolve, reject) => {
             let settled = false;
             let fallbackTimer = null;
@@ -1076,9 +1279,7 @@ export const AutoRegister = {
                 if (!conversationId) return '';
 
                 capturedConversationId = conversationId;
-                this.upsertConversationIdInfo(appId, conversationId, runCtx);
                 logInfo(runCtx, 'SWITCH_CHAT', `已从 ${trigger} 解析 conversation_id`, {
-                    appId,
                     conversationId,
                 });
                 return capturedConversationId;
@@ -1219,12 +1420,20 @@ export const AutoRegister = {
             }
 
             const conversationId = this.readConversationIdByAppId(appId);
+            let activeChainId = '';
 
             Sidebar.updateState({
                 status: 'fetching',
                 statusMessage: '更换账号：正在读取旧账号模型配置...',
             });
             Toast.info('更换账号：正在读取旧账号模型配置', 2200);
+
+            await this.syncAppMetaToLocalHistory({
+                appId,
+                token: oldToken,
+                runCtx,
+                step: 'SWITCH_SYNC_APP_META_OLD',
+            });
 
             const userModelConfig = await this.fetchUserAppModelConfig({
                 appId,
@@ -1234,27 +1443,59 @@ export const AutoRegister = {
 
             Sidebar.updateState({
                 status: 'fetching',
-                statusMessage: '更换账号：正在读取旧会话最新消息...',
+                statusMessage: '更换账号：正在读取旧会话消息并本地归档...',
             });
-            Toast.info('更换账号：正在提取旧会话最新回答', 2400);
+            Toast.info('更换账号：正在拉取旧会话消息', 2400);
 
-            const latest = await this.fetchLatestConversationAnswer({
+            const oldConversation = await this.fetchConversationMessages({
                 appId,
                 conversationId,
                 token: oldToken,
                 runCtx,
+                step: 'SWITCH_FETCH_MESSAGES',
+                limit: 500,
+                type: 'recent',
             });
+            if (!oldConversation.messages.length) {
+                throw new Error('旧会话消息为空，无法继续更换账号');
+            }
+
+            const latest = this.extractLatestAnswerFromMessages(
+                oldConversation.messages,
+                runCtx,
+                'SWITCH_FETCH_MESSAGES'
+            );
             const decodedAnswer = decodeEscapedText(latest.answer);
             if (!decodedAnswer.trim()) {
                 throw new Error('最新消息 answer 解码后为空');
             }
+
+            const chainBinding = await ChatHistoryService.bindConversation({
+                appId,
+                conversationId,
+            });
+            activeChainId = chainBinding.chainId;
+            const storeResult = await ChatHistoryService.saveConversationMessages({
+                appId,
+                conversationId,
+                chainId: activeChainId,
+                messages: oldConversation.messages,
+            });
+            ChatHistoryService.markChainSynced(activeChainId, Date.now());
 
             logInfo(runCtx, 'SWITCH_FETCH_MESSAGES', '已提取旧会话最新消息', {
                 appId,
                 conversationId,
                 createdAt: latest.createdAt,
                 answerLength: decodedAnswer.length,
+                messageCount: oldConversation.messages.length,
+                savedCount: storeResult.savedCount,
+                chainId: activeChainId,
             });
+
+            if (oldConversation.hasPastRecord || oldConversation.isEarliestDataPage === false) {
+                Toast.warning('旧会话可能仍有更早消息未拉取，可在“会话”Tab手动同步', 4500);
+            }
 
             Sidebar.updateState({
                 status: 'fetching',
@@ -1270,6 +1511,13 @@ export const AutoRegister = {
             if (!registerResult.guideSkipped) {
                 throw new Error('更换账号终止：首次引导未跳过成功，不发送 chat-messages');
             }
+
+            await this.syncAppMetaToLocalHistory({
+                appId,
+                token: registerResult.token,
+                runCtx,
+                step: 'SWITCH_SYNC_APP_META_NEW',
+            });
 
             Sidebar.updateState({
                 status: 'fetching',
@@ -1291,13 +1539,48 @@ export const AutoRegister = {
             });
             Toast.info('更换账号：正在发送 chat-messages', 2200);
 
-            await this.sendChatMessagesAndReload({
+            const chatResult = await this.sendChatMessagesAndReload({
                 appId,
                 token: registerResult.token,
                 query,
                 conversationName,
                 runCtx,
             });
+
+            const newConversationId = typeof chatResult?.conversationId === 'string'
+                ? chatResult.conversationId.trim()
+                : '';
+            if (newConversationId) {
+                this.upsertConversationIdInfo(appId, newConversationId, runCtx);
+                const newBinding = await ChatHistoryService.bindConversation({
+                    appId,
+                    conversationId: newConversationId,
+                    previousConversationId: conversationId,
+                    preferredChainId: activeChainId,
+                });
+                activeChainId = newBinding.chainId;
+                ChatHistoryService.setActiveChainId(appId, activeChainId);
+            }
+
+            const sourceText = chatResult?.source ? `，来源 ${chatResult.source}` : '';
+            const statusText = Number.isFinite(Number(chatResult?.status))
+                ? `HTTP ${Number(chatResult.status)}`
+                : '未知状态';
+            Sidebar.updateState({
+                status: 'success',
+                statusMessage: newConversationId
+                    ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}），0.8 秒后刷新`
+                    : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id，0.8 秒后刷新`,
+            });
+            if (newConversationId) {
+                Toast.success(`已获取新会话ID（${chatResult.source || 'sse'}），即将刷新`, 2600);
+            } else {
+                Toast.warning('未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步', 3600);
+            }
+
+            setTimeout(() => {
+                window.location.reload();
+            }, 800);
         } catch (error) {
             const message = `更换账号失败: ${error.message}`;
             Sidebar.updateState({ status: 'error', statusMessage: message });
@@ -1312,6 +1595,168 @@ export const AutoRegister = {
                 switchBtn.disabled = false;
             }
         }
+    },
+
+    async loadConversationChainsForCurrentApp({ appId = '' } = {}) {
+        const resolvedAppId = (typeof appId === 'string' ? appId.trim() : '') || this.extractInstalledAppId();
+        if (!resolvedAppId) {
+            return {
+                appId: '',
+                chains: [],
+                activeChainId: '',
+                currentConversationId: '',
+            };
+        }
+
+        const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+        if (currentConversationId) {
+            await ChatHistoryService.bindConversation({
+                appId: resolvedAppId,
+                conversationId: currentConversationId,
+            });
+        }
+
+        const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
+        let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+        if (!activeChainId && chains[0]?.chainId) {
+            activeChainId = chains[0].chainId;
+            ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
+        }
+
+        return {
+            appId: resolvedAppId,
+            chains,
+            activeChainId,
+            currentConversationId,
+        };
+    },
+
+    async getConversationViewerHtml({ appId, chainId }) {
+        const resolvedAppId = typeof appId === 'string' ? appId.trim() : '';
+        if (!resolvedAppId) {
+            return '<html><body><p>当前页面未识别到 appId。</p></body></html>';
+        }
+
+        const resolvedChainId = (typeof chainId === 'string' ? chainId.trim() : '')
+            || ChatHistoryService.getActiveChainId(resolvedAppId);
+        if (!resolvedChainId) {
+            return '<html><body><p>当前应用暂无本地会话链。</p></body></html>';
+        }
+
+        return ChatHistoryService.buildChainViewerHtml({
+            appId: resolvedAppId,
+            chainId: resolvedChainId,
+        });
+    },
+
+    async manualSyncConversationChain({ appId = '', chainId = '' } = {}) {
+        const runCtx = createRunContext('SYNC');
+        const resolvedAppId = (typeof appId === 'string' ? appId.trim() : '') || this.extractInstalledAppId();
+        if (!resolvedAppId) {
+            throw new Error('当前页面不是 installed/test-installed 详情页');
+        }
+
+        const token = (localStorage.getItem('console_token') || '').trim();
+        if (!token) {
+            throw new Error('未找到 console_token，请先登录后再同步');
+        }
+
+        await this.syncAppMetaToLocalHistory({
+            appId: resolvedAppId,
+            token,
+            runCtx,
+            step: 'SYNC_APP_META',
+        });
+
+        let resolvedChainId = typeof chainId === 'string' ? chainId.trim() : '';
+        if (!resolvedChainId) {
+            resolvedChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+        }
+
+        if (!resolvedChainId) {
+            const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+            if (currentConversationId) {
+                const binding = await ChatHistoryService.bindConversation({
+                    appId: resolvedAppId,
+                    conversationId: currentConversationId,
+                });
+                resolvedChainId = binding.chainId;
+            }
+        }
+
+        if (!resolvedChainId) {
+            throw new Error('未找到可同步的会话链');
+        }
+
+        const chain = await ChatHistoryService.getChain(resolvedChainId);
+        if (!chain) {
+            throw new Error(`会话链不存在: ${resolvedChainId}`);
+        }
+
+        const conversationIds = Array.isArray(chain.conversationIds)
+            ? chain.conversationIds.filter((item) => typeof item === 'string' && item.trim())
+            : [];
+        if (conversationIds.length === 0) {
+            throw new Error('当前会话链无 conversation_id，无法同步');
+        }
+
+        let totalFetched = 0;
+        let totalSaved = 0;
+        let hasIncomplete = false;
+        let successCount = 0;
+        const failedConversationIds = [];
+
+        for (const conversationId of conversationIds) {
+            try {
+                const result = await this.fetchConversationMessages({
+                    appId: resolvedAppId,
+                    conversationId,
+                    token,
+                    runCtx,
+                    step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
+                    limit: 500,
+                    type: 'recent',
+                });
+                totalFetched += result.messages.length;
+                if (result.hasPastRecord || result.isEarliestDataPage === false) {
+                    hasIncomplete = true;
+                }
+
+                const storeResult = await ChatHistoryService.saveConversationMessages({
+                    appId: resolvedAppId,
+                    conversationId,
+                    chainId: resolvedChainId,
+                    messages: result.messages,
+                });
+                totalSaved += storeResult.savedCount;
+                successCount++;
+            } catch (error) {
+                failedConversationIds.push(conversationId);
+                logWarn(runCtx, 'SYNC', '单个会话同步失败，继续同步其他会话', {
+                    conversationId,
+                    message: error?.message || String(error),
+                });
+            }
+        }
+
+        if (successCount === 0) {
+            throw new Error('会话同步失败：所有 conversation_id 均同步失败');
+        }
+
+        ChatHistoryService.markChainSynced(resolvedChainId, Date.now());
+        ChatHistoryService.setActiveChainId(resolvedAppId, resolvedChainId);
+
+        return {
+            appId: resolvedAppId,
+            chainId: resolvedChainId,
+            conversationIds,
+            successCount,
+            failedCount: failedConversationIds.length,
+            failedConversationIds,
+            totalFetched,
+            totalSaved,
+            hasIncomplete,
+        };
     },
 
     async start() {

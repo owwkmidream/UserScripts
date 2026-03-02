@@ -1,5 +1,39 @@
-import { gmAddStyle } from '../gm.js';
+import { gmAddStyle, gmRequestJson } from '../gm.js';
 import { Toast } from '../ui/toast.js';
+
+const X_LANGUAGE = 'zh-Hans';
+const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
+
+function decodeEscapedText(raw) {
+    if (typeof raw !== 'string') return '';
+
+    let value = raw;
+    for (let i = 0; i < 3; i++) {
+        if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
+            break;
+        }
+        try {
+            const next = JSON.parse(`"${value
+                .replace(/"/g, '\\"')
+                .replace(/\r/g, '\\r')
+                .replace(/\n/g, '\\n')
+                .replace(/\t/g, '\\t')}"`);
+            if (next === value) break;
+            value = next;
+        } catch {
+            break;
+        }
+    }
+    return value;
+}
+
+function sanitizeFilename(value) {
+    const normalized = String(value || '')
+        .replace(/[\\/:*?"<>|]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized || 'aifengyue-app';
+}
 
 export const IframeExtractor = {
     button: null,
@@ -10,13 +44,13 @@ export const IframeExtractor = {
         return urlPattern.test(window.location.pathname);
     },
 
-    findSrcdocIframe() {
-        const iframes = document.querySelectorAll('iframe[srcdoc]');
-        return iframes.length > 0 ? iframes[0] : null;
+    extractInstalledAppId() {
+        const matched = window.location.pathname.match(/\/(?:test-)?installed\/([0-9a-f-]+)$/i);
+        return matched?.[1] || '';
     },
 
     isExtractAvailable() {
-        return this.checkDetailPage() && this.findSrcdocIframe() !== null;
+        return this.checkDetailPage() && !!this.extractInstalledAppId();
     },
 
     createStyles() {
@@ -62,7 +96,7 @@ export const IframeExtractor = {
         this.button = document.createElement('button');
         this.button.id = 'aifengyue-extract-btn';
         this.button.textContent = '提取HTML';
-        this.button.title = '提取 iframe 内容为 HTML 文件';
+        this.button.title = '从接口提取应用 HTML 并导出';
         this.button.addEventListener('click', () => this.extractAndSave());
         document.body.appendChild(this.button);
     },
@@ -79,42 +113,171 @@ export const IframeExtractor = {
         return title.replace(/\s*-\s*Powered by AI风月\s*$/i, '').trim();
     },
 
-    extractAndSave() {
-        const iframe = this.findSrcdocIframe();
-        if (!iframe) {
-            Toast.error('未找到包含 srcdoc 的 iframe');
+    resolveRetryAttempts(maxAttempts) {
+        const parsed = Number(maxAttempts);
+        if (Number.isInteger(parsed) && parsed >= 1) {
+            return parsed;
+        }
+        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+    },
+
+    isObjectiveRetryError(error) {
+        const status = Number(error?.httpStatus || 0);
+        if (status === 408 || status === 429 || status >= 500) {
+            return true;
+        }
+
+        const message = String(error?.message || '').toLowerCase();
+        if (!message) return false;
+        return (
+            message.includes('timeout') ||
+            message.includes('超时') ||
+            message.includes('network') ||
+            message.includes('网络') ||
+            message.includes('failed') ||
+            message.includes('中止') ||
+            message.includes('abort')
+        );
+    },
+
+    async requestAppDetail({ appId, token, maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS }) {
+        const attempts = this.resolveRetryAttempts(maxAttempts);
+        const url = `${window.location.origin}/go/api/apps/${appId}`;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                const response = await gmRequestJson({
+                    method: 'GET',
+                    url,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Language': X_LANGUAGE,
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    timeout: 25000,
+                    anonymous: true,
+                });
+
+                if (response.status < 200 || response.status >= 300) {
+                    const error = new Error(`获取应用详情失败: HTTP ${response.status}`);
+                    error.httpStatus = response.status;
+                    throw error;
+                }
+                if (!response.json || typeof response.json !== 'object') {
+                    throw new Error('应用详情接口返回非 JSON 数据');
+                }
+                return response.json;
+            } catch (error) {
+                lastError = error;
+                const hasNext = attempt < attempts;
+                if (!hasNext || !this.isObjectiveRetryError(error)) {
+                    throw error;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+            }
+        }
+
+        throw lastError || new Error('获取应用详情失败');
+    },
+
+    extractAppPayload(payload, fallbackTitle) {
+        const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+        const appInfo = data?.apps && typeof data.apps === 'object'
+            ? data.apps
+            : (data?.app && typeof data.app === 'object' ? data.app : {});
+        const modelConfig = data?.model_config && typeof data.model_config === 'object'
+            ? data.model_config
+            : (data?.modelConfig && typeof data.modelConfig === 'object' ? data.modelConfig : {});
+
+        return {
+            name: decodeEscapedText(typeof appInfo?.name === 'string' ? appInfo.name : '') || fallbackTitle,
+            description: decodeEscapedText(typeof appInfo?.description === 'string' ? appInfo.description : ''),
+            builtInCss: decodeEscapedText(typeof modelConfig?.built_in_css === 'string' ? modelConfig.built_in_css : ''),
+        };
+    },
+
+    buildHtmlDocument({ name, description, builtInCss }) {
+        return `<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${name}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #f4f5f7;
+            color: #1f2937;
+            line-height: 1.7;
+        }
+        .af-root {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #fff;
+            border: 1px solid #dce1eb;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .af-title {
+            margin: 0 0 16px;
+            font-size: 22px;
+            font-weight: 700;
+        }
+        ${builtInCss || ''}
+    </style>
+</head>
+<body>
+    <main class="af-root">
+        <h1 class="af-title">${name}</h1>
+        ${description || '<p>应用描述为空。</p>'}
+    </main>
+</body>
+</html>`;
+    },
+
+    downloadHtmlFile(filename, html) {
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    },
+
+    async extractAndSave() {
+        const appId = this.extractInstalledAppId();
+        if (!appId) {
+            Toast.error('当前页面不是应用详情页，无法提取 HTML');
             return;
         }
 
-        const srcdoc = iframe.getAttribute('srcdoc');
-        if (!srcdoc) {
-            Toast.error('iframe 的 srcdoc 属性为空');
-            return;
-        }
+        const token = (localStorage.getItem('console_token') || '').trim();
+        const fallbackTitle = this.getCleanTitle() || `app-${appId}`;
 
         try {
-            const textarea = document.createElement('textarea');
-            textarea.innerHTML = srcdoc;
-            const decodedHtml = textarea.value;
+            Toast.info('正在请求应用详情并导出 HTML...', 2000);
 
-            const cleanTitle = this.getCleanTitle();
-            const filename = `${cleanTitle}.html`;
+            const payload = await this.requestAppDetail({
+                appId,
+                token,
+                maxAttempts: DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
+            });
+            const data = this.extractAppPayload(payload, fallbackTitle);
+            const html = this.buildHtmlDocument(data);
+            const filename = `${sanitizeFilename(data.name || fallbackTitle)}.html`;
 
-            const blob = new Blob([decodedHtml], { type: 'text/html;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
+            this.downloadHtmlFile(filename, html);
             Toast.success(`已保存为: ${filename}`);
         } catch (error) {
             Toast.error(`提取失败: ${error.message}`);
-            console.error('[Iframe 提取器] 错误:', error);
+            console.error('[HTML 提取器] 错误:', error);
         }
     },
 
@@ -125,3 +288,4 @@ export const IframeExtractor = {
         }
     },
 };
+

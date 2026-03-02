@@ -4,6 +4,8 @@ import { gmGetValue, gmSetValue } from '../gm.js';
 
 export const ModelPopupSorter = {
     sortScheduled: false,
+    popupObserver: null,
+    observedPopup: null,
 
     isSortEnabled() {
         return gmGetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, true);
@@ -18,12 +20,41 @@ export const ModelPopupSorter = {
     },
 
     scheduleSort() {
-        if (!this.isEnabled() || this.sortScheduled) return;
+        if (!this.isEnabled()) {
+            if (this.popupObserver) {
+                this.popupObserver.disconnect();
+                this.popupObserver = null;
+            }
+            this.observedPopup = null;
+            return;
+        }
+        if (this.sortScheduled) return;
         this.sortScheduled = true;
 
         requestAnimationFrame(() => {
             this.sortScheduled = false;
             this.sortPopup();
+        });
+    },
+
+    observePopup(popup) {
+        if (!popup) return;
+        if (this.observedPopup === popup && this.popupObserver) return;
+
+        if (this.popupObserver) {
+            this.popupObserver.disconnect();
+            this.popupObserver = null;
+        }
+
+        this.observedPopup = popup;
+        this.popupObserver = new MutationObserver(() => {
+            this.scheduleSort();
+        });
+        this.popupObserver.observe(popup, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'aria-selected', 'aria-expanded'],
         });
     },
 
@@ -112,7 +143,15 @@ export const ModelPopupSorter = {
 
     sortPopup() {
         const popup = this.findPopup();
-        if (!popup) return;
+        if (!popup) {
+            if (this.popupObserver) {
+                this.popupObserver.disconnect();
+                this.popupObserver = null;
+            }
+            this.observedPopup = null;
+            return;
+        }
+        this.observePopup(popup);
 
         const blocks = this.findCategoryBlocks(popup);
         if (blocks.length === 0) return;

@@ -135,6 +135,7 @@
 
 //#endregion
 //#region src/services/api-service.js
+	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2 = 3;
 	const ApiService = {
 		getApiKey() {
 			return gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, CONFIG.DEFAULT_API_KEY);
@@ -163,7 +164,37 @@
 		isQuotaExceeded() {
 			return this.getUsageCount() >= CONFIG.API_QUOTA_LIMIT;
 		},
-		request(endpoint, options = {}) {
+		resolveRetryAttempts(maxAttempts) {
+			const parsed = Number(maxAttempts);
+			if (Number.isInteger(parsed) && parsed >= 1) {
+				return parsed;
+			}
+			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2;
+		},
+		isObjectiveRetryError(error) {
+			const message = String(error?.message || "").toLowerCase();
+			if (!message) return false;
+			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+		},
+		async request(endpoint, options = {}) {
+			const attempts = this.resolveRetryAttempts(options.maxAttempts);
+			let lastError = null;
+			for (let attempt = 1; attempt <= attempts; attempt++) {
+				try {
+					return await this.requestOnce(endpoint, options);
+				} catch (error) {
+					lastError = error;
+					const hasNext = attempt < attempts;
+					if (!hasNext || !this.isObjectiveRetryError(error)) {
+						throw error;
+					}
+					const waitMs = 700 * attempt;
+					await new Promise((resolve) => setTimeout(resolve, waitMs));
+				}
+			}
+			throw lastError || new Error("请求失败");
+		},
+		requestOnce(endpoint, options = {}) {
 			return new Promise((resolve, reject) => {
 				if (this.isQuotaExceeded()) {
 					reject(new Error(`API 配额已用完 (${this.getUsageCount()}/${CONFIG.API_QUOTA_LIMIT})`));
@@ -180,6 +211,7 @@
 						...options.headers
 					},
 					data: options.body ? JSON.stringify(options.body) : undefined,
+					timeout: options.timeout ?? 3e4,
 					onload: (response) => {
 						try {
 							const data = JSON.parse(response.responseText);
@@ -193,8 +225,14 @@
 							reject(new Error("解析响应失败"));
 						}
 					},
-					onerror: () => {
-						reject(new Error("网络请求失败"));
+					onerror: (error) => {
+						reject(new Error(error?.error || "网络请求失败"));
+					},
+					ontimeout: () => {
+						reject(new Error("网络请求超时"));
+					},
+					onabort: () => {
+						reject(new Error("网络请求被中止"));
 					}
 				});
 			});
@@ -210,10 +248,671 @@
 	};
 
 //#endregion
+//#region src/services/chat-history-store.js
+	const DB_NAME = "aifengyue_chat_store_v1";
+	const DB_VERSION = 1;
+	const STORE_APPS = "apps";
+	const STORE_CHAINS = "chains";
+	const STORE_MESSAGES = "messages";
+	let dbPromise = null;
+	function requestToPromise(request) {
+		return new Promise((resolve, reject) => {
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => reject(request.error || new Error("IndexedDB 请求失败"));
+		});
+	}
+	function txDone(tx) {
+		return new Promise((resolve, reject) => {
+			tx.oncomplete = () => resolve();
+			tx.onerror = () => reject(tx.error || new Error("IndexedDB 事务失败"));
+			tx.onabort = () => reject(tx.error || new Error("IndexedDB 事务中止"));
+		});
+	}
+	function ensureIndexedDbAvailable() {
+		if (typeof indexedDB === "undefined") {
+			throw new Error("当前环境不支持 IndexedDB");
+		}
+	}
+	function openDb() {
+		ensureIndexedDbAvailable();
+		if (dbPromise) return dbPromise;
+		dbPromise = new Promise((resolve, reject) => {
+			const request = indexedDB.open(DB_NAME, DB_VERSION);
+			request.onupgradeneeded = () => {
+				const db = request.result;
+				if (!db.objectStoreNames.contains(STORE_APPS)) {
+					const appStore = db.createObjectStore(STORE_APPS, { keyPath: "appId" });
+					appStore.createIndex("updatedAt", "updatedAt", { unique: false });
+				}
+				if (!db.objectStoreNames.contains(STORE_CHAINS)) {
+					const chainStore = db.createObjectStore(STORE_CHAINS, { keyPath: "chainId" });
+					chainStore.createIndex("appId", "appId", { unique: false });
+					chainStore.createIndex("updatedAt", "updatedAt", { unique: false });
+				}
+				if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
+					const messageStore = db.createObjectStore(STORE_MESSAGES, { keyPath: "storeKey" });
+					messageStore.createIndex("appId", "appId", { unique: false });
+					messageStore.createIndex("chainId", "chainId", { unique: false });
+					messageStore.createIndex("conversationId", "conversationId", { unique: false });
+					messageStore.createIndex("chainId_createdAt", ["chainId", "createdAt"], { unique: false });
+				}
+			};
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => reject(request.error || new Error("IndexedDB 打开失败"));
+		});
+		return dbPromise;
+	}
+	async function withStore(storeName, mode, handler) {
+		const db = await openDb();
+		const tx = db.transaction(storeName, mode);
+		const store = tx.objectStore(storeName);
+		const result = await handler(store, tx);
+		await txDone(tx);
+		return result;
+	}
+	const ChatHistoryStore = {
+		DB_NAME,
+		DB_VERSION,
+		STORE_APPS,
+		STORE_CHAINS,
+		STORE_MESSAGES,
+		async upsertApp(appRecord) {
+			return withStore(STORE_APPS, "readwrite", async (store) => {
+				await requestToPromise(store.put(appRecord));
+				return appRecord;
+			});
+		},
+		async getApp(appId) {
+			return withStore(STORE_APPS, "readonly", (store) => requestToPromise(store.get(appId)));
+		},
+		async upsertChain(chainRecord) {
+			return withStore(STORE_CHAINS, "readwrite", async (store) => {
+				await requestToPromise(store.put(chainRecord));
+				return chainRecord;
+			});
+		},
+		async getChain(chainId) {
+			return withStore(STORE_CHAINS, "readonly", (store) => requestToPromise(store.get(chainId)));
+		},
+		async listChainsByApp(appId) {
+			return withStore(STORE_CHAINS, "readonly", (store) => new Promise((resolve, reject) => {
+				const list = [];
+				const index = store.index("appId");
+				const request = index.openCursor(IDBKeyRange.only(appId));
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) {
+						resolve(list);
+						return;
+					}
+					list.push(cursor.value);
+					cursor.continue();
+				};
+				request.onerror = () => reject(request.error || new Error("读取链路失败"));
+			}));
+		},
+		async putMessages(records) {
+			if (!Array.isArray(records) || records.length === 0) return 0;
+			return withStore(STORE_MESSAGES, "readwrite", async (store) => {
+				for (const record of records) {
+					await requestToPromise(store.put(record));
+				}
+				return records.length;
+			});
+		},
+		async listMessagesByChain(chainId) {
+			return withStore(STORE_MESSAGES, "readonly", (store) => new Promise((resolve, reject) => {
+				const list = [];
+				const index = store.index("chainId_createdAt");
+				const range = IDBKeyRange.bound([chainId, Number.NEGATIVE_INFINITY], [chainId, Number.POSITIVE_INFINITY]);
+				const request = index.openCursor(range);
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) {
+						resolve(list);
+						return;
+					}
+					list.push(cursor.value);
+					cursor.continue();
+				};
+				request.onerror = () => reject(request.error || new Error("读取消息失败"));
+			}));
+		},
+		async listMessagesByConversation(conversationId) {
+			return withStore(STORE_MESSAGES, "readonly", (store) => new Promise((resolve, reject) => {
+				const list = [];
+				const index = store.index("conversationId");
+				const request = index.openCursor(IDBKeyRange.only(conversationId));
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) {
+						resolve(list);
+						return;
+					}
+					list.push(cursor.value);
+					cursor.continue();
+				};
+				request.onerror = () => reject(request.error || new Error("读取会话消息失败"));
+			}));
+		}
+	};
+
+//#endregion
+//#region src/services/chat-history-service.js
+	const INDEX_KEY = "aifengyue_chat_index_v1";
+	function normalizeId(value) {
+		return typeof value === "string" ? value.trim() : "";
+	}
+	function normalizeTimestamp$1(value) {
+		if (typeof value === "number" && Number.isFinite(value)) {
+			return value;
+		}
+		if (typeof value === "string" && value.trim()) {
+			const asNumber = Number(value);
+			if (Number.isFinite(asNumber)) return asNumber;
+			const parsed = Date.parse(value);
+			if (Number.isFinite(parsed)) return parsed;
+		}
+		return 0;
+	}
+	function decodeEscapedText$2(raw) {
+		if (typeof raw !== "string") return "";
+		let value = raw;
+		for (let i = 0; i < 3; i++) {
+			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
+				break;
+			}
+			try {
+				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
+				if (next === value) break;
+				value = next;
+			} catch {
+				break;
+			}
+		}
+		return value;
+	}
+	function makeConversationKey(appId, conversationId) {
+		return `${appId}::${conversationId}`;
+	}
+	function createChainId(appId) {
+		const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+		return `chain-${appId}-${suffix}`;
+	}
+	function uniqueStringArray(values) {
+		const output = [];
+		const seen = new Set();
+		for (const value of values || []) {
+			const normalized = normalizeId(value);
+			if (!normalized || seen.has(normalized)) continue;
+			seen.add(normalized);
+			output.push(normalized);
+		}
+		return output;
+	}
+	function readIndex() {
+		const fallback = {
+			activeChainByAppId: {},
+			conversationToChain: {},
+			lastSyncByChainId: {}
+		};
+		const raw = localStorage.getItem(INDEX_KEY);
+		if (!raw) return fallback;
+		try {
+			const parsed = JSON.parse(raw);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return fallback;
+			}
+			return {
+				activeChainByAppId: parsed.activeChainByAppId && typeof parsed.activeChainByAppId === "object" ? { ...parsed.activeChainByAppId } : {},
+				conversationToChain: parsed.conversationToChain && typeof parsed.conversationToChain === "object" ? { ...parsed.conversationToChain } : {},
+				lastSyncByChainId: parsed.lastSyncByChainId && typeof parsed.lastSyncByChainId === "object" ? { ...parsed.lastSyncByChainId } : {}
+			};
+		} catch {
+			return fallback;
+		}
+	}
+	function writeIndex(index) {
+		localStorage.setItem(INDEX_KEY, JSON.stringify(index));
+	}
+	function escapeHtml(text) {
+		return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+	}
+	function formatTime(value) {
+		const ts = normalizeTimestamp$1(value);
+		if (!ts) return "-";
+		try {
+			return new Date(ts * (ts > 0xe8d4a51000 ? 1 : 1e3)).toLocaleString();
+		} catch {
+			return String(value);
+		}
+	}
+	function asDisplayContent(value) {
+		if (value === null || value === undefined) return "";
+		if (typeof value === "string") return decodeEscapedText$2(value);
+		return String(value);
+	}
+	function looksLikeHtml(value) {
+		return /<\/?[a-z][\s\S]*>/i.test(value);
+	}
+	function toChainRecord(base, extras = {}) {
+		return {
+			chainId: normalizeId(base.chainId),
+			appId: normalizeId(base.appId),
+			conversationIds: uniqueStringArray(base.conversationIds),
+			createdAt: Number(base.createdAt || Date.now()),
+			updatedAt: Number(base.updatedAt || Date.now()),
+			...extras
+		};
+	}
+	const ChatHistoryService = {
+		INDEX_KEY,
+		readIndexSnapshot() {
+			return readIndex();
+		},
+		getConversationChainId(appId, conversationId) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			if (!normalizedAppId || !normalizedConversationId) return "";
+			const index = readIndex();
+			const key = makeConversationKey(normalizedAppId, normalizedConversationId);
+			return normalizeId(index.conversationToChain[key]);
+		},
+		setConversationChainId(appId, conversationId, chainId) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedAppId || !normalizedConversationId || !normalizedChainId) return "";
+			const index = readIndex();
+			index.conversationToChain[makeConversationKey(normalizedAppId, normalizedConversationId)] = normalizedChainId;
+			writeIndex(index);
+			return normalizedChainId;
+		},
+		getActiveChainId(appId) {
+			const normalizedAppId = normalizeId(appId);
+			if (!normalizedAppId) return "";
+			const index = readIndex();
+			return normalizeId(index.activeChainByAppId[normalizedAppId]);
+		},
+		setActiveChainId(appId, chainId) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedAppId || !normalizedChainId) return "";
+			const index = readIndex();
+			index.activeChainByAppId[normalizedAppId] = normalizedChainId;
+			writeIndex(index);
+			return normalizedChainId;
+		},
+		markChainSynced(chainId, syncedAt = Date.now()) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) return 0;
+			const index = readIndex();
+			index.lastSyncByChainId[normalizedChainId] = Number(syncedAt) || Date.now();
+			writeIndex(index);
+			return index.lastSyncByChainId[normalizedChainId];
+		},
+		getChainLastSync(chainId) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) return 0;
+			const index = readIndex();
+			return Number(index.lastSyncByChainId[normalizedChainId] || 0);
+		},
+		async upsertAppMeta({ appId, name, description, builtInCss }) {
+			const normalizedAppId = normalizeId(appId);
+			if (!normalizedAppId) {
+				throw new Error("appId 为空，无法保存应用元数据");
+			}
+			const existing = await ChatHistoryStore.getApp(normalizedAppId);
+			const now = Date.now();
+			const record = {
+				appId: normalizedAppId,
+				name: asDisplayContent(name),
+				description: asDisplayContent(description),
+				builtInCss: asDisplayContent(builtInCss),
+				createdAt: Number(existing?.createdAt || now),
+				updatedAt: now
+			};
+			await ChatHistoryStore.upsertApp(record);
+			return record;
+		},
+		async getAppMeta(appId) {
+			const normalizedAppId = normalizeId(appId);
+			if (!normalizedAppId) return null;
+			return ChatHistoryStore.getApp(normalizedAppId);
+		},
+		async getChain(chainId) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) return null;
+			const chain = await ChatHistoryStore.getChain(normalizedChainId);
+			if (!chain) return null;
+			return toChainRecord(chain);
+		},
+		async listChainsForApp(appId) {
+			const normalizedAppId = normalizeId(appId);
+			if (!normalizedAppId) return [];
+			const chains = await ChatHistoryStore.listChainsByApp(normalizedAppId);
+			return (chains || []).map((chain) => toChainRecord(chain)).sort((a, b) => {
+				const updatedDiff = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+				if (updatedDiff !== 0) return updatedDiff;
+				return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+			});
+		},
+		async bindConversation({ appId, conversationId, previousConversationId = "", preferredChainId = "" }) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			const normalizedPreviousConversationId = normalizeId(previousConversationId);
+			const normalizedPreferredChainId = normalizeId(preferredChainId);
+			if (!normalizedAppId || !normalizedConversationId) {
+				throw new Error("appId 或 conversationId 为空，无法绑定链路");
+			}
+			const directChainId = this.getConversationChainId(normalizedAppId, normalizedConversationId);
+			if (directChainId) {
+				const directChain = await this.getChain(directChainId);
+				if (directChain && directChain.appId === normalizedAppId) {
+					this.setActiveChainId(normalizedAppId, directChainId);
+					return {
+						chainId: directChainId,
+						chain: directChain,
+						created: false
+					};
+				}
+			}
+			let chainId = "";
+			let chain = null;
+			let created = false;
+			const candidates = [];
+			if (normalizedPreferredChainId) {
+				candidates.push(normalizedPreferredChainId);
+			}
+			if (normalizedPreviousConversationId) {
+				const previousChainId = this.getConversationChainId(normalizedAppId, normalizedPreviousConversationId);
+				if (previousChainId) {
+					candidates.push(previousChainId);
+				}
+			}
+			const activeChainId = this.getActiveChainId(normalizedAppId);
+			if (activeChainId) {
+				candidates.push(activeChainId);
+			}
+			for (const candidate of candidates) {
+				const candidateChain = await this.getChain(candidate);
+				if (candidateChain && candidateChain.appId === normalizedAppId) {
+					chainId = candidate;
+					chain = candidateChain;
+					break;
+				}
+			}
+			if (!chainId) {
+				chainId = createChainId(normalizedAppId);
+				chain = toChainRecord({
+					chainId,
+					appId: normalizedAppId,
+					conversationIds: [],
+					createdAt: Date.now(),
+					updatedAt: Date.now()
+				});
+				created = true;
+			}
+			const conversationIds = uniqueStringArray([
+				...chain?.conversationIds || [],
+				normalizedPreviousConversationId,
+				normalizedConversationId
+			]);
+			const nextChain = toChainRecord(chain, {
+				conversationIds,
+				updatedAt: Date.now()
+			});
+			await ChatHistoryStore.upsertChain(nextChain);
+			this.setConversationChainId(normalizedAppId, normalizedConversationId, chainId);
+			if (normalizedPreviousConversationId) {
+				this.setConversationChainId(normalizedAppId, normalizedPreviousConversationId, chainId);
+			}
+			this.setActiveChainId(normalizedAppId, chainId);
+			return {
+				chainId,
+				chain: nextChain,
+				created
+			};
+		},
+		async saveConversationMessages({ appId, conversationId, chainId = "", messages = [] }) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			if (!normalizedAppId || !normalizedConversationId) {
+				throw new Error("appId 或 conversationId 为空，无法保存消息");
+			}
+			const binding = await this.bindConversation({
+				appId: normalizedAppId,
+				conversationId: normalizedConversationId,
+				preferredChainId: chainId
+			});
+			const normalizedChainId = binding.chainId;
+			const now = Date.now();
+			const seenStoreKeys = new Set();
+			const records = [];
+			for (let i = 0; i < messages.length; i++) {
+				const rawMessage = messages[i];
+				if (!rawMessage || typeof rawMessage !== "object") continue;
+				const messageId = normalizeId(rawMessage.id) || `${normalizedConversationId}-idx-${i}`;
+				const createdAt = normalizeTimestamp$1(rawMessage.created_at) || now + i;
+				const storeKey = `${normalizedChainId}::${normalizedConversationId}::${messageId}`;
+				if (seenStoreKeys.has(storeKey)) continue;
+				seenStoreKeys.add(storeKey);
+				records.push({
+					storeKey,
+					appId: normalizedAppId,
+					chainId: normalizedChainId,
+					conversationId: normalizedConversationId,
+					messageId,
+					createdAt,
+					updatedAt: now,
+					query: typeof rawMessage.query === "string" ? rawMessage.query : "",
+					answer: typeof rawMessage.answer === "string" ? rawMessage.answer : "",
+					rawMessage
+				});
+			}
+			const savedCount = await ChatHistoryStore.putMessages(records);
+			const chain = await this.getChain(normalizedChainId);
+			if (chain) {
+				await ChatHistoryStore.upsertChain(toChainRecord(chain, {
+					conversationIds: uniqueStringArray([...chain.conversationIds || [], normalizedConversationId]),
+					updatedAt: Date.now()
+				}));
+			}
+			return {
+				chainId: normalizedChainId,
+				savedCount
+			};
+		},
+		async listMessagesByChain(chainId) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) return [];
+			const records = await ChatHistoryStore.listMessagesByChain(normalizedChainId);
+			return (records || []).sort((a, b) => {
+				const createdDiff = Number(a?.createdAt || 0) - Number(b?.createdAt || 0);
+				if (createdDiff !== 0) return createdDiff;
+				return String(a?.storeKey || "").localeCompare(String(b?.storeKey || ""));
+			});
+		},
+		async buildChainViewerHtml({ appId, chainId }) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedAppId || !normalizedChainId) {
+				return "<html><body><p>缺少 appId 或 chainId。</p></body></html>";
+			}
+			const [appMeta, chain, records] = await Promise.all([
+				this.getAppMeta(normalizedAppId),
+				this.getChain(normalizedChainId),
+				this.listMessagesByChain(normalizedChainId)
+			]);
+			const name = escapeHtml(appMeta?.name || normalizedAppId);
+			const description = appMeta?.description || "";
+			const style = appMeta?.builtInCss || "";
+			const conversationIds = uniqueStringArray(chain?.conversationIds || []);
+			const messageHtml = records.length > 0 ? records.map((record, index) => {
+				const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+				const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? "");
+				const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? "");
+				const renderedAnswer = looksLikeHtml(answerText) ? answerText : `<pre class="af-plain">${escapeHtml(answerText || "(空)")}</pre>`;
+				const renderedQuery = `<pre class="af-plain">${escapeHtml(queryText || "(空)")}</pre>`;
+				const rawJson = escapeHtml(JSON.stringify(rawMessage, null, 2));
+				return `
+                    <article class="af-msg">
+                        <header class="af-msg-head">
+                            <span>#${index + 1}</span>
+                            <span>${escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt))}</span>
+                            <span>${escapeHtml(String(rawMessage.id || record?.messageId || "-"))}</span>
+                        </header>
+                        <section class="af-msg-block">
+                            <h3>Query</h3>
+                            ${renderedQuery}
+                        </section>
+                        <section class="af-msg-block">
+                            <h3>Answer</h3>
+                            <div class="af-answer-root">${renderedAnswer}</div>
+                        </section>
+                        <details class="af-raw">
+                            <summary>Raw JSON</summary>
+                            <pre>${rawJson}</pre>
+                        </details>
+                    </article>
+                `;
+			}).join("\n") : "<div class=\"af-empty\">当前链路暂无消息，点击“手动同步”拉取历史。</div>";
+			return `<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${name} - 本地会话</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --af-bg: #f3f5f9;
+            --af-card: #ffffff;
+            --af-border: #d8dee9;
+            --af-text: #1d2433;
+            --af-muted: #5f6b82;
+            --af-plain: #f7f9fc;
+            --af-accent: #2563eb;
+        }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--af-bg);
+            color: var(--af-text);
+            padding: 16px;
+        }
+        .af-head {
+            border: 1px solid var(--af-border);
+            background: var(--af-card);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+        }
+        .af-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin: 0 0 8px;
+        }
+        .af-meta {
+            color: var(--af-muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .af-description {
+            margin-top: 10px;
+            border-top: 1px dashed var(--af-border);
+            padding-top: 10px;
+        }
+        .af-msg {
+            border: 1px solid var(--af-border);
+            background: var(--af-card);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .af-msg-head {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--af-muted);
+            margin-bottom: 10px;
+        }
+        .af-msg-block h3 {
+            margin: 10px 0 8px;
+            font-size: 13px;
+            color: var(--af-accent);
+        }
+        .af-plain {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border: 1px solid var(--af-border);
+            border-radius: 8px;
+            background: var(--af-plain);
+            padding: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .af-answer-root {
+            border: 1px solid var(--af-border);
+            border-radius: 8px;
+            background: #fff;
+            padding: 10px;
+            overflow-x: auto;
+        }
+        .af-raw {
+            margin-top: 10px;
+        }
+        .af-raw summary {
+            cursor: pointer;
+            color: var(--af-muted);
+            font-size: 12px;
+        }
+        .af-raw pre {
+            margin-top: 8px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 11px;
+            background: #101522;
+            color: #d8e2ff;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .af-empty {
+            border: 1px dashed var(--af-border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: var(--af-muted);
+            background: var(--af-card);
+        }
+        ${style}
+    </style>
+</head>
+<body>
+    <section class="af-head">
+        <h1 class="af-title">${name} - 本地会话链</h1>
+        <div class="af-meta">
+            <div>appId: ${escapeHtml(normalizedAppId)}</div>
+            <div>chainId: ${escapeHtml(normalizedChainId)}</div>
+            <div>conversationIds: ${escapeHtml(conversationIds.join(", ") || "-")}</div>
+            <div>消息数: ${records.length}</div>
+        </div>
+        <div class="af-description">${description || ""}</div>
+    </section>
+    ${messageHtml}
+</body>
+</html>`;
+		}
+	};
+
+//#endregion
 //#region src/ui/sidebar.js
 	const VALID_TABS = [
 		"register",
 		"tools",
+		"conversation",
 		"settings"
 	];
 	function getToast() {
@@ -235,6 +934,12 @@
 		activeTab: "register",
 		theme: "light",
 		state: APP_STATE.sidebar.state,
+		conversation: {
+			appId: "",
+			chains: [],
+			activeChainId: "",
+			loading: false
+		},
 		init() {
 			if (this.element && document.body.contains(this.element) && document.getElementById("aifengyue-sidebar-toggle")) {
 				return;
@@ -265,6 +970,7 @@
             <div class="aifengyue-sidebar-tabs">
                 <button class="aifengyue-tab-btn active" data-tab="register">注册</button>
                 <button class="aifengyue-tab-btn" data-tab="tools">工具</button>
+                <button class="aifengyue-tab-btn" data-tab="conversation">会话</button>
                 <button class="aifengyue-tab-btn" data-tab="settings">设置</button>
             </div>
 
@@ -361,6 +1067,33 @@
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-sort-now">
                             📊 立即排序
                         </button>
+                    </div>
+                </div>
+
+                <div class="aifengyue-panel" data-panel="conversation">
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">本地会话链</div>
+                        <div class="aifengyue-input-group">
+                            <label>选择链路</label>
+                            <select id="aifengyue-conversation-chain">
+                                <option value="">暂无链路</option>
+                            </select>
+                        </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-refresh">
+                                🔄 刷新链路
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-sync">
+                                ⬇ 手动同步
+                            </button>
+                        </div>
+                        <div class="aifengyue-hint" id="aifengyue-conversation-status">
+                            仅在应用详情页可用，会显示本地保存的链式会话。
+                        </div>
+                    </div>
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">会话预览</div>
+                        <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
                     </div>
                 </div>
 
@@ -496,7 +1229,7 @@
 				const extractor = getIframeExtractor();
 				if (!extractor) return;
 				if (!extractor.isExtractAvailable()) {
-					getToast()?.warning("当前页面没有可提取的 iframe srcdoc");
+					getToast()?.warning("当前页面不是可提取的应用详情页");
 					this.updateToolPanel();
 					return;
 				}
@@ -514,6 +1247,22 @@
 				if (!sorter) return;
 				sorter.setSortEnabled(!!e.target.checked);
 				getToast()?.info(`自动排序已${e.target.checked ? "开启" : "关闭"}`);
+			});
+			this.element.querySelector("#aifengyue-conversation-chain").addEventListener("change", async (e) => {
+				const chainId = e.target.value || "";
+				if (!chainId || !this.conversation.appId) return;
+				this.conversation.activeChainId = chainId;
+				ChatHistoryService.setActiveChainId(this.conversation.appId, chainId);
+				await this.renderConversationViewer();
+			});
+			this.element.querySelector("#aifengyue-conversation-refresh").addEventListener("click", async () => {
+				await this.refreshConversationPanel({
+					showToast: true,
+					keepSelection: true
+				});
+			});
+			this.element.querySelector("#aifengyue-conversation-sync").addEventListener("click", async () => {
+				await this.syncConversationPanel();
 			});
 		},
 		loadSavedData() {
@@ -537,6 +1286,148 @@
 			this.element.querySelectorAll(".aifengyue-panel").forEach((panel) => {
 				panel.classList.toggle("active", panel.dataset.panel === this.activeTab);
 			});
+			if (this.activeTab === "conversation") {
+				this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: true
+				}).catch((error) => {
+					this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+				});
+			}
+		},
+		setConversationStatus(message) {
+			const statusEl = this.element?.querySelector("#aifengyue-conversation-status");
+			if (statusEl) {
+				statusEl.textContent = message;
+			}
+		},
+		setConversationBusy(busy) {
+			this.conversation.loading = !!busy;
+			const chainSelect = this.element?.querySelector("#aifengyue-conversation-chain");
+			const refreshBtn = this.element?.querySelector("#aifengyue-conversation-refresh");
+			const syncBtn = this.element?.querySelector("#aifengyue-conversation-sync");
+			if (chainSelect) chainSelect.disabled = !!busy;
+			if (refreshBtn) refreshBtn.disabled = !!busy;
+			if (syncBtn) syncBtn.disabled = !!busy;
+		},
+		renderConversationSelectOptions() {
+			const select = this.element?.querySelector("#aifengyue-conversation-chain");
+			if (!select) return;
+			select.innerHTML = "";
+			if (!this.conversation.chains.length) {
+				const option = document.createElement("option");
+				option.value = "";
+				option.textContent = "暂无链路";
+				select.appendChild(option);
+				select.value = "";
+				return;
+			}
+			this.conversation.chains.forEach((chain, index) => {
+				const option = document.createElement("option");
+				option.value = chain.chainId;
+				const conversationCount = Array.isArray(chain.conversationIds) ? chain.conversationIds.length : 0;
+				const updatedAt = chain.updatedAt ? new Date(chain.updatedAt).toLocaleString() : "-";
+				option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${updatedAt}`;
+				select.appendChild(option);
+			});
+			if (this.conversation.activeChainId) {
+				select.value = this.conversation.activeChainId;
+			}
+		},
+		async renderConversationViewer() {
+			const viewer = this.element?.querySelector("#aifengyue-conversation-viewer");
+			if (!viewer) return;
+			if (!this.conversation.appId || !this.conversation.activeChainId) {
+				viewer.srcdoc = "<html><body><p style=\"font-family:Segoe UI;padding:16px;\">暂无可展示会话。</p></body></html>";
+				return;
+			}
+			const autoRegister = getAutoRegister();
+			if (!autoRegister) {
+				viewer.srcdoc = "<html><body><p style=\"font-family:Segoe UI;padding:16px;\">AutoRegister 未初始化。</p></body></html>";
+				return;
+			}
+			const html = await autoRegister.getConversationViewerHtml({
+				appId: this.conversation.appId,
+				chainId: this.conversation.activeChainId
+			});
+			viewer.srcdoc = html;
+		},
+		async refreshConversationPanel({ showToast = false, keepSelection = true } = {}) {
+			if (!this.element) return;
+			const autoRegister = getAutoRegister();
+			if (!autoRegister) {
+				this.setConversationStatus("AutoRegister 未初始化");
+				return;
+			}
+			this.setConversationBusy(true);
+			try {
+				const previousChainId = keepSelection ? this.conversation.activeChainId : "";
+				const result = await autoRegister.loadConversationChainsForCurrentApp();
+				this.conversation.appId = result.appId || "";
+				this.conversation.chains = Array.isArray(result.chains) ? result.chains : [];
+				this.conversation.activeChainId = "";
+				if (previousChainId && this.conversation.chains.some((chain) => chain.chainId === previousChainId)) {
+					this.conversation.activeChainId = previousChainId;
+				} else if (result.activeChainId) {
+					this.conversation.activeChainId = result.activeChainId;
+				} else if (this.conversation.chains[0]?.chainId) {
+					this.conversation.activeChainId = this.conversation.chains[0].chainId;
+				}
+				if (this.conversation.appId && this.conversation.activeChainId) {
+					ChatHistoryService.setActiveChainId(this.conversation.appId, this.conversation.activeChainId);
+				}
+				this.renderConversationSelectOptions();
+				await this.renderConversationViewer();
+				if (!this.conversation.appId) {
+					this.setConversationStatus("当前页面不是应用详情页，无法读取会话链。");
+				} else if (!this.conversation.chains.length) {
+					this.setConversationStatus("本地暂无会话链，可先执行“更换账号”或手动同步。");
+				} else {
+					const lastSync = this.conversation.activeChainId ? ChatHistoryService.getChainLastSync(this.conversation.activeChainId) : 0;
+					const lastSyncText = lastSync ? new Date(lastSync).toLocaleString() : "未同步";
+					this.setConversationStatus(`已加载 ${this.conversation.chains.length} 条链路，最近同步: ${lastSyncText}`);
+				}
+				if (showToast) {
+					getToast()?.success("会话链路已刷新");
+				}
+			} catch (error) {
+				this.setConversationStatus(`刷新失败: ${error.message}`);
+				getToast()?.error(`会话刷新失败: ${error.message}`);
+			} finally {
+				this.setConversationBusy(false);
+			}
+		},
+		async syncConversationPanel() {
+			const autoRegister = getAutoRegister();
+			if (!autoRegister) {
+				this.setConversationStatus("AutoRegister 未初始化");
+				return;
+			}
+			this.setConversationBusy(true);
+			try {
+				const summary = await autoRegister.manualSyncConversationChain({
+					appId: this.conversation.appId,
+					chainId: this.conversation.activeChainId
+				});
+				const message = `同步完成: 成功 ${summary.successCount}/${summary.conversationIds.length}，抓取 ${summary.totalFetched} 条，写入 ${summary.totalSaved} 条`;
+				this.setConversationStatus(message);
+				getToast()?.success(message);
+				if (summary.hasIncomplete) {
+					getToast()?.warning("检测到 has_past_record/is_earliest_data_page 异常，历史可能仍不完整");
+				}
+				if (summary.failedCount > 0) {
+					getToast()?.warning(`有 ${summary.failedCount} 个会话同步失败`);
+				}
+				await this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: true
+				});
+			} catch (error) {
+				this.setConversationStatus(`手动同步失败: ${error.message}`);
+				getToast()?.error(`手动同步失败: ${error.message}`);
+			} finally {
+				this.setConversationBusy(false);
+			}
 		},
 		getLayoutMode() {
 			const mode = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, "inline");
@@ -718,6 +1609,17 @@
 			}
 			if (sortToggle) {
 				sortToggle.checked = sorter?.isSortEnabled?.() ?? true;
+			}
+			if (this.activeTab === "conversation" && !this.conversation.loading) {
+				const currentAppId = autoRegister?.extractInstalledAppId?.() || "";
+				if (currentAppId !== this.conversation.appId) {
+					this.refreshConversationPanel({
+						showToast: false,
+						keepSelection: false
+					}).catch((error) => {
+						this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+					});
+				}
 			}
 		}
 	};
@@ -987,7 +1889,7 @@
 
 //#endregion
 //#region src/features/auto-register.js
-	const X_LANGUAGE = "zh-Hans";
+	const X_LANGUAGE$1 = "zh-Hans";
 	const SITE_ENDPOINTS = {
 		SEND_CODE: "/console/api/register/email",
 		SLIDE_GET: "/go/api/slide/get",
@@ -995,10 +1897,13 @@
 		ACCOUNT_GENDER: "/console/api/account/gender",
 		FAVORITE_TAGS: "/console/api/account_extend/favorite_tags",
 		ACCOUNT_EXTEND_SET: "/console/api/account/extend_set",
+		ACCOUNT_PROFILE: "/go/api/account/profile",
+		APP_DETAILS: "/go/api/apps",
 		APPS: "/console/api/apps",
 		INSTALLED_MESSAGES: "/console/api/installed-apps",
 		CHAT_MESSAGES: "/console/api/installed-apps"
 	};
+	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 = 3;
 	function readErrorMessage(payload, fallback) {
 		if (!payload || typeof payload !== "object") return fallback;
 		const raw = payload.error ?? payload.message ?? payload.msg ?? payload.detail ?? payload.errmsg;
@@ -1023,7 +1928,7 @@
 		}
 		return 0;
 	}
-	function decodeEscapedText(raw) {
+	function decodeEscapedText$1(raw) {
 		if (typeof raw !== "string") return "";
 		let value = raw;
 		for (let i = 0; i < 3; i++) {
@@ -1048,7 +1953,7 @@
 		if (source === "null" || source === "undefined" || source === "\"\"" || source === "''") {
 			return true;
 		}
-		const decoded = decodeEscapedText(raw).trim().toLowerCase();
+		const decoded = decodeEscapedText$1(raw).trim().toLowerCase();
 		if (!decoded) return true;
 		if (decoded === "null" || decoded === "undefined" || decoded === "\"\"" || decoded === "''") {
 			return true;
@@ -1063,9 +1968,55 @@
 		}
 		return output;
 	}
+	function withHttpStatusError(message, httpStatus) {
+		const error = new Error(message);
+		if (typeof httpStatus === "number" && Number.isFinite(httpStatus)) {
+			error.httpStatus = httpStatus;
+		}
+		return error;
+	}
 	const AutoRegister = {
 		registrationStartTime: null,
 		switchingAccount: false,
+		resolveRetryAttempts(maxAttempts) {
+			const parsed = Number(maxAttempts);
+			if (Number.isInteger(parsed) && parsed >= 1) {
+				return parsed;
+			}
+			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1;
+		},
+		isObjectiveRetryError(error) {
+			const status = Number(error?.httpStatus || 0);
+			if (status === 408 || status === 429 || status >= 500) {
+				return true;
+			}
+			const message = String(error?.message || "").toLowerCase();
+			if (!message) return false;
+			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("gm 请求失败") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+		},
+		async runWithObjectiveRetries(task, { runCtx, step = "RETRY", actionName = "请求", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1, baseDelayMs = 800 } = {}) {
+			const attempts = this.resolveRetryAttempts(maxAttempts);
+			let lastError = null;
+			for (let attempt = 1; attempt <= attempts; attempt++) {
+				try {
+					return await task(attempt, attempts);
+				} catch (error) {
+					lastError = error;
+					const retriable = this.isObjectiveRetryError(error);
+					const hasNext = attempt < attempts;
+					if (!retriable || !hasNext) {
+						throw error;
+					}
+					const waitMs = baseDelayMs * attempt;
+					logWarn(runCtx, step, `${actionName} 发生客观错误，${waitMs}ms 后重试 (${attempt + 1}/${attempts})`, {
+						message: error?.message || String(error),
+						httpStatus: Number(error?.httpStatus || 0) || null
+					});
+					await delay(waitMs);
+				}
+			}
+			throw lastError || new Error(`${actionName} 执行失败`);
+		},
 		isRegisterPage() {
 			return !!document.querySelector("input#name") && !!document.querySelector("input#email") && !!document.querySelector("input#password");
 		},
@@ -1102,6 +2053,15 @@
 			};
 		},
 		async requestSiteApi(path, options = {}, runCtx, step = "SITE_API") {
+			const attempts = this.resolveRetryAttempts(options.maxAttempts);
+			return this.runWithObjectiveRetries(() => this.requestSiteApiOnce(path, options, runCtx, step), {
+				runCtx,
+				step,
+				actionName: `${options.method || "GET"} ${path}`,
+				maxAttempts: attempts
+			});
+		},
+		async requestSiteApiOnce(path, options = {}, runCtx, step = "SITE_API") {
 			const strictCode = options.strictCode === true;
 			const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
 			const method = options.method || "GET";
@@ -1111,7 +2071,7 @@
 				url,
 				headers: {
 					"Content-Type": "application/json",
-					"X-Language": X_LANGUAGE,
+					"X-Language": X_LANGUAGE$1,
 					...options.headers || {}
 				},
 				body: options.body ?? null,
@@ -1122,7 +2082,7 @@
 				url,
 				headers: {
 					"Content-Type": "application/json",
-					"X-Language": X_LANGUAGE,
+					"X-Language": X_LANGUAGE$1,
 					...options.headers || {}
 				},
 				body: options.body,
@@ -1143,7 +2103,7 @@
 				json: payload
 			});
 			if (response.status < 200 || response.status >= 300) {
-				throw new Error(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`));
+				throw withHttpStatusError(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`), response.status);
 			}
 			if (payload === null) {
 				throw new Error(`接口 ${path} 返回非 JSON 响应`);
@@ -1167,7 +2127,7 @@
 				method: "POST",
 				body: {
 					email,
-					lang: X_LANGUAGE
+					lang: X_LANGUAGE$1
 				}
 			}, runCtx, "SEND_CODE");
 			if (typeof payload?.code === "number" && payload.code !== 0 && payload.code !== 200) {
@@ -1194,7 +2154,7 @@
 					password,
 					code,
 					remember_me: true,
-					interface_language: X_LANGUAGE,
+					interface_language: X_LANGUAGE$1,
 					client: "web_pc",
 					is_web3_account: false,
 					reg_token: regToken
@@ -1234,6 +2194,76 @@
 				}
 			}, runCtx, "SET_FIRST_VISIT");
 			logInfo(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
+			await this.verifyAccountExtendFlag({
+				token,
+				key: "is_first_visit",
+				expectedValue: true,
+				runCtx,
+				step: "VERIFY_FIRST_VISIT"
+			});
+		},
+		normalizeAccountExtendValue(value) {
+			if (typeof value === "boolean") return value;
+			if (typeof value === "number") {
+				if (value === 1) return true;
+				if (value === 0) return false;
+			}
+			if (typeof value === "string") {
+				const normalized = value.trim().toLowerCase();
+				if (normalized === "true" || normalized === "1") return true;
+				if (normalized === "false" || normalized === "0") return false;
+			}
+			return null;
+		},
+		async fetchAccountProfile({ token, runCtx, step = "GET_ACCOUNT_PROFILE", maxAttempts = 1 }) {
+			const payload = await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_PROFILE, {
+				method: "GET",
+				headers: { Authorization: `Bearer ${token}` },
+				maxAttempts
+			}, runCtx, step);
+			const profile = payload?.data;
+			if (!profile || typeof profile !== "object") {
+				throw new Error("account/profile 返回 data 为空");
+			}
+			return profile;
+		},
+		async verifyAccountExtendFlag({ token, key, expectedValue, runCtx, step }) {
+			try {
+				const profile = await this.fetchAccountProfile({
+					token,
+					runCtx,
+					step,
+					maxAttempts: 1
+				});
+				const extend = profile?.extend && typeof profile.extend === "object" ? profile.extend : {};
+				const resolvedValue = Object.prototype.hasOwnProperty.call(extend, key) ? extend[key] : null;
+				const normalized = this.normalizeAccountExtendValue(resolvedValue);
+				const expected = this.normalizeAccountExtendValue(expectedValue);
+				if (resolvedValue === null) {
+					logWarn(runCtx, step, `${key} 在 profile.extend 中不存在`, {
+						key,
+						expected: expectedValue
+					});
+					return;
+				}
+				if (normalized === expected) {
+					logInfo(runCtx, step, `${key} 校验通过`, {
+						key,
+						value: resolvedValue
+					});
+				} else {
+					logWarn(runCtx, step, `${key} 校验值与预期不一致`, {
+						key,
+						expected: expectedValue,
+						actual: resolvedValue
+					});
+				}
+			} catch (error) {
+				logWarn(runCtx, step, `${key} 校验失败（不影响主流程）`, {
+					key,
+					message: error?.message || String(error)
+				});
+			}
 		},
 		async setHideRefreshConfirmFlag(token, runCtx) {
 			await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
@@ -1244,15 +2274,74 @@
 					value: true
 				}
 			}, runCtx, "SET_HIDE_REFRESH_CONFIRM");
-			logInfo(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成");
+			logInfo(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成（已执行 extend_set）");
+			await this.verifyAccountExtendFlag({
+				token,
+				key: "hide_refresh_confirm",
+				expectedValue: true,
+				runCtx,
+				step: "VERIFY_HIDE_REFRESH_CONFIRM"
+			});
 		},
-		async skipFirstGuide(token, runCtx) {
-			logInfo(runCtx, "SKIP_GUIDE", "开始跳过首次引导");
+		async skipFirstGuideOnce(token, runCtx) {
 			await this.setAccountGender(token, runCtx);
 			await this.submitFavoriteTags(token, runCtx);
 			await this.setFirstVisitFlag(token, runCtx);
 			await this.setHideRefreshConfirmFlag(token, runCtx);
-			logInfo(runCtx, "SKIP_GUIDE", "首次引导跳过完成");
+		},
+		async verifyGuideByProfile({ token, runCtx, step = "VERIFY_GUIDE_BY_PROFILE" }) {
+			const profile = await this.fetchAccountProfile({
+				token,
+				runCtx,
+				step,
+				maxAttempts: 1
+			});
+			const extend = profile?.extend && typeof profile.extend === "object" ? profile.extend : {};
+			const hideRefreshConfirm = this.normalizeAccountExtendValue(extend.hide_refresh_confirm);
+			const isFirstVisit = this.normalizeAccountExtendValue(extend.is_first_visit);
+			const checks = {
+				hideRefreshConfirm: hideRefreshConfirm === true,
+				isFirstVisit: isFirstVisit === true
+			};
+			const ok = checks.hideRefreshConfirm && checks.isFirstVisit;
+			logInfo(runCtx, step, ok ? "profile 校验通过" : "profile 校验未通过", {
+				hide_refresh_confirm: extend.hide_refresh_confirm ?? null,
+				is_first_visit: extend.is_first_visit ?? null,
+				checks
+			});
+			return {
+				ok,
+				checks,
+				profile
+			};
+		},
+		async skipFirstGuide(token, runCtx) {
+			const maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1;
+			logInfo(runCtx, "SKIP_GUIDE", `开始跳过首次引导，最多尝试 ${maxAttempts} 次`);
+			let lastVerify = null;
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				logInfo(runCtx, "SKIP_GUIDE", `执行第 ${attempt}/${maxAttempts} 轮首次引导设置`);
+				if (attempt > 1) {
+					Toast.info(`跳过首次引导重试中（${attempt}/${maxAttempts}）`, 1800);
+				}
+				await this.skipFirstGuideOnce(token, runCtx);
+				lastVerify = await this.verifyGuideByProfile({
+					token,
+					runCtx,
+					step: `VERIFY_GUIDE_BY_PROFILE_${attempt}`
+				});
+				if (lastVerify.ok) {
+					logInfo(runCtx, "SKIP_GUIDE", `首次引导跳过完成（第 ${attempt} 轮校验通过）`);
+					return;
+				}
+				if (attempt < maxAttempts) {
+					const waitMs = 800 * attempt;
+					logWarn(runCtx, "SKIP_GUIDE", `第 ${attempt} 轮校验未通过，${waitMs}ms 后重试`);
+					await delay(waitMs);
+				}
+			}
+			const checks = lastVerify?.checks || {};
+			throw new Error(`首次引导校验未通过（已重试 ${maxAttempts} 次）：hide_refresh_confirm=${checks.hideRefreshConfirm === true}，is_first_visit=${checks.isFirstVisit === true}`);
 		},
 		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -1450,9 +2539,15 @@
 				status: "fetching",
 				statusMessage: `${flowName}：注册成功，正在跳过首次引导...`
 			});
+			if (showStepToasts) {
+				Toast.info(`${flowName}：正在跳过首次引导（最多${DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1}次）`, 2600);
+			}
 			let guideSkipped = true;
 			try {
 				await this.skipFirstGuide(token, runCtx);
+				if (showStepToasts) {
+					Toast.success(`${flowName}：首次引导已跳过`, 1800);
+				}
 			} catch (guideError) {
 				guideSkipped = false;
 				logError(runCtx, "SKIP_GUIDE", `${flowName} 首次引导跳过失败`, {
@@ -1507,21 +2602,71 @@
 			}
 			return conversationId;
 		},
-		async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
-			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=20&type=recent`;
-			const payload = await this.requestSiteApi(path, {
-				method: "GET",
-				headers: { Authorization: `Bearer ${token}` }
-			}, runCtx, "SWITCH_FETCH_MESSAGES");
-			const messages = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.data?.data) ? payload.data.data : [];
-			if (!messages.length) {
-				throw new Error("messages 接口未返回可用 data");
+		readConversationIdByAppIdSafe(appId) {
+			try {
+				return this.readConversationIdByAppId(appId);
+			} catch {
+				return "";
 			}
+		},
+		parseConversationIdFromEventStream(rawText) {
+			if (typeof rawText !== "string" || !rawText.trim()) return "";
+			const lines = rawText.split(/\r?\n/);
+			for (let i = lines.length - 1; i >= 0; i--) {
+				const line = lines[i].trim();
+				if (!line.startsWith("data:")) continue;
+				const dataText = line.slice(5).trim();
+				if (!dataText || dataText === "[DONE]") continue;
+				try {
+					const data = JSON.parse(dataText);
+					const parsed = typeof data?.conversation_id === "string" ? data.conversation_id.trim() : typeof data?.conversationId === "string" ? data.conversationId.trim() : "";
+					if (parsed) return parsed;
+				} catch {
+					const fallback = dataText.match(/"conversation_id"\s*:\s*"([^"]+)"/i);
+					if (fallback?.[1]) {
+						return fallback[1].trim();
+					}
+				}
+			}
+			const globalMatch = rawText.match(/"conversation_id"\s*:\s*"([^"]+)"/i);
+			return globalMatch?.[1] ? globalMatch[1].trim() : "";
+		},
+		upsertConversationIdInfo(appId, conversationId, runCtx) {
+			const normalizedAppId = typeof appId === "string" ? appId.trim() : "";
+			const normalizedConversationId = typeof conversationId === "string" ? conversationId.trim() : "";
+			if (!normalizedAppId || !normalizedConversationId) {
+				return false;
+			}
+			let mapping = {};
+			const raw = localStorage.getItem("conversationIdInfo");
+			if (raw) {
+				try {
+					const parsed = JSON.parse(raw);
+					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+						mapping = { ...parsed };
+					} else {
+						logWarn(runCtx, "SWITCH_CHAT", "conversationIdInfo 不是对象，已重建");
+					}
+				} catch {
+					logWarn(runCtx, "SWITCH_CHAT", "conversationIdInfo 解析失败，已重建");
+				}
+			}
+			const previousConversationId = typeof mapping[normalizedAppId] === "string" ? mapping[normalizedAppId].trim() : "";
+			mapping[normalizedAppId] = normalizedConversationId;
+			localStorage.setItem("conversationIdInfo", JSON.stringify(mapping));
+			logInfo(runCtx, "SWITCH_CHAT", "已写入 localStorage.conversationIdInfo", {
+				appId: normalizedAppId,
+				conversationId: normalizedConversationId,
+				previousConversationId: previousConversationId || null
+			});
+			return true;
+		},
+		extractLatestAnswerFromMessages(messages, runCtx, step = "SWITCH_FETCH_MESSAGES") {
 			const sorted = [...messages].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at));
 			for (const item of sorted) {
 				const answer = item?.answer;
 				if (isAnswerEmpty(answer)) {
-					logWarn(runCtx, "SWITCH_FETCH_MESSAGES", "检测到空 answer，继续向后查找", {
+					logWarn(runCtx, step, "检测到空 answer，继续向后查找", {
 						createdAt: item?.created_at ?? null,
 						answerType: typeof answer,
 						answerPreview: typeof answer === "string" ? answer.slice(0, 60) : answer
@@ -1535,6 +2680,126 @@
 				};
 			}
 			throw new Error("messages 中所有 answer 均为空，已停止更换账号流程");
+		},
+		async fetchConversationMessages({ appId, conversationId, token, runCtx, step = "SWITCH_FETCH_MESSAGES", limit = 500, type = "recent", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
+			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=${encodeURIComponent(limit)}&type=${encodeURIComponent(type)}`;
+			const payload = await this.requestSiteApi(path, {
+				method: "GET",
+				headers: { Authorization: `Bearer ${token}` },
+				maxAttempts
+			}, runCtx, step);
+			const payloadData = payload?.data;
+			const messages = Array.isArray(payloadData) ? payloadData : Array.isArray(payloadData?.data) ? payloadData.data : [];
+			return {
+				messages,
+				total: Number(payloadData?.total ?? payload?.total ?? messages.length),
+				hasPastRecord: Boolean(payloadData?.has_past_record ?? payload?.has_past_record ?? false),
+				isEarliestDataPage: payloadData?.is_earliest_data_page ?? payload?.is_earliest_data_page ?? null,
+				raw: payload
+			};
+		},
+		async fetchInstalledConversations({ appId, token, runCtx, step = "SWITCH_LIST_CONVERSATIONS", limit = 500, pinned = false, maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
+			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/conversations?limit=${encodeURIComponent(limit)}&pinned=${pinned ? "true" : "false"}`;
+			const payload = await this.requestSiteApi(path, {
+				method: "GET",
+				headers: { Authorization: `Bearer ${token}` },
+				maxAttempts
+			}, runCtx, step);
+			const list = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.data?.data) ? payload.data.data : [];
+			return [...list].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at));
+		},
+		async pollConversationIdFromConversations({ appId, token, runCtx, baselineConversationIds = [], maxAttempts = 10, intervalMs = 700 }) {
+			const baseline = new Set((baselineConversationIds || []).map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean));
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				const conversations = await this.fetchInstalledConversations({
+					appId,
+					token,
+					runCtx,
+					step: `SWITCH_LIST_CONVERSATIONS_${attempt}`,
+					limit: 500,
+					pinned: false,
+					maxAttempts: 1
+				});
+				const firstNew = conversations.find((item) => {
+					const id = typeof item?.id === "string" ? item.id.trim() : "";
+					return !!id && !baseline.has(id);
+				});
+				if (firstNew?.id) {
+					return {
+						conversationId: firstNew.id.trim(),
+						source: "polling-new",
+						attempt
+					};
+				}
+				if (baseline.size === 0 && conversations[0]?.id) {
+					return {
+						conversationId: String(conversations[0].id).trim(),
+						source: "polling-latest",
+						attempt
+					};
+				}
+				if (attempt < maxAttempts) {
+					await delay(intervalMs);
+				}
+			}
+			return {
+				conversationId: "",
+				source: "polling-none",
+				attempt: maxAttempts
+			};
+		},
+		async fetchAppDetails({ appId, token, runCtx, step = "SWITCH_GET_APP_DETAILS" }) {
+			const path = `${SITE_ENDPOINTS.APP_DETAILS}/${appId}`;
+			const payload = await this.requestSiteApi(path, {
+				method: "GET",
+				headers: token ? { Authorization: `Bearer ${token}` } : {}
+			}, runCtx, step);
+			const data = payload?.data && typeof payload.data === "object" ? payload.data : {};
+			const appInfo = data?.apps && typeof data.apps === "object" ? data.apps : data?.app && typeof data.app === "object" ? data.app : {};
+			const modelConfig = data?.model_config && typeof data.model_config === "object" ? data.model_config : data?.modelConfig && typeof data.modelConfig === "object" ? data.modelConfig : {};
+			return {
+				appId,
+				name: decodeEscapedText$1(typeof appInfo?.name === "string" ? appInfo.name : ""),
+				description: decodeEscapedText$1(typeof appInfo?.description === "string" ? appInfo.description : ""),
+				builtInCss: decodeEscapedText$1(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : ""),
+				raw: payload
+			};
+		},
+		async syncAppMetaToLocalHistory({ appId, token, runCtx, step = "SWITCH_SYNC_APP_META" }) {
+			try {
+				const details = await this.fetchAppDetails({
+					appId,
+					token,
+					runCtx,
+					step
+				});
+				await ChatHistoryService.upsertAppMeta({
+					appId,
+					name: details.name,
+					description: details.description,
+					builtInCss: details.builtInCss
+				});
+				return details;
+			} catch (error) {
+				logWarn(runCtx, step, "同步应用元数据到本地失败（不影响主流程）", { message: error?.message || String(error) });
+				return null;
+			}
+		},
+		async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
+			const result = await this.fetchConversationMessages({
+				appId,
+				conversationId,
+				token,
+				runCtx,
+				step: "SWITCH_FETCH_MESSAGES",
+				limit: 500,
+				type: "recent"
+			});
+			const messages = result.messages;
+			if (!messages.length) {
+				throw new Error("messages 接口未返回可用 data");
+			}
+			return this.extractLatestAnswerFromMessages(messages, runCtx, "SWITCH_FETCH_MESSAGES");
 		},
 		async fetchUserAppModelConfig({ appId, token, runCtx }) {
 			const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
@@ -1581,27 +2846,94 @@
 				queryLength: query.length
 			});
 			logDebug(runCtx, "SWITCH_CHAT", "chat-messages 请求体", body);
+			let baselineConversationIds = [];
+			try {
+				const baselineList = await this.fetchInstalledConversations({
+					appId,
+					token,
+					runCtx,
+					step: "SWITCH_LIST_CONVERSATIONS_BASELINE",
+					limit: 500,
+					pinned: false,
+					maxAttempts: 1
+				});
+				baselineConversationIds = baselineList.map((item) => typeof item?.id === "string" ? item.id.trim() : "").filter(Boolean);
+			} catch (error) {
+				logWarn(runCtx, "SWITCH_CHAT", "读取会话基线列表失败，将继续请求 chat-messages", { message: error?.message || String(error) });
+			}
+			const responseMeta = await this.runWithObjectiveRetries((attempt, attempts) => {
+				if (attempt > 1) {
+					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 重试中 (${attempt}/${attempts})`);
+				}
+				return this.sendChatMessagesOnce({
+					token,
+					url,
+					body,
+					runCtx
+				});
+			}, {
+				runCtx,
+				step: "SWITCH_CHAT",
+				actionName: "chat-messages",
+				maxAttempts: DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1
+			});
+			const status = Number(responseMeta?.status || 0);
+			const hasStatus = Number.isFinite(status) && status > 0;
+			const isSuccess = hasStatus && status >= 200 && status < 300;
+			const statusText = hasStatus ? `HTTP ${status}` : "未知状态";
+			let conversationId = typeof responseMeta?.conversationId === "string" ? responseMeta.conversationId.trim() : "";
+			let source = conversationId ? "sse" : "none";
+			if (!conversationId) {
+				const polled = await this.pollConversationIdFromConversations({
+					appId,
+					token,
+					runCtx,
+					baselineConversationIds,
+					maxAttempts: 8,
+					intervalMs: 650
+				});
+				conversationId = polled.conversationId;
+				source = polled.source;
+			}
+			logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到响应（${statusText}）`, {
+				...responseMeta,
+				conversationId: conversationId || null,
+				source
+			});
+			return {
+				status,
+				isSuccess,
+				conversationId: conversationId || "",
+				source
+			};
+		},
+		sendChatMessagesOnce({ token, url, body, runCtx }) {
 			return new Promise((resolve, reject) => {
 				let settled = false;
-				const finishAndReload = (trigger, responseMeta = {}) => {
+				let fallbackTimer = null;
+				let capturedConversationId = "";
+				const clearFallbackTimer = () => {
+					if (fallbackTimer) {
+						clearTimeout(fallbackTimer);
+						fallbackTimer = null;
+					}
+				};
+				const tryCaptureConversationId = (rawText, trigger) => {
+					if (capturedConversationId) return capturedConversationId;
+					const conversationId = this.parseConversationIdFromEventStream(rawText);
+					if (!conversationId) return "";
+					capturedConversationId = conversationId;
+					logInfo(runCtx, "SWITCH_CHAT", `已从 ${trigger} 解析 conversation_id`, { conversationId });
+					return capturedConversationId;
+				};
+				const finish = (trigger, responseMeta = {}) => {
 					if (settled) return;
 					settled = true;
-					const status = Number(responseMeta?.status || 0);
-					const hasStatus = Number.isFinite(status) && status > 0;
-					const isSuccess = hasStatus && status >= 200 && status < 300;
-					const statusText = hasStatus ? `HTTP ${status}` : "未知状态";
-					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到 ${trigger} 响应（${statusText}），1秒后刷新`, responseMeta);
-					Sidebar.updateState({
-						status: "success",
-						statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`
-					});
-					Toast.info(`chat-messages 已收到${isSuccess ? "成功" : "失败"}响应（${statusText}），1秒后刷新`, 3500);
-					setTimeout(() => {
-						window.location.reload();
-					}, 1e3);
+					clearFallbackTimer();
 					resolve({
-						status,
-						isSuccess
+						trigger,
+						...responseMeta,
+						conversationId: capturedConversationId || responseMeta?.conversationId || ""
 					});
 				};
 				gmXmlHttpRequest({
@@ -1609,7 +2941,7 @@
 					url,
 					headers: {
 						"Content-Type": "application/json",
-						"X-Language": X_LANGUAGE,
+						"X-Language": X_LANGUAGE$1,
 						Authorization: `Bearer ${token}`
 					},
 					data: JSON.stringify(body),
@@ -1618,33 +2950,51 @@
 					onprogress: (response) => {
 						if (settled) return;
 						const status = Number(response?.status || 0);
-						const textLength = (response?.responseText || "").length;
-						if (status > 0 || textLength > 0) {
-							finishAndReload("onprogress", {
+						const responseText = response?.responseText || "";
+						const textLength = responseText.length;
+						tryCaptureConversationId(responseText, "onprogress");
+						if (capturedConversationId) {
+							finish("onprogress", {
 								status,
-								textLength
+								textLength,
+								conversationId: capturedConversationId
 							});
+							return;
+						}
+						if (textLength > 0 && !fallbackTimer) {
+							fallbackTimer = setTimeout(() => {
+								finish("onprogress-fallback", {
+									status,
+									textLength
+								});
+							}, 1200);
 						}
 					},
 					onload: (response) => {
 						if (settled) return;
 						const status = Number(response?.status || 0);
-						const textLength = (response?.responseText || "").length;
-						finishAndReload("onload", {
+						const responseText = response?.responseText || "";
+						const textLength = responseText.length;
+						tryCaptureConversationId(responseText, "onload");
+						finish("onload", {
 							status,
-							textLength
+							textLength,
+							conversationId: capturedConversationId
 						});
 					},
 					onerror: (error) => {
 						if (settled) return;
-						reject(new Error(error?.error || "chat-messages 网络请求失败"));
+						clearFallbackTimer();
+						reject(withHttpStatusError(error?.error || "chat-messages 网络请求失败", Number(error?.status || 0)));
 					},
 					ontimeout: () => {
 						if (settled) return;
+						clearFallbackTimer();
 						reject(new Error("chat-messages 请求超时"));
 					},
 					onabort: () => {
 						if (settled) return;
+						clearFallbackTimer();
 						reject(new Error("chat-messages 请求被中止"));
 					}
 				});
@@ -1714,11 +3064,18 @@
 					throw new Error("未找到旧账号 console_token，请先登录旧账号后再更换");
 				}
 				const conversationId = this.readConversationIdByAppId(appId);
+				let activeChainId = "";
 				Sidebar.updateState({
 					status: "fetching",
 					statusMessage: "更换账号：正在读取旧账号模型配置..."
 				});
 				Toast.info("更换账号：正在读取旧账号模型配置", 2200);
+				await this.syncAppMetaToLocalHistory({
+					appId,
+					token: oldToken,
+					runCtx,
+					step: "SWITCH_SYNC_APP_META_OLD"
+				});
 				const userModelConfig = await this.fetchUserAppModelConfig({
 					appId,
 					token: oldToken,
@@ -1726,25 +3083,50 @@
 				});
 				Sidebar.updateState({
 					status: "fetching",
-					statusMessage: "更换账号：正在读取旧会话最新消息..."
+					statusMessage: "更换账号：正在读取旧会话消息并本地归档..."
 				});
-				Toast.info("更换账号：正在提取旧会话最新回答", 2400);
-				const latest = await this.fetchLatestConversationAnswer({
+				Toast.info("更换账号：正在拉取旧会话消息", 2400);
+				const oldConversation = await this.fetchConversationMessages({
 					appId,
 					conversationId,
 					token: oldToken,
-					runCtx
+					runCtx,
+					step: "SWITCH_FETCH_MESSAGES",
+					limit: 500,
+					type: "recent"
 				});
-				const decodedAnswer = decodeEscapedText(latest.answer);
+				if (!oldConversation.messages.length) {
+					throw new Error("旧会话消息为空，无法继续更换账号");
+				}
+				const latest = this.extractLatestAnswerFromMessages(oldConversation.messages, runCtx, "SWITCH_FETCH_MESSAGES");
+				const decodedAnswer = decodeEscapedText$1(latest.answer);
 				if (!decodedAnswer.trim()) {
 					throw new Error("最新消息 answer 解码后为空");
 				}
+				const chainBinding = await ChatHistoryService.bindConversation({
+					appId,
+					conversationId
+				});
+				activeChainId = chainBinding.chainId;
+				const storeResult = await ChatHistoryService.saveConversationMessages({
+					appId,
+					conversationId,
+					chainId: activeChainId,
+					messages: oldConversation.messages
+				});
+				ChatHistoryService.markChainSynced(activeChainId, Date.now());
 				logInfo(runCtx, "SWITCH_FETCH_MESSAGES", "已提取旧会话最新消息", {
 					appId,
 					conversationId,
 					createdAt: latest.createdAt,
-					answerLength: decodedAnswer.length
+					answerLength: decodedAnswer.length,
+					messageCount: oldConversation.messages.length,
+					savedCount: storeResult.savedCount,
+					chainId: activeChainId
 				});
+				if (oldConversation.hasPastRecord || oldConversation.isEarliestDataPage === false) {
+					Toast.warning("旧会话可能仍有更早消息未拉取，可在“会话”Tab手动同步", 4500);
+				}
 				Sidebar.updateState({
 					status: "fetching",
 					statusMessage: "更换账号：已提取旧回答，正在注册新账号..."
@@ -1754,6 +3136,15 @@
 					flowName: "更换账号",
 					showStepToasts: true,
 					markSuccess: false
+				});
+				if (!registerResult.guideSkipped) {
+					throw new Error("更换账号终止：首次引导未跳过成功，不发送 chat-messages");
+				}
+				await this.syncAppMetaToLocalHistory({
+					appId,
+					token: registerResult.token,
+					runCtx,
+					step: "SWITCH_SYNC_APP_META_NEW"
 				});
 				Sidebar.updateState({
 					status: "fetching",
@@ -1773,13 +3164,39 @@
 					statusMessage: "更换账号：新账号已就绪，正在发送 chat-messages..."
 				});
 				Toast.info("更换账号：正在发送 chat-messages", 2200);
-				await this.sendChatMessagesAndReload({
+				const chatResult = await this.sendChatMessagesAndReload({
 					appId,
 					token: registerResult.token,
 					query,
 					conversationName,
 					runCtx
 				});
+				const newConversationId = typeof chatResult?.conversationId === "string" ? chatResult.conversationId.trim() : "";
+				if (newConversationId) {
+					this.upsertConversationIdInfo(appId, newConversationId, runCtx);
+					const newBinding = await ChatHistoryService.bindConversation({
+						appId,
+						conversationId: newConversationId,
+						previousConversationId: conversationId,
+						preferredChainId: activeChainId
+					});
+					activeChainId = newBinding.chainId;
+					ChatHistoryService.setActiveChainId(appId, activeChainId);
+				}
+				const sourceText = chatResult?.source ? `，来源 ${chatResult.source}` : "";
+				const statusText = Number.isFinite(Number(chatResult?.status)) ? `HTTP ${Number(chatResult.status)}` : "未知状态";
+				Sidebar.updateState({
+					status: "success",
+					statusMessage: newConversationId ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}），0.8 秒后刷新` : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id，0.8 秒后刷新`
+				});
+				if (newConversationId) {
+					Toast.success(`已获取新会话ID（${chatResult.source || "sse"}），即将刷新`, 2600);
+				} else {
+					Toast.warning("未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步", 3600);
+				}
+				setTimeout(() => {
+					window.location.reload();
+				}, 800);
 			} catch (error) {
 				const message = `更换账号失败: ${error.message}`;
 				Sidebar.updateState({
@@ -1797,6 +3214,144 @@
 					switchBtn.disabled = false;
 				}
 			}
+		},
+		async loadConversationChainsForCurrentApp({ appId = "" } = {}) {
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
+			if (!resolvedAppId) {
+				return {
+					appId: "",
+					chains: [],
+					activeChainId: "",
+					currentConversationId: ""
+				};
+			}
+			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+			if (currentConversationId) {
+				await ChatHistoryService.bindConversation({
+					appId: resolvedAppId,
+					conversationId: currentConversationId
+				});
+			}
+			const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
+			let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+			if (!activeChainId && chains[0]?.chainId) {
+				activeChainId = chains[0].chainId;
+				ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
+			}
+			return {
+				appId: resolvedAppId,
+				chains,
+				activeChainId,
+				currentConversationId
+			};
+		},
+		async getConversationViewerHtml({ appId, chainId }) {
+			const resolvedAppId = typeof appId === "string" ? appId.trim() : "";
+			if (!resolvedAppId) {
+				return "<html><body><p>当前页面未识别到 appId。</p></body></html>";
+			}
+			const resolvedChainId = (typeof chainId === "string" ? chainId.trim() : "") || ChatHistoryService.getActiveChainId(resolvedAppId);
+			if (!resolvedChainId) {
+				return "<html><body><p>当前应用暂无本地会话链。</p></body></html>";
+			}
+			return ChatHistoryService.buildChainViewerHtml({
+				appId: resolvedAppId,
+				chainId: resolvedChainId
+			});
+		},
+		async manualSyncConversationChain({ appId = "", chainId = "" } = {}) {
+			const runCtx = createRunContext("SYNC");
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
+			if (!resolvedAppId) {
+				throw new Error("当前页面不是 installed/test-installed 详情页");
+			}
+			const token = (localStorage.getItem("console_token") || "").trim();
+			if (!token) {
+				throw new Error("未找到 console_token，请先登录后再同步");
+			}
+			await this.syncAppMetaToLocalHistory({
+				appId: resolvedAppId,
+				token,
+				runCtx,
+				step: "SYNC_APP_META"
+			});
+			let resolvedChainId = typeof chainId === "string" ? chainId.trim() : "";
+			if (!resolvedChainId) {
+				resolvedChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+			}
+			if (!resolvedChainId) {
+				const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+				if (currentConversationId) {
+					const binding = await ChatHistoryService.bindConversation({
+						appId: resolvedAppId,
+						conversationId: currentConversationId
+					});
+					resolvedChainId = binding.chainId;
+				}
+			}
+			if (!resolvedChainId) {
+				throw new Error("未找到可同步的会话链");
+			}
+			const chain = await ChatHistoryService.getChain(resolvedChainId);
+			if (!chain) {
+				throw new Error(`会话链不存在: ${resolvedChainId}`);
+			}
+			const conversationIds = Array.isArray(chain.conversationIds) ? chain.conversationIds.filter((item) => typeof item === "string" && item.trim()) : [];
+			if (conversationIds.length === 0) {
+				throw new Error("当前会话链无 conversation_id，无法同步");
+			}
+			let totalFetched = 0;
+			let totalSaved = 0;
+			let hasIncomplete = false;
+			let successCount = 0;
+			const failedConversationIds = [];
+			for (const conversationId of conversationIds) {
+				try {
+					const result = await this.fetchConversationMessages({
+						appId: resolvedAppId,
+						conversationId,
+						token,
+						runCtx,
+						step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
+						limit: 500,
+						type: "recent"
+					});
+					totalFetched += result.messages.length;
+					if (result.hasPastRecord || result.isEarliestDataPage === false) {
+						hasIncomplete = true;
+					}
+					const storeResult = await ChatHistoryService.saveConversationMessages({
+						appId: resolvedAppId,
+						conversationId,
+						chainId: resolvedChainId,
+						messages: result.messages
+					});
+					totalSaved += storeResult.savedCount;
+					successCount++;
+				} catch (error) {
+					failedConversationIds.push(conversationId);
+					logWarn(runCtx, "SYNC", "单个会话同步失败，继续同步其他会话", {
+						conversationId,
+						message: error?.message || String(error)
+					});
+				}
+			}
+			if (successCount === 0) {
+				throw new Error("会话同步失败：所有 conversation_id 均同步失败");
+			}
+			ChatHistoryService.markChainSynced(resolvedChainId, Date.now());
+			ChatHistoryService.setActiveChainId(resolvedAppId, resolvedChainId);
+			return {
+				appId: resolvedAppId,
+				chainId: resolvedChainId,
+				conversationIds,
+				successCount,
+				failedCount: failedConversationIds.length,
+				failedConversationIds,
+				totalFetched,
+				totalSaved,
+				hasIncomplete
+			};
 		},
 		async start() {
 			if (this.isRegisterPage()) {
@@ -1906,6 +3461,29 @@
 
 //#endregion
 //#region src/features/iframe-extractor.js
+	const X_LANGUAGE = "zh-Hans";
+	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
+	function decodeEscapedText(raw) {
+		if (typeof raw !== "string") return "";
+		let value = raw;
+		for (let i = 0; i < 3; i++) {
+			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
+				break;
+			}
+			try {
+				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
+				if (next === value) break;
+				value = next;
+			} catch {
+				break;
+			}
+		}
+		return value;
+	}
+	function sanitizeFilename(value) {
+		const normalized = String(value || "").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+		return normalized || "aifengyue-app";
+	}
 	const IframeExtractor = {
 		button: null,
 		isDetailPage: false,
@@ -1913,12 +3491,12 @@
 			const urlPattern = /\/zh\/explore\/(?:test-)?installed\/[0-9a-f-]+$/i;
 			return urlPattern.test(window.location.pathname);
 		},
-		findSrcdocIframe() {
-			const iframes = document.querySelectorAll("iframe[srcdoc]");
-			return iframes.length > 0 ? iframes[0] : null;
+		extractInstalledAppId() {
+			const matched = window.location.pathname.match(/\/(?:test-)?installed\/([0-9a-f-]+)$/i);
+			return matched?.[1] || "";
 		},
 		isExtractAvailable() {
-			return this.checkDetailPage() && this.findSrcdocIframe() !== null;
+			return this.checkDetailPage() && !!this.extractInstalledAppId();
 		},
 		createStyles() {
 			gmAddStyle(`
@@ -1960,7 +3538,7 @@
 			this.button = document.createElement("button");
 			this.button.id = "aifengyue-extract-btn";
 			this.button.textContent = "提取HTML";
-			this.button.title = "提取 iframe 内容为 HTML 文件";
+			this.button.title = "从接口提取应用 HTML 并导出";
 			this.button.addEventListener("click", () => this.extractAndSave());
 			document.body.appendChild(this.button);
 		},
@@ -1974,37 +3552,144 @@
 			const title = document.title;
 			return title.replace(/\s*-\s*Powered by AI风月\s*$/i, "").trim();
 		},
-		extractAndSave() {
-			const iframe = this.findSrcdocIframe();
-			if (!iframe) {
-				Toast.error("未找到包含 srcdoc 的 iframe");
+		resolveRetryAttempts(maxAttempts) {
+			const parsed = Number(maxAttempts);
+			if (Number.isInteger(parsed) && parsed >= 1) {
+				return parsed;
+			}
+			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+		},
+		isObjectiveRetryError(error) {
+			const status = Number(error?.httpStatus || 0);
+			if (status === 408 || status === 429 || status >= 500) {
+				return true;
+			}
+			const message = String(error?.message || "").toLowerCase();
+			if (!message) return false;
+			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+		},
+		async requestAppDetail({ appId, token, maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS }) {
+			const attempts = this.resolveRetryAttempts(maxAttempts);
+			const url = `${window.location.origin}/go/api/apps/${appId}`;
+			let lastError = null;
+			for (let attempt = 1; attempt <= attempts; attempt++) {
+				try {
+					const response = await gmRequestJson({
+						method: "GET",
+						url,
+						headers: {
+							"Content-Type": "application/json",
+							"X-Language": X_LANGUAGE,
+							...token ? { Authorization: `Bearer ${token}` } : {}
+						},
+						timeout: 25e3,
+						anonymous: true
+					});
+					if (response.status < 200 || response.status >= 300) {
+						const error = new Error(`获取应用详情失败: HTTP ${response.status}`);
+						error.httpStatus = response.status;
+						throw error;
+					}
+					if (!response.json || typeof response.json !== "object") {
+						throw new Error("应用详情接口返回非 JSON 数据");
+					}
+					return response.json;
+				} catch (error) {
+					lastError = error;
+					const hasNext = attempt < attempts;
+					if (!hasNext || !this.isObjectiveRetryError(error)) {
+						throw error;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+				}
+			}
+			throw lastError || new Error("获取应用详情失败");
+		},
+		extractAppPayload(payload, fallbackTitle) {
+			const data = payload?.data && typeof payload.data === "object" ? payload.data : {};
+			const appInfo = data?.apps && typeof data.apps === "object" ? data.apps : data?.app && typeof data.app === "object" ? data.app : {};
+			const modelConfig = data?.model_config && typeof data.model_config === "object" ? data.model_config : data?.modelConfig && typeof data.modelConfig === "object" ? data.modelConfig : {};
+			return {
+				name: decodeEscapedText(typeof appInfo?.name === "string" ? appInfo.name : "") || fallbackTitle,
+				description: decodeEscapedText(typeof appInfo?.description === "string" ? appInfo.description : ""),
+				builtInCss: decodeEscapedText(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : "")
+			};
+		},
+		buildHtmlDocument({ name, description, builtInCss }) {
+			return `<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${name}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #f4f5f7;
+            color: #1f2937;
+            line-height: 1.7;
+        }
+        .af-root {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #fff;
+            border: 1px solid #dce1eb;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .af-title {
+            margin: 0 0 16px;
+            font-size: 22px;
+            font-weight: 700;
+        }
+        ${builtInCss || ""}
+    </style>
+</head>
+<body>
+    <main class="af-root">
+        <h1 class="af-title">${name}</h1>
+        ${description || "<p>应用描述为空。</p>"}
+    </main>
+</body>
+</html>`;
+		},
+		downloadHtmlFile(filename, html) {
+			const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = filename;
+			a.style.display = "none";
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		},
+		async extractAndSave() {
+			const appId = this.extractInstalledAppId();
+			if (!appId) {
+				Toast.error("当前页面不是应用详情页，无法提取 HTML");
 				return;
 			}
-			const srcdoc = iframe.getAttribute("srcdoc");
-			if (!srcdoc) {
-				Toast.error("iframe 的 srcdoc 属性为空");
-				return;
-			}
+			const token = (localStorage.getItem("console_token") || "").trim();
+			const fallbackTitle = this.getCleanTitle() || `app-${appId}`;
 			try {
-				const textarea = document.createElement("textarea");
-				textarea.innerHTML = srcdoc;
-				const decodedHtml = textarea.value;
-				const cleanTitle = this.getCleanTitle();
-				const filename = `${cleanTitle}.html`;
-				const blob = new Blob([decodedHtml], { type: "text/html;charset=utf-8" });
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement("a");
-				a.href = url;
-				a.download = filename;
-				a.style.display = "none";
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
+				Toast.info("正在请求应用详情并导出 HTML...", 2e3);
+				const payload = await this.requestAppDetail({
+					appId,
+					token,
+					maxAttempts: DEFAULT_OBJECTIVE_RETRY_ATTEMPTS
+				});
+				const data = this.extractAppPayload(payload, fallbackTitle);
+				const html = this.buildHtmlDocument(data);
+				const filename = `${sanitizeFilename(data.name || fallbackTitle)}.html`;
+				this.downloadHtmlFile(filename, html);
 				Toast.success(`已保存为: ${filename}`);
 			} catch (error) {
 				Toast.error(`提取失败: ${error.message}`);
-				console.error("[Iframe 提取器] 错误:", error);
+				console.error("[HTML 提取器] 错误:", error);
 			}
 		},
 		checkAndUpdate() {
@@ -2019,6 +3704,8 @@
 //#region src/features/model-popup-sorter.js
 	const ModelPopupSorter = {
 		sortScheduled: false,
+		popupObserver: null,
+		observedPopup: null,
 		isSortEnabled() {
 			return gmGetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, true);
 		},
@@ -2029,11 +3716,41 @@
 			return this.isSortEnabled() && IframeExtractor.checkDetailPage();
 		},
 		scheduleSort() {
-			if (!this.isEnabled() || this.sortScheduled) return;
+			if (!this.isEnabled()) {
+				if (this.popupObserver) {
+					this.popupObserver.disconnect();
+					this.popupObserver = null;
+				}
+				this.observedPopup = null;
+				return;
+			}
+			if (this.sortScheduled) return;
 			this.sortScheduled = true;
 			requestAnimationFrame(() => {
 				this.sortScheduled = false;
 				this.sortPopup();
+			});
+		},
+		observePopup(popup) {
+			if (!popup) return;
+			if (this.observedPopup === popup && this.popupObserver) return;
+			if (this.popupObserver) {
+				this.popupObserver.disconnect();
+				this.popupObserver = null;
+			}
+			this.observedPopup = popup;
+			this.popupObserver = new MutationObserver(() => {
+				this.scheduleSort();
+			});
+			this.popupObserver.observe(popup, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				attributeFilter: [
+					"class",
+					"aria-selected",
+					"aria-expanded"
+				]
 			});
 		},
 		findPopup() {
@@ -2102,7 +3819,15 @@
 		},
 		sortPopup() {
 			const popup = this.findPopup();
-			if (!popup) return;
+			if (!popup) {
+				if (this.popupObserver) {
+					this.popupObserver.disconnect();
+					this.popupObserver = null;
+				}
+				this.observedPopup = null;
+				return;
+			}
+			this.observePopup(popup);
 			const blocks = this.findCategoryBlocks(popup);
 			if (blocks.length === 0) return;
 			const parent = blocks[0].parentElement;
@@ -2491,7 +4216,7 @@
     /* --- Tab 导航 --- */
     .aifengyue-sidebar-tabs {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
         gap: 4px;
         padding: 8px 12px;
         border-bottom: 1px solid var(--af-border);
@@ -2835,6 +4560,21 @@
         height: 16px;
         accent-color: var(--af-primary);
         cursor: pointer;
+    }
+
+    /* --- 会话面板 --- */
+    .aifengyue-conversation-viewer {
+        width: 100%;
+        min-height: 360px;
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: #fff;
+    }
+    #aifengyue-conversation-chain:disabled,
+    #aifengyue-conversation-refresh:disabled,
+    #aifengyue-conversation-sync:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
     }
 
     /* --- 配额统计 --- */
