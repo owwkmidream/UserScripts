@@ -76,6 +76,25 @@ function decodeEscapedText(raw) {
     return value;
 }
 
+function isAnswerEmpty(raw) {
+    if (raw === null || raw === undefined) return true;
+    if (typeof raw !== 'string') return false;
+
+    const source = raw.trim().toLowerCase();
+    if (!source) return true;
+    if (source === 'null' || source === 'undefined' || source === '""' || source === "''") {
+        return true;
+    }
+
+    const decoded = decodeEscapedText(raw).trim().toLowerCase();
+    if (!decoded) return true;
+    if (decoded === 'null' || decoded === 'undefined' || decoded === '""' || decoded === "''") {
+        return true;
+    }
+
+    return false;
+}
+
 function randomConversationSuffix(length = 3) {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let output = '';
@@ -594,16 +613,26 @@ export const AutoRegister = {
             throw new Error('messages 接口未返回可用 data');
         }
 
-        const latest = [...messages].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at))[0];
-        const answer = typeof latest?.answer === 'string' ? latest.answer : '';
-        if (!answer.trim()) {
-            throw new Error('最新消息 answer 为空');
+        const sorted = [...messages].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at));
+        for (const item of sorted) {
+            const answer = item?.answer;
+            if (isAnswerEmpty(answer)) {
+                logWarn(runCtx, 'SWITCH_FETCH_MESSAGES', '检测到空 answer，继续向后查找', {
+                    createdAt: item?.created_at ?? null,
+                    answerType: typeof answer,
+                    answerPreview: typeof answer === 'string' ? answer.slice(0, 60) : answer,
+                });
+                continue;
+            }
+
+            const answerText = typeof answer === 'string' ? answer : String(answer);
+            return {
+                answer: answerText,
+                createdAt: item?.created_at ?? null,
+            };
         }
 
-        return {
-            answer,
-            createdAt: latest?.created_at ?? null,
-        };
+        throw new Error('messages 中所有 answer 均为空，已停止更换账号流程');
     },
 
     async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
