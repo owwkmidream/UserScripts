@@ -1989,7 +1989,7 @@
 //#endregion
 //#region src/menu/menu-commands.js
 	function registerMenuCommands() {
-		gmRegisterMenuCommand("🪵 切换调试日志", () => {
+		gmRegisterMenuCommand("🛠 切换调试日志", () => {
 			const enabled = toggleDebugEnabled();
 			Toast.info(`调试日志已${enabled ? "开启" : "关闭"}`);
 		});
