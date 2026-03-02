@@ -2874,13 +2874,6 @@
 				}
 			}, runCtx, "SET_FIRST_VISIT");
 			logInfo(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
-			await this.verifyAccountExtendFlag({
-				token,
-				key: "is_first_visit",
-				expectedValue: true,
-				runCtx,
-				step: "VERIFY_FIRST_VISIT"
-			});
 		},
 		normalizeAccountExtendValue(value) {
 			if (typeof value === "boolean") return value;
@@ -2955,13 +2948,6 @@
 				}
 			}, runCtx, "SET_HIDE_REFRESH_CONFIRM");
 			logInfo(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成（已执行 extend_set）");
-			await this.verifyAccountExtendFlag({
-				token,
-				key: "hide_refresh_confirm",
-				expectedValue: true,
-				runCtx,
-				step: "VERIFY_HIDE_REFRESH_CONFIRM"
-			});
 		},
 		async skipFirstGuideOnce(token, runCtx) {
 			await this.setAccountGender(token, runCtx);
@@ -2996,32 +2982,9 @@
 			};
 		},
 		async skipFirstGuide(token, runCtx) {
-			const maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1;
-			logInfo(runCtx, "SKIP_GUIDE", `开始跳过首次引导，最多尝试 ${maxAttempts} 次`);
-			let lastVerify = null;
-			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-				logInfo(runCtx, "SKIP_GUIDE", `执行第 ${attempt}/${maxAttempts} 轮首次引导设置`);
-				if (attempt > 1) {
-					Toast.info(`跳过首次引导重试中（${attempt}/${maxAttempts}）`, 1800);
-				}
-				await this.skipFirstGuideOnce(token, runCtx);
-				lastVerify = await this.verifyGuideByProfile({
-					token,
-					runCtx,
-					step: `VERIFY_GUIDE_BY_PROFILE_${attempt}`
-				});
-				if (lastVerify.ok) {
-					logInfo(runCtx, "SKIP_GUIDE", `首次引导跳过完成（第 ${attempt} 轮校验通过）`);
-					return;
-				}
-				if (attempt < maxAttempts) {
-					const waitMs = 800 * attempt;
-					logWarn(runCtx, "SKIP_GUIDE", `第 ${attempt} 轮校验未通过，${waitMs}ms 后重试`);
-					await delay(waitMs);
-				}
-			}
-			const checks = lastVerify?.checks || {};
-			throw new Error(`首次引导校验未通过（已重试 ${maxAttempts} 次）：hide_refresh_confirm=${checks.hideRefreshConfirm === true}，is_first_visit=${checks.isFirstVisit === true}`);
+			logInfo(runCtx, "SKIP_GUIDE", "开始跳过首次引导（快速模式：不请求 /profile 校验）");
+			await this.skipFirstGuideOnce(token, runCtx);
+			logInfo(runCtx, "SKIP_GUIDE", "首次引导跳过请求已提交（快速模式）");
 		},
 		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3220,7 +3183,7 @@
 				statusMessage: `${flowName}：注册成功，正在跳过首次引导...`
 			});
 			if (showStepToasts) {
-				Toast.info(`${flowName}：正在跳过首次引导（最多${DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1}次）`, 2600);
+				Toast.info(`${flowName}：正在跳过首次引导（快速模式）`, 2600);
 			}
 			let guideSkipped = true;
 			try {
@@ -3916,11 +3879,63 @@
 				debugEnabled: isDebugEnabled()
 			});
 			try {
-				await this.registerByApi(runCtx, {
+				const appId = this.extractInstalledAppId();
+				const oldToken = (localStorage.getItem("console_token") || "").trim();
+				let oldUserModelConfig = null;
+				let modelConfigSynced = false;
+				if (appId && oldToken) {
+					Sidebar.updateState({
+						status: "fetching",
+						statusMessage: "一键注册：正在读取旧账号模型配置..."
+					});
+					Toast.info("一键注册：正在读取旧账号模型配置", 2200);
+					await this.syncAppMetaToLocalHistory({
+						appId,
+						token: oldToken,
+						runCtx,
+						step: "REG_SYNC_APP_META_OLD"
+					});
+					oldUserModelConfig = await this.fetchUserAppModelConfig({
+						appId,
+						token: oldToken,
+						runCtx
+					});
+					logInfo(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "一键注册已读取旧账号模型配置", { appId });
+				} else if (appId && !oldToken) {
+					logWarn(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "检测到应用详情页，但未找到旧账号 token，跳过旧配置读取");
+				} else {
+					logInfo(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "当前不是应用详情页，跳过旧配置读取");
+				}
+				const registerResult = await this.registerByApi(runCtx, {
 					flowName: "一键注册",
 					showStepToasts: true,
-					markSuccess: true
+					markSuccess: false
 				});
+				if (appId && oldUserModelConfig) {
+					Sidebar.updateState({
+						status: "fetching",
+						statusMessage: "一键注册：正在同步模型配置到新账号..."
+					});
+					Toast.info("一键注册：正在同步旧模型配置到新账号", 2200);
+					await this.syncAppMetaToLocalHistory({
+						appId,
+						token: registerResult.token,
+						runCtx,
+						step: "REG_SYNC_APP_META_NEW"
+					});
+					await this.saveUserAppModelConfig({
+						appId,
+						token: registerResult.token,
+						config: oldUserModelConfig,
+						runCtx
+					});
+					modelConfigSynced = true;
+				}
+				Sidebar.updateState({
+					status: "success",
+					statusMessage: registerResult.guideSkipped ? `一键注册成功，已写入 console_token${modelConfigSynced ? "，并同步模型配置" : ""}` : `一键注册成功，已写入 console_token（首次引导跳过失败）${modelConfigSynced ? "，模型配置已同步" : ""}`
+				});
+				Toast.success(registerResult.guideSkipped ? `一键注册完成${modelConfigSynced ? "（已同步模型配置）" : ""}` : `一键注册完成：首次引导跳过失败${modelConfigSynced ? "，模型配置已同步" : ""}`, 5e3);
 				logInfo(runCtx, "DONE", "一键注册流程完成");
 			} catch (error) {
 				const message = `一键注册失败: ${error.message}`;
