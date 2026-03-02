@@ -1,13 +1,10 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.8
+// @version      2.0.9
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
-// @match        *://*/console/*
-// @match        *://*/zh/explore/*
-// @match        *://*/signup*
-// @match        *://*/register*
+// @match        https://dearestie.xyz/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
