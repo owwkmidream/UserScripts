@@ -995,6 +995,7 @@
 		ACCOUNT_GENDER: "/console/api/account/gender",
 		FAVORITE_TAGS: "/console/api/account_extend/favorite_tags",
 		ACCOUNT_EXTEND_SET: "/console/api/account/extend_set",
+		APPS: "/console/api/apps",
 		INSTALLED_MESSAGES: "/console/api/installed-apps",
 		CHAT_MESSAGES: "/console/api/installed-apps"
 	};
@@ -1535,6 +1536,35 @@
 			}
 			throw new Error("messages 中所有 answer 均为空，已停止更换账号流程");
 		},
+		async fetchUserAppModelConfig({ appId, token, runCtx }) {
+			const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
+			const payload = await this.requestSiteApi(path, {
+				method: "GET",
+				headers: { Authorization: `Bearer ${token}` }
+			}, runCtx, "SWITCH_GET_MODEL_CONFIG");
+			const config = payload?.data ?? payload;
+			if (config === null || config === undefined) {
+				throw new Error("user_app_model_config 返回为空");
+			}
+			logInfo(runCtx, "SWITCH_GET_MODEL_CONFIG", "已读取旧账号 user_app_model_config", {
+				appId,
+				configType: Array.isArray(config) ? "array" : typeof config
+			});
+			logDebug(runCtx, "SWITCH_GET_MODEL_CONFIG", "user_app_model_config 详情", config);
+			return config;
+		},
+		async saveUserAppModelConfig({ appId, token, config, runCtx }) {
+			const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
+			await this.requestSiteApi(path, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+				body: config
+			}, runCtx, "SWITCH_POST_MODEL_CONFIG");
+			logInfo(runCtx, "SWITCH_POST_MODEL_CONFIG", "新账号 user_app_model_config 已同步", {
+				appId,
+				configType: Array.isArray(config) ? "array" : typeof config
+			});
+		},
 		async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
 			const path = `${SITE_ENDPOINTS.CHAT_MESSAGES}/${appId}/chat-messages`;
 			const url = `${window.location.origin}${path}`;
@@ -1686,6 +1716,16 @@
 				const conversationId = this.readConversationIdByAppId(appId);
 				Sidebar.updateState({
 					status: "fetching",
+					statusMessage: "更换账号：正在读取旧账号模型配置..."
+				});
+				Toast.info("更换账号：正在读取旧账号模型配置", 2200);
+				const userModelConfig = await this.fetchUserAppModelConfig({
+					appId,
+					token: oldToken,
+					runCtx
+				});
+				Sidebar.updateState({
+					status: "fetching",
 					statusMessage: "更换账号：正在读取旧会话最新消息..."
 				});
 				Toast.info("更换账号：正在提取旧会话最新回答", 2400);
@@ -1714,6 +1754,17 @@
 					flowName: "更换账号",
 					showStepToasts: true,
 					markSuccess: false
+				});
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: "更换账号：正在同步模型配置到新账号..."
+				});
+				Toast.info("更换账号：正在同步模型配置", 2200);
+				await this.saveUserAppModelConfig({
+					appId,
+					token: registerResult.token,
+					config: userModelConfig,
+					runCtx
 				});
 				const query = `${decodedAnswer}\n\n${appendText}`;
 				const conversationName = `新的对话-${randomConversationSuffix(3)}`;
