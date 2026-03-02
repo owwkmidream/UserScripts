@@ -1517,7 +1517,9 @@ export const AutoRegister = {
                 },
                 data: JSON.stringify(body),
                 timeout: 20000,
-                anonymous: true,
+                // chat-messages 需要稳定的 SSE 增量文本，强制走 XHR 模式避免 fetch 模式下 progress/readyState 行为不一致。
+                anonymous: false,
+                fetch: false,
                 onreadystatechange: (response) => {
                     if (settled) return;
                     const meta = callbackMeta(response);
