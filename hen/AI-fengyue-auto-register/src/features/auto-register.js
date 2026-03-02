@@ -1351,17 +1351,34 @@ export const AutoRegister = {
                         elapsedMs: meta.elapsedMs,
                     });
 
-                    if (meta.readyState >= 2) {
-                        tryCaptureConversationId(meta.responseText, 'onreadystatechange');
-                        finish(`onreadystatechange-${meta.readyState}`, {
-                            status: meta.status,
+                    if (meta.readyState < 3) {
+                        logInfo(runCtx, 'SWITCH_CHAT', 'onreadystatechange 仅收到响应头，继续等待首条 SSE data', {
                             readyState: meta.readyState,
                             textLength: meta.textLength,
                             elapsedMs: meta.elapsedMs,
-                            conversationId: capturedConversationId,
                         });
-                        abortRequest(capturedConversationId ? 'conversation-id-captured-readyState' : `readyState-${meta.readyState}`);
+                        return;
                     }
+
+                    tryCaptureConversationId(meta.responseText, 'onreadystatechange');
+                    const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
+                    if (!hasStreamData) {
+                        logInfo(runCtx, 'SWITCH_CHAT', 'onreadystatechange 已到流阶段但尚无可用 data，继续等待', {
+                            readyState: meta.readyState,
+                            textLength: meta.textLength,
+                            elapsedMs: meta.elapsedMs,
+                        });
+                        return;
+                    }
+
+                    finish(`onreadystatechange-${meta.readyState}`, {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                        conversationId: capturedConversationId,
+                    });
+                    abortRequest(capturedConversationId ? 'conversation-id-captured-readyState' : `readyState-${meta.readyState}`);
                 },
                 onprogress: (response) => {
                     if (settled) return;
@@ -1373,6 +1390,15 @@ export const AutoRegister = {
                         elapsedMs: meta.elapsedMs,
                     });
                     tryCaptureConversationId(meta.responseText, 'onprogress');
+                    const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
+                    if (!hasStreamData) {
+                        logInfo(runCtx, 'SWITCH_CHAT', 'onprogress 触发但尚无可用 data，继续等待', {
+                            readyState: meta.readyState,
+                            textLength: meta.textLength,
+                            elapsedMs: meta.elapsedMs,
+                        });
+                        return;
+                    }
 
                     // 一旦 SSE 有首个响应，立即结束并中断后台流，避免占用连接导致前端看不到流式内容。
                     finish('onprogress-first-chunk', {
