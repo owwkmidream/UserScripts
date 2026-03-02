@@ -26,6 +26,7 @@ export const Sidebar = {
     isOpen: false,
     layoutMode: 'inline',
     activeTab: 'register',
+    theme: 'light',
     state: APP_STATE.sidebar.state,
 
     init() {
@@ -33,10 +34,12 @@ export const Sidebar = {
             return;
         }
         this.layoutMode = this.getLayoutMode();
+        this.theme = this.getTheme();
         this.createSidebar();
         this.createToggleButton();
         this.loadSavedData();
         this.applyLayoutModeClass();
+        this.applyTheme();
         this.setActiveTab(this.activeTab);
     },
 
@@ -51,7 +54,8 @@ export const Sidebar = {
         this.element.innerHTML = `
             <div class="aifengyue-sidebar-header">
                 <h2>AI风月 助手</h2>
-                <button class="aifengyue-sidebar-close">✕</button>
+                <button class="aifengyue-theme-toggle" title="切换主题">☀</button>
+                <button class="aifengyue-sidebar-close" title="关闭">✕</button>
             </div>
 
             <div class="aifengyue-sidebar-tabs">
@@ -101,14 +105,14 @@ export const Sidebar = {
                     <div class="aifengyue-section" id="aifengyue-manual-group">
                         <div class="aifengyue-section-title">注册页手动辅助</div>
                         <button class="aifengyue-btn aifengyue-btn-primary" id="aifengyue-start">
-                            开始辅助填表
+                            📝 开始辅助填表
                         </button>
                         <div class="aifengyue-btn-group">
                             <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-refresh-email">
-                                换邮箱
+                                🔄 换邮箱
                             </button>
                             <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-fetch-code">
-                                获取验证码
+                                📩 获取验证码
                             </button>
                         </div>
                     </div>
@@ -116,14 +120,14 @@ export const Sidebar = {
                     <div class="aifengyue-section" id="aifengyue-auto-group">
                         <div class="aifengyue-section-title">接口自动流程</div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick">
-                            一键注册
+                            🚀 一键注册
                         </button>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
                             <input type="text" id="aifengyue-switch-text" placeholder="输入拼接到 query 的附加文本">
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
-                            更换账号
+                            🔀 更换账号
                         </button>
                     </div>
 
@@ -140,7 +144,7 @@ export const Sidebar = {
                     <div class="aifengyue-tool-block" id="aifengyue-extract-html-wrap">
                         <div class="aifengyue-section-title">HTML 提取</div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-extract-html">
-                            提取 HTML
+                            📄 提取 HTML
                         </button>
                     </div>
 
@@ -151,7 +155,7 @@ export const Sidebar = {
                             <span>启用自动排序</span>
                         </label>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-sort-now">
-                            立即排序
+                            📊 立即排序
                         </button>
                     </div>
                 </div>
@@ -163,7 +167,7 @@ export const Sidebar = {
                             <label>GPTMail API Key</label>
                             <input type="text" id="aifengyue-api-key" placeholder="输入你的 API Key (默认: gpt-test)">
                         </div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">保存 API Key</button>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
                     </div>
 
                     <div class="aifengyue-section">
@@ -219,6 +223,7 @@ export const Sidebar = {
 
     bindEvents() {
         this.element.querySelector('.aifengyue-sidebar-close').addEventListener('click', () => this.close());
+        this.element.querySelector('.aifengyue-theme-toggle').addEventListener('click', () => this.toggleTheme());
 
         this.element.querySelectorAll('.aifengyue-tab-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
@@ -352,6 +357,28 @@ export const Sidebar = {
         this.layoutMode = mode === 'floating' ? 'floating' : 'inline';
         gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, this.layoutMode);
         this.applyLayoutModeClass();
+    },
+
+    getTheme() {
+        const saved = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_THEME, 'light');
+        return saved === 'dark' ? 'dark' : 'light';
+    },
+
+    setTheme(theme) {
+        this.theme = theme === 'dark' ? 'dark' : 'light';
+        gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_THEME, this.theme);
+        this.applyTheme();
+    },
+
+    applyTheme() {
+        if (!this.element) return;
+        this.element.dataset.theme = this.theme;
+        const btn = this.element.querySelector('.aifengyue-theme-toggle');
+        if (btn) btn.textContent = this.theme === 'dark' ? '☀' : '🌙';
+    },
+
+    toggleTheme() {
+        this.setTheme(this.theme === 'dark' ? 'light' : 'dark');
     },
 
     applyLayoutModeClass() {
@@ -488,7 +515,7 @@ export const Sidebar = {
 
         const onRegisterPage = !!autoRegister?.isRegisterPage();
         if (startBtn) {
-            startBtn.textContent = onRegisterPage ? '开始辅助填表' : '开始注册（自动模式）';
+            startBtn.textContent = onRegisterPage ? '📝 开始辅助填表' : '🚀 开始注册（自动模式）';
         }
         if (manualGroup) {
             manualGroup.style.display = onRegisterPage ? '' : 'none';

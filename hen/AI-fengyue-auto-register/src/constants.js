@@ -12,6 +12,7 @@ export const CONFIG = {
         LOG_DEBUG_ENABLED: 'aifengyue_log_debug_enabled',
         MODEL_SORT_ENABLED: 'aifengyue_model_sort_enabled',
         SIDEBAR_LAYOUT_MODE: 'aifengyue_sidebar_layout_mode',
+        SIDEBAR_THEME: 'aifengyue_sidebar_theme',
     },
     API_QUOTA_LIMIT: 1000,
     VERIFICATION_CODE_PATTERNS: [

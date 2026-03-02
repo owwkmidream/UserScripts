@@ -32,7 +32,8 @@
 			API_USAGE_RESET_DATE: "api_usage_reset_date",
 			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled",
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
-			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode"
+			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
+			SIDEBAR_THEME: "aifengyue_sidebar_theme"
 		},
 		API_QUOTA_LIMIT: 1e3,
 		VERIFICATION_CODE_PATTERNS: [
@@ -232,16 +233,19 @@
 		isOpen: false,
 		layoutMode: "inline",
 		activeTab: "register",
+		theme: "light",
 		state: APP_STATE.sidebar.state,
 		init() {
 			if (this.element && document.body.contains(this.element) && document.getElementById("aifengyue-sidebar-toggle")) {
 				return;
 			}
 			this.layoutMode = this.getLayoutMode();
+			this.theme = this.getTheme();
 			this.createSidebar();
 			this.createToggleButton();
 			this.loadSavedData();
 			this.applyLayoutModeClass();
+			this.applyTheme();
 			this.setActiveTab(this.activeTab);
 		},
 		createSidebar() {
@@ -254,7 +258,8 @@
 			this.element.innerHTML = `
             <div class="aifengyue-sidebar-header">
                 <h2>AI风月 助手</h2>
-                <button class="aifengyue-sidebar-close">✕</button>
+                <button class="aifengyue-theme-toggle" title="切换主题">☀</button>
+                <button class="aifengyue-sidebar-close" title="关闭">✕</button>
             </div>
 
             <div class="aifengyue-sidebar-tabs">
@@ -304,14 +309,14 @@
                     <div class="aifengyue-section" id="aifengyue-manual-group">
                         <div class="aifengyue-section-title">注册页手动辅助</div>
                         <button class="aifengyue-btn aifengyue-btn-primary" id="aifengyue-start">
-                            开始辅助填表
+                            📝 开始辅助填表
                         </button>
                         <div class="aifengyue-btn-group">
                             <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-refresh-email">
-                                换邮箱
+                                🔄 换邮箱
                             </button>
                             <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-fetch-code">
-                                获取验证码
+                                📩 获取验证码
                             </button>
                         </div>
                     </div>
@@ -319,14 +324,14 @@
                     <div class="aifengyue-section" id="aifengyue-auto-group">
                         <div class="aifengyue-section-title">接口自动流程</div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick">
-                            一键注册
+                            🚀 一键注册
                         </button>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
                             <input type="text" id="aifengyue-switch-text" placeholder="输入拼接到 query 的附加文本">
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
-                            更换账号
+                            🔀 更换账号
                         </button>
                     </div>
 
@@ -343,7 +348,7 @@
                     <div class="aifengyue-tool-block" id="aifengyue-extract-html-wrap">
                         <div class="aifengyue-section-title">HTML 提取</div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-extract-html">
-                            提取 HTML
+                            📄 提取 HTML
                         </button>
                     </div>
 
@@ -354,7 +359,7 @@
                             <span>启用自动排序</span>
                         </label>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-sort-now">
-                            立即排序
+                            📊 立即排序
                         </button>
                     </div>
                 </div>
@@ -366,7 +371,7 @@
                             <label>GPTMail API Key</label>
                             <input type="text" id="aifengyue-api-key" placeholder="输入你的 API Key (默认: gpt-test)">
                         </div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">保存 API Key</button>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
                     </div>
 
                     <div class="aifengyue-section">
@@ -420,6 +425,7 @@
 		},
 		bindEvents() {
 			this.element.querySelector(".aifengyue-sidebar-close").addEventListener("click", () => this.close());
+			this.element.querySelector(".aifengyue-theme-toggle").addEventListener("click", () => this.toggleTheme());
 			this.element.querySelectorAll(".aifengyue-tab-btn").forEach((btn) => {
 				btn.addEventListener("click", () => {
 					this.setActiveTab(btn.dataset.tab);
@@ -540,6 +546,24 @@
 			this.layoutMode = mode === "floating" ? "floating" : "inline";
 			gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, this.layoutMode);
 			this.applyLayoutModeClass();
+		},
+		getTheme() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_THEME, "light");
+			return saved === "dark" ? "dark" : "light";
+		},
+		setTheme(theme) {
+			this.theme = theme === "dark" ? "dark" : "light";
+			gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_THEME, this.theme);
+			this.applyTheme();
+		},
+		applyTheme() {
+			if (!this.element) return;
+			this.element.dataset.theme = this.theme;
+			const btn = this.element.querySelector(".aifengyue-theme-toggle");
+			if (btn) btn.textContent = this.theme === "dark" ? "☀" : "🌙";
+		},
+		toggleTheme() {
+			this.setTheme(this.theme === "dark" ? "light" : "dark");
 		},
 		applyLayoutModeClass() {
 			if (!this.element) return;
@@ -669,7 +693,7 @@
 			const registerHint = this.element.querySelector("#aifengyue-register-hint");
 			const onRegisterPage = !!autoRegister?.isRegisterPage();
 			if (startBtn) {
-				startBtn.textContent = onRegisterPage ? "开始辅助填表" : "开始注册（自动模式）";
+				startBtn.textContent = onRegisterPage ? "📝 开始辅助填表" : "🚀 开始注册（自动模式）";
 			}
 			if (manualGroup) {
 				manualGroup.style.display = onRegisterPage ? "" : "none";
@@ -1210,11 +1234,23 @@
 			}, runCtx, "SET_FIRST_VISIT");
 			logInfo(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
 		},
+		async setHideRefreshConfirmFlag(token, runCtx) {
+			await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token}` },
+				body: {
+					key: "hide_refresh_confirm",
+					value: true
+				}
+			}, runCtx, "SET_HIDE_REFRESH_CONFIRM");
+			logInfo(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成");
+		},
 		async skipFirstGuide(token, runCtx) {
 			logInfo(runCtx, "SKIP_GUIDE", "开始跳过首次引导");
 			await this.setAccountGender(token, runCtx);
 			await this.submitFavoriteTags(token, runCtx);
 			await this.setFirstVisitFlag(token, runCtx);
+			await this.setHideRefreshConfirmFlag(token, runCtx);
 			logInfo(runCtx, "SKIP_GUIDE", "首次引导跳过完成");
 		},
 		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
@@ -1520,16 +1556,23 @@
 				const finishAndReload = (trigger, responseMeta = {}) => {
 					if (settled) return;
 					settled = true;
-					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到 ${trigger} 响应，准备刷新页面`, responseMeta);
+					const status = Number(responseMeta?.status || 0);
+					const hasStatus = Number.isFinite(status) && status > 0;
+					const isSuccess = hasStatus && status >= 200 && status < 300;
+					const statusText = hasStatus ? `HTTP ${status}` : "未知状态";
+					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到 ${trigger} 响应（${statusText}），1秒后刷新`, responseMeta);
 					Sidebar.updateState({
 						status: "success",
-						statusMessage: "更换账号完成，已收到 chat-messages 响应，正在刷新页面..."
+						statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`
 					});
-					Toast.success("更换账号成功，页面即将刷新", 2600);
+					Toast.info(`chat-messages 已收到${isSuccess ? "成功" : "失败"}响应（${statusText}），1秒后刷新`, 3500);
 					setTimeout(() => {
 						window.location.reload();
-					}, 300);
-					resolve();
+					}, 1e3);
+					resolve({
+						status,
+						isSuccess
+					});
 				};
 				gmXmlHttpRequest({
 					method: "POST",
@@ -1546,7 +1589,7 @@
 						if (settled) return;
 						const status = Number(response?.status || 0);
 						const textLength = (response?.responseText || "").length;
-						if (status >= 200 && status < 300 || textLength > 0) {
+						if (status > 0 || textLength > 0) {
 							finishAndReload("onprogress", {
 								status,
 								textLength
@@ -1557,14 +1600,10 @@
 						if (settled) return;
 						const status = Number(response?.status || 0);
 						const textLength = (response?.responseText || "").length;
-						if (status >= 200 && status < 300 || textLength > 0) {
-							finishAndReload("onload", {
-								status,
-								textLength
-							});
-							return;
-						}
-						reject(new Error(`chat-messages 请求失败: HTTP ${status}`));
+						finishAndReload("onload", {
+							status,
+							textLength
+						});
 					},
 					onerror: (error) => {
 						if (settled) return;
@@ -2189,313 +2228,503 @@
 //#endregion
 //#region src/ui/sidebar.css.js
 	const SIDEBAR_STYLES = `
-    :root {
-        --aifengyue-sidebar-width: 372px;
-        --aifengyue-bg: #0f1720;
-        --aifengyue-bg-soft: #18232f;
-        --aifengyue-bg-card: #1d2a38;
-        --aifengyue-border: #2d3b4a;
-        --aifengyue-text: #e7edf3;
-        --aifengyue-muted: #9aabbd;
-        --aifengyue-primary: #0d9488;
-        --aifengyue-primary-deep: #0f766e;
-        --aifengyue-accent: #f59e0b;
+    /* ============================
+       Light 主题 (默认)
+       ============================ */
+    #aifengyue-sidebar {
+        --af-bg:          #ffffff;
+        --af-bg-soft:     #f4f6f9;
+        --af-bg-card:     #eef1f6;
+        --af-border:      #dde2ea;
+        --af-text:        #1e2533;
+        --af-text-soft:   #4a5568;
+        --af-muted:       #8896a8;
+        --af-primary:     #6366f1;
+        --af-primary-hover: #4f46e5;
+        --af-primary-text: #ffffff;
+        --af-primary-glow: rgba(99, 102, 241, 0.25);
+        --af-accent:      #0ea5e9;
+        --af-accent-glow: rgba(14, 165, 233, 0.2);
+        --af-input-bg:    #f0f2f6;
+        --af-input-border: #d0d5dd;
+        --af-btn2-bg:     #eef1f5;
+        --af-btn2-hover:  #e2e6ed;
+        --af-btn2-border: #d0d5dd;
+        --af-shadow:      rgba(30, 37, 51, 0.08);
+        --af-shadow-lg:   rgba(30, 37, 51, 0.12);
+        --af-header-bg:   linear-gradient(135deg, #f8f9fc 0%, #eef1f8 100%);
+        --af-footer-bg:   #f4f6f9;
+        --af-track-bg:    #e2e6ed;
+        --af-bar-gradient: linear-gradient(90deg, #6366f1, #0ea5e9);
+        --af-success:     #10b981;
+        --af-warning:     #f59e0b;
+        --af-error:       #ef4444;
+        --af-idle:        #94a3b8;
+        --af-toggle-bg:   linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        --af-toggle-shadow: rgba(99, 102, 241, 0.3);
+        --af-code-color:  #6366f1;
+        --af-hint-bg:     #f0f2f8;
+        --af-hint-border: #dde2ea;
+        --af-radius:      12px;
+        --af-radius-sm:   8px;
+        --af-ease:        cubic-bezier(0.4, 0, 0.2, 1);
+        --af-font:        'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
     }
 
+    /* ============================
+       Dark 主题
+       ============================ */
+    #aifengyue-sidebar[data-theme="dark"] {
+        --af-bg:          #13151e;
+        --af-bg-soft:     #1a1d2b;
+        --af-bg-card:     #212435;
+        --af-border:      #2d3150;
+        --af-text:        #e4e7f0;
+        --af-text-soft:   #b0b7c8;
+        --af-muted:       #6b7590;
+        --af-primary:     #818cf8;
+        --af-primary-hover: #6366f1;
+        --af-primary-text: #ffffff;
+        --af-primary-glow: rgba(129, 140, 248, 0.25);
+        --af-accent:      #38bdf8;
+        --af-accent-glow: rgba(56, 189, 248, 0.2);
+        --af-input-bg:    #1a1d2e;
+        --af-input-border: #3d4268;
+        --af-btn2-bg:     #2a2e45;
+        --af-btn2-hover:  #353a55;
+        --af-btn2-border: #4a5080;
+        --af-shadow:      rgba(0, 0, 0, 0.2);
+        --af-shadow-lg:   rgba(0, 0, 0, 0.35);
+        --af-header-bg:   linear-gradient(135deg, #1a1d2b 0%, #13151e 100%);
+        --af-footer-bg:   #111320;
+        --af-track-bg:    #1e2133;
+        --af-bar-gradient: linear-gradient(90deg, #818cf8, #38bdf8);
+        --af-success:     #34d399;
+        --af-warning:     #fbbf24;
+        --af-error:       #f87171;
+        --af-idle:        #4b5568;
+        --af-toggle-bg:   linear-gradient(135deg, #818cf8 0%, #6366f1 100%);
+        --af-toggle-shadow: rgba(129, 140, 248, 0.3);
+        --af-code-color:  #818cf8;
+        --af-hint-bg:     #1a1d2b;
+        --af-hint-border: #2d3150;
+    }
+
+    /* ============================
+       Global / Layout
+       ============================ */
     html.aifengyue-sidebar-inline-mode,
     body.aifengyue-sidebar-inline-mode {
-        margin-right: var(--aifengyue-sidebar-width) !important;
-        transition: margin-right 0.25s ease;
+        margin-right: 372px !important;
+        transition: margin-right 0.3s var(--af-ease, ease);
     }
 
+    /* --- Toggle 按钮 --- */
     #aifengyue-sidebar-toggle {
         position: fixed;
         right: 0;
         top: 50%;
         transform: translateY(-50%);
-        width: 40px;
-        height: 108px;
+        width: 38px;
+        height: 100px;
         border: none;
         border-radius: 10px 0 0 10px;
-        background: linear-gradient(160deg, #0f766e 0%, #115e59 100%);
-        color: #f3f8fb;
+        background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        color: #fff;
         cursor: pointer;
         z-index: 2147483645;
         writing-mode: vertical-rl;
         font-size: 13px;
         font-weight: 700;
-        letter-spacing: 1px;
-        box-shadow: -2px 0 10px rgba(0, 0, 0, 0.28);
-        transition: width 0.2s ease, background 0.2s ease, transform 0.2s ease;
+        font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+        letter-spacing: 2px;
+        box-shadow: -3px 0 20px rgba(99, 102, 241, 0.35);
+        transition: width 0.25s ease, box-shadow 0.25s ease;
     }
     #aifengyue-sidebar-toggle:hover {
-        width: 48px;
-        background: linear-gradient(160deg, #0d9488 0%, #0f766e 100%);
+        width: 46px;
+        box-shadow: -4px 0 28px rgba(99, 102, 241, 0.5);
     }
     #aifengyue-sidebar-toggle.hidden {
         transform: translateY(-50%) translateX(100%);
     }
 
+    /* --- 侧边栏容器 --- */
     #aifengyue-sidebar {
         position: fixed;
         top: 0;
-        right: calc(-1 * var(--aifengyue-sidebar-width) - 20px);
-        width: var(--aifengyue-sidebar-width);
+        right: -392px;
+        width: 372px;
         height: 100vh;
-        background: linear-gradient(180deg, var(--aifengyue-bg) 0%, #0d141c 100%);
-        color: var(--aifengyue-text);
+        background: var(--af-bg);
+        color: var(--af-text);
         z-index: 2147483646;
-        transition: right 0.25s ease;
-        box-shadow: -6px 0 28px rgba(0, 0, 0, 0.42);
-        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        transition: right 0.3s var(--af-ease);
+        box-shadow: -4px 0 32px var(--af-shadow-lg);
+        font-family: var(--af-font);
         overflow: hidden;
         display: flex;
         flex-direction: column;
-        border-left: 1px solid var(--aifengyue-border);
+        border-left: 1px solid var(--af-border);
     }
     #aifengyue-sidebar.open {
         right: 0;
     }
-    #aifengyue-sidebar.mode-inline {
-        box-shadow: -3px 0 16px rgba(0, 0, 0, 0.25);
-    }
 
+    /* --- 头部 --- */
     .aifengyue-sidebar-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         padding: 14px 16px;
-        background: linear-gradient(160deg, #153242 0%, #0f2a39 100%);
-        border-bottom: 1px solid var(--aifengyue-border);
+        background: var(--af-header-bg);
+        border-bottom: 1px solid var(--af-border);
+        gap: 8px;
     }
     .aifengyue-sidebar-header h2 {
         margin: 0;
-        font-size: 16px;
+        font-size: 15px;
         font-weight: 700;
-        color: #f4fbff;
-    }
-    .aifengyue-sidebar-close {
-        width: 30px;
-        height: 30px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.08);
-        color: #e8f2f7;
-        cursor: pointer;
-        font-size: 16px;
-        transition: background 0.2s ease;
-    }
-    .aifengyue-sidebar-close:hover {
-        background: rgba(255, 255, 255, 0.16);
+        color: var(--af-text);
+        flex: 1;
     }
 
+    /* 主题切换按钮 */
+    .aifengyue-theme-toggle {
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--af-primary);
+        border-radius: var(--af-radius-sm);
+        background: transparent;
+        color: var(--af-primary);
+        cursor: pointer;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.25s var(--af-ease);
+        padding: 0;
+        line-height: 1;
+    }
+    .aifengyue-theme-toggle:hover {
+        background: var(--af-primary);
+        color: #fff;
+        transform: rotate(20deg) scale(1.05);
+        box-shadow: 0 0 12px var(--af-primary-glow);
+    }
+
+    .aifengyue-sidebar-close {
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--af-border);
+        border-radius: var(--af-radius-sm);
+        background: transparent;
+        color: var(--af-text-soft);
+        cursor: pointer;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.25s var(--af-ease);
+        padding: 0;
+        line-height: 1;
+    }
+    .aifengyue-sidebar-close:hover {
+        color: #fff;
+        background: var(--af-error);
+        border-color: var(--af-error);
+    }
+
+    /* --- Tab 导航 --- */
     .aifengyue-sidebar-tabs {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 8px;
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--aifengyue-border);
-        background: rgba(13, 23, 32, 0.95);
+        gap: 4px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--af-border);
+        background: var(--af-bg);
     }
     .aifengyue-tab-btn {
-        border: 1px solid #2b3a49;
-        background: #1a2734;
-        color: var(--aifengyue-muted);
-        border-radius: 8px;
+        position: relative;
+        border: none;
+        background: transparent;
+        color: var(--af-muted);
+        border-radius: var(--af-radius-sm);
         height: 34px;
         cursor: pointer;
         font-size: 13px;
         font-weight: 600;
-        transition: all 0.2s ease;
+        font-family: var(--af-font);
+        transition: all 0.2s var(--af-ease);
     }
     .aifengyue-tab-btn:hover {
-        color: #d8e7f2;
-        border-color: #365064;
+        color: var(--af-text-soft);
+        background: var(--af-bg-soft);
     }
     .aifengyue-tab-btn.active {
-        background: linear-gradient(160deg, #0d9488 0%, #0f766e 100%);
-        color: #f2fffe;
-        border-color: #0d9488;
-        box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.45) inset;
+        color: var(--af-primary);
+        background: var(--af-bg-card);
+    }
+    .aifengyue-tab-btn.active::after {
+        content: '';
+        position: absolute;
+        bottom: 2px;
+        left: 30%;
+        right: 30%;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--af-primary);
     }
 
+    /* --- 内容区 --- */
     .aifengyue-sidebar-content {
         flex: 1;
         overflow-y: auto;
-        padding: 14px 14px 16px;
+        padding: 12px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--af-border) transparent;
+    }
+    .aifengyue-sidebar-content::-webkit-scrollbar {
+        width: 4px;
+    }
+    .aifengyue-sidebar-content::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .aifengyue-sidebar-content::-webkit-scrollbar-thumb {
+        background: var(--af-border);
+        border-radius: 4px;
     }
 
+    /* --- 面板动画 --- */
     .aifengyue-panel {
         display: none;
-        animation: aifengyue-panel-in 0.18s ease-out;
+        animation: af-slide-in 0.25s var(--af-ease);
     }
     .aifengyue-panel.active {
         display: block;
     }
-    @keyframes aifengyue-panel-in {
-        from { opacity: 0; transform: translateY(4px); }
-        to { opacity: 1; transform: translateY(0); }
+    @keyframes af-slide-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
     }
 
+    /* --- Section 区块 --- */
     .aifengyue-section {
-        margin-bottom: 14px;
+        margin-bottom: 10px;
         padding: 14px;
-        border: 1px solid var(--aifengyue-border);
-        border-radius: 12px;
-        background: var(--aifengyue-bg-soft);
+        border: 1px solid var(--af-border);
+        border-radius: var(--af-radius);
+        background: var(--af-bg-soft);
+        transition: border-color 0.2s var(--af-ease);
+    }
+    .aifengyue-section:hover {
+        border-color: color-mix(in srgb, var(--af-primary) 30%, var(--af-border));
     }
     .aifengyue-section-title {
-        font-size: 13px;
-        color: #d6e5ef;
+        font-size: 11px;
+        color: var(--af-muted);
         font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
         margin-bottom: 10px;
     }
 
+    /* --- 状态卡片 --- */
     .aifengyue-status-card {
-        border: 1px solid #2b3c4d;
+        border: 1px solid var(--af-border);
         border-radius: 10px;
-        background: var(--aifengyue-bg-card);
+        background: var(--af-bg-card);
         padding: 12px;
     }
     .aifengyue-status-indicator {
         display: flex;
         align-items: center;
-        gap: 9px;
+        gap: 10px;
     }
     .aifengyue-status-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        animation: aifengyue-pulse 1.5s infinite;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
     }
-    .aifengyue-status-dot.idle { background: #74879a; animation: none; }
-    .aifengyue-status-dot.generating { background: #f59e0b; }
-    .aifengyue-status-dot.polling { background: #0ea5a0; }
-    .aifengyue-status-dot.success { background: #16a34a; animation: none; }
-    .aifengyue-status-dot.error { background: #dc2626; animation: none; }
-    @keyframes aifengyue-pulse {
+    .aifengyue-status-dot.idle {
+        background: var(--af-idle);
+    }
+    .aifengyue-status-dot.generating {
+        background: var(--af-warning);
+        animation: af-pulse 1.6s ease-in-out infinite;
+        box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+    }
+    .aifengyue-status-dot.polling {
+        background: var(--af-accent);
+        animation: af-pulse 1.6s ease-in-out infinite;
+        box-shadow: 0 0 8px var(--af-accent-glow);
+    }
+    .aifengyue-status-dot.success {
+        background: var(--af-success);
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.35);
+    }
+    .aifengyue-status-dot.error {
+        background: var(--af-error);
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.35);
+    }
+    @keyframes af-pulse {
         0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.45; transform: scale(1.15); }
+        50%      { opacity: 0.4; transform: scale(1.3); }
     }
     .aifengyue-status-text {
         font-size: 13px;
-        color: #f0f7ff;
+        color: var(--af-text);
         font-weight: 600;
     }
     .aifengyue-status-message {
         margin-top: 10px;
-        border-radius: 8px;
-        padding: 8px 9px;
-        background: #121d28;
-        color: var(--aifengyue-muted);
+        border-radius: var(--af-radius-sm);
+        padding: 8px 10px;
+        background: var(--af-input-bg);
+        border: 1px solid var(--af-border);
+        color: var(--af-muted);
         font-size: 12px;
-        line-height: 1.5;
+        line-height: 1.6;
         word-break: break-word;
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
     }
 
+    /* --- 信息行 --- */
     .aifengyue-info-row {
         display: flex;
         align-items: center;
         gap: 8px;
         padding: 8px 0;
-        border-bottom: 1px solid #304151;
+        border-bottom: 1px solid var(--af-border);
     }
     .aifengyue-info-row:last-child {
         border-bottom: none;
+        padding-bottom: 0;
+    }
+    .aifengyue-info-row:first-child {
+        padding-top: 0;
     }
     .aifengyue-info-label {
-        min-width: 58px;
+        min-width: 52px;
         font-size: 12px;
-        color: var(--aifengyue-muted);
+        color: var(--af-muted);
+        font-weight: 500;
     }
     .aifengyue-info-value {
         flex: 1;
         min-width: 0;
         font-size: 12px;
-        color: #e7eff7;
-        font-family: Consolas, monospace;
+        color: var(--af-text);
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
     .aifengyue-info-value.code {
-        color: var(--aifengyue-accent);
+        color: var(--af-code-color);
         font-weight: 700;
     }
     .aifengyue-copy-btn {
-        border: 1px solid #3a4d60;
-        background: transparent;
-        color: #b8c8d7;
+        border: 1px solid var(--af-border);
+        background: var(--af-bg);
+        color: var(--af-muted);
         border-radius: 6px;
         height: 24px;
-        padding: 0 8px;
+        padding: 0 10px;
         cursor: pointer;
-        font-size: 12px;
+        font-size: 11px;
+        font-family: var(--af-font);
+        font-weight: 500;
+        transition: all 0.2s var(--af-ease);
     }
     .aifengyue-copy-btn:hover {
-        background: #2a3b4b;
+        color: var(--af-primary);
+        border-color: var(--af-primary);
+    }
+    .aifengyue-copy-btn:active {
+        transform: scale(0.95);
     }
 
+    /* --- 表单 --- */
     .aifengyue-input-group {
         margin-bottom: 10px;
     }
     .aifengyue-input-group label {
         display: block;
-        margin-bottom: 6px;
-        color: #bfd0de;
+        margin-bottom: 5px;
+        color: var(--af-text-soft);
         font-size: 12px;
+        font-weight: 500;
     }
     .aifengyue-input-group input,
     .aifengyue-input-group select {
         width: 100%;
         height: 36px;
         box-sizing: border-box;
-        border: 1px solid #365064;
-        border-radius: 8px;
+        border: 1px solid var(--af-input-border);
+        border-radius: var(--af-radius-sm);
         padding: 0 10px;
         font-size: 13px;
-        color: #edf6fc;
-        background: #152331;
+        font-family: var(--af-font);
+        color: var(--af-text);
+        background: var(--af-input-bg);
         outline: none;
-        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        transition: border-color 0.2s, box-shadow 0.2s;
     }
     .aifengyue-input-group input:focus,
     .aifengyue-input-group select:focus {
-        border-color: #0d9488;
-        box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.22);
+        border-color: var(--af-primary);
+        box-shadow: 0 0 0 3px var(--af-primary-glow);
     }
     .aifengyue-input-group input::placeholder {
-        color: #7f96aa;
+        color: var(--af-muted);
+        opacity: 0.6;
+    }
+    .aifengyue-input-group select option {
+        background: var(--af-bg);
+        color: var(--af-text);
     }
 
+    /* --- 按钮 --- */
     .aifengyue-btn {
         width: 100%;
         height: 36px;
         border: none;
-        border-radius: 8px;
+        border-radius: var(--af-radius-sm);
         cursor: pointer;
         font-size: 13px;
-        font-weight: 700;
-        transition: transform 0.15s ease, filter 0.15s ease;
+        font-weight: 600;
+        font-family: var(--af-font);
+        transition: all 0.2s var(--af-ease);
     }
     .aifengyue-btn:hover {
         transform: translateY(-1px);
-        filter: brightness(1.05);
+    }
+    .aifengyue-btn:active {
+        transform: translateY(0) scale(0.98);
     }
     .aifengyue-btn:disabled {
-        opacity: 0.58;
+        opacity: 0.45;
         cursor: not-allowed;
         transform: none;
-        filter: none;
     }
     .aifengyue-btn-primary {
-        background: linear-gradient(160deg, #0d9488 0%, #0f766e 100%);
-        color: #f0ffff;
+        background: linear-gradient(135deg, var(--af-primary) 0%, var(--af-primary-hover) 100%);
+        color: var(--af-primary-text);
+        box-shadow: 0 2px 12px var(--af-primary-glow);
+    }
+    .aifengyue-btn-primary:hover {
+        box-shadow: 0 4px 20px var(--af-primary-glow);
     }
     .aifengyue-btn-secondary {
-        background: #2b3b4a;
-        color: #e2edf5;
-        border: 1px solid #3b4f60;
+        background: var(--af-btn2-bg);
+        color: var(--af-text);
+        border: 1px solid var(--af-btn2-border);
+    }
+    .aifengyue-btn-secondary:hover {
+        background: var(--af-btn2-hover);
+        border-color: color-mix(in srgb, var(--af-primary) 40%, var(--af-btn2-border));
     }
     .aifengyue-btn-group {
         display: grid;
@@ -2504,51 +2733,63 @@
         margin-top: 8px;
     }
 
+    /* --- 提示 --- */
     .aifengyue-hint {
-        margin-top: 6px;
+        margin-top: 8px;
         font-size: 12px;
-        line-height: 1.5;
-        color: var(--aifengyue-muted);
-        border: 1px dashed #355066;
+        line-height: 1.6;
+        color: var(--af-muted);
+        border: 1px solid var(--af-hint-border);
         border-radius: 10px;
-        padding: 9px 10px;
-        background: rgba(21, 35, 49, 0.55);
+        padding: 10px 12px 10px 14px;
+        background: var(--af-hint-bg);
+        border-left: 3px solid var(--af-primary);
     }
 
+    /* --- 工具面板 --- */
     .aifengyue-tools-empty {
-        border: 1px dashed #335063;
-        border-radius: 10px;
-        padding: 16px 12px;
+        border: 1px dashed var(--af-border);
+        border-radius: var(--af-radius);
+        padding: 20px 14px;
         text-align: center;
-        color: var(--aifengyue-muted);
-        background: rgba(23, 34, 45, 0.64);
+        color: var(--af-muted);
+        background: var(--af-bg-card);
         font-size: 13px;
     }
     .aifengyue-tool-block {
-        margin-bottom: 12px;
-        padding: 12px;
-        border-radius: 10px;
-        border: 1px solid var(--aifengyue-border);
-        background: var(--aifengyue-bg-soft);
+        margin-bottom: 10px;
+        padding: 14px;
+        border-radius: var(--af-radius);
+        border: 1px solid var(--af-border);
+        background: var(--af-bg-soft);
+        transition: border-color 0.2s var(--af-ease);
+    }
+    .aifengyue-tool-block:hover {
+        border-color: color-mix(in srgb, var(--af-primary) 30%, var(--af-border));
     }
     .aifengyue-check-row {
         display: flex;
         align-items: center;
-        gap: 8px;
-        color: #d2dfeb;
+        gap: 10px;
+        color: var(--af-text);
         font-size: 13px;
         margin-bottom: 10px;
         user-select: none;
+        cursor: pointer;
     }
-    .aifengyue-check-row input {
-        accent-color: #0d9488;
+    .aifengyue-check-row input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--af-primary);
+        cursor: pointer;
     }
 
+    /* --- 配额统计 --- */
     .aifengyue-usage-display {
-        border: 1px solid #2f4353;
+        border: 1px solid var(--af-border);
         border-radius: 10px;
-        background: var(--aifengyue-bg-card);
-        padding: 11px;
+        background: var(--af-bg-card);
+        padding: 12px;
     }
     .aifengyue-usage-head,
     .aifengyue-usage-foot {
@@ -2558,43 +2799,48 @@
         font-size: 12px;
     }
     .aifengyue-muted {
-        color: var(--aifengyue-muted);
+        color: var(--af-muted);
     }
     .aifengyue-usage-track {
         margin: 8px 0;
-        height: 8px;
+        height: 6px;
         border-radius: 999px;
-        background: #243645;
+        background: var(--af-track-bg);
         overflow: hidden;
     }
     #aifengyue-usage-bar {
         height: 100%;
         width: 0%;
-        background: linear-gradient(90deg, #0d9488, #14b8a6);
-        transition: width 0.2s ease;
+        border-radius: 999px;
+        background: var(--af-bar-gradient);
+        transition: width 0.4s var(--af-ease);
     }
     #aifengyue-reset-usage {
         border: none;
         background: transparent;
-        color: #22d3ee;
+        color: var(--af-accent);
         cursor: pointer;
         font-size: 12px;
+        font-family: var(--af-font);
         padding: 0;
+        transition: color 0.2s;
     }
     #aifengyue-reset-usage:hover {
+        color: var(--af-primary);
         text-decoration: underline;
     }
 
+    /* --- 脚注 --- */
     .aifengyue-footer {
-        border-top: 1px solid var(--aifengyue-border);
-        background: #0c141c;
-        color: #7f95a8;
+        border-top: 1px solid var(--af-border);
+        background: var(--af-footer-bg);
+        color: var(--af-muted);
         padding: 10px 14px;
         text-align: center;
         font-size: 12px;
     }
     .aifengyue-footer a {
-        color: #2dd4bf;
+        color: var(--af-primary);
         text-decoration: none;
     }
     .aifengyue-footer a:hover {

@@ -313,11 +313,26 @@ export const AutoRegister = {
         logInfo(runCtx, 'SET_FIRST_VISIT', '首次引导-is_first_visit 设置完成');
     },
 
+    async setHideRefreshConfirmFlag(token, runCtx) {
+        await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+            body: {
+                key: 'hide_refresh_confirm',
+                value: true,
+            },
+        }, runCtx, 'SET_HIDE_REFRESH_CONFIRM');
+        logInfo(runCtx, 'SET_HIDE_REFRESH_CONFIRM', '首次引导-hide_refresh_confirm 设置完成');
+    },
+
     async skipFirstGuide(token, runCtx) {
         logInfo(runCtx, 'SKIP_GUIDE', '开始跳过首次引导');
         await this.setAccountGender(token, runCtx);
         await this.submitFavoriteTags(token, runCtx);
         await this.setFirstVisitFlag(token, runCtx);
+        await this.setHideRefreshConfirmFlag(token, runCtx);
         logInfo(runCtx, 'SKIP_GUIDE', '首次引导跳过完成');
     },
 
@@ -659,16 +674,23 @@ export const AutoRegister = {
             const finishAndReload = (trigger, responseMeta = {}) => {
                 if (settled) return;
                 settled = true;
-                logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到 ${trigger} 响应，准备刷新页面`, responseMeta);
+                const status = Number(responseMeta?.status || 0);
+                const hasStatus = Number.isFinite(status) && status > 0;
+                const isSuccess = hasStatus && status >= 200 && status < 300;
+                const statusText = hasStatus ? `HTTP ${status}` : '未知状态';
+                logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到 ${trigger} 响应（${statusText}），1秒后刷新`, responseMeta);
                 Sidebar.updateState({
                     status: 'success',
-                    statusMessage: '更换账号完成，已收到 chat-messages 响应，正在刷新页面...',
+                    statusMessage: `更换账号：chat-messages 已返回（${statusText}），1秒后刷新页面...`,
                 });
-                Toast.success('更换账号成功，页面即将刷新', 2600);
+                Toast.info(
+                    `chat-messages 已收到${isSuccess ? '成功' : '失败'}响应（${statusText}），1秒后刷新`,
+                    3500
+                );
                 setTimeout(() => {
                     window.location.reload();
-                }, 300);
-                resolve();
+                }, 1000);
+                resolve({ status, isSuccess });
             };
 
             gmXmlHttpRequest({
@@ -686,7 +708,7 @@ export const AutoRegister = {
                     if (settled) return;
                     const status = Number(response?.status || 0);
                     const textLength = (response?.responseText || '').length;
-                    if ((status >= 200 && status < 300) || textLength > 0) {
+                    if (status > 0 || textLength > 0) {
                         finishAndReload('onprogress', { status, textLength });
                     }
                 },
@@ -694,11 +716,7 @@ export const AutoRegister = {
                     if (settled) return;
                     const status = Number(response?.status || 0);
                     const textLength = (response?.responseText || '').length;
-                    if ((status >= 200 && status < 300) || textLength > 0) {
-                        finishAndReload('onload', { status, textLength });
-                        return;
-                    }
-                    reject(new Error(`chat-messages 请求失败: HTTP ${status}`));
+                    finishAndReload('onload', { status, textLength });
                 },
                 onerror: (error) => {
                     if (settled) return;
