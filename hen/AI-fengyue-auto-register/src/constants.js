@@ -11,6 +11,7 @@ export const CONFIG = {
         API_USAGE_RESET_DATE: 'api_usage_reset_date',
         LOG_DEBUG_ENABLED: 'aifengyue_log_debug_enabled',
         MODEL_SORT_ENABLED: 'aifengyue_model_sort_enabled',
+        SIDEBAR_LAYOUT_MODE: 'aifengyue_sidebar_layout_mode',
     },
     API_QUOTA_LIMIT: 1000,
     VERIFICATION_CODE_PATTERNS: [

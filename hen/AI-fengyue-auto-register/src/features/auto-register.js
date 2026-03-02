@@ -1,5 +1,5 @@
 import { CONFIG } from '../constants.js';
-import { gmGetValue, gmRequestJson, gmSetValue } from '../gm.js';
+import { gmGetValue, gmRequestJson, gmSetValue, gmXmlHttpRequest } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
 import { Sidebar } from '../ui/sidebar.js';
 import { Toast } from '../ui/toast.js';
@@ -23,6 +23,8 @@ const SITE_ENDPOINTS = {
     ACCOUNT_GENDER: '/console/api/account/gender',
     FAVORITE_TAGS: '/console/api/account_extend/favorite_tags',
     ACCOUNT_EXTEND_SET: '/console/api/account/extend_set',
+    INSTALLED_MESSAGES: '/console/api/installed-apps',
+    CHAT_MESSAGES: '/console/api/installed-apps',
 };
 
 function readErrorMessage(payload, fallback) {
@@ -34,8 +36,58 @@ function readErrorMessage(payload, fallback) {
     return message;
 }
 
+function normalizeTimestamp(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsedNumber = Number(value);
+        if (Number.isFinite(parsedNumber)) {
+            return parsedNumber;
+        }
+        const parsedDate = Date.parse(value);
+        if (Number.isFinite(parsedDate)) {
+            return parsedDate;
+        }
+    }
+    return 0;
+}
+
+function decodeEscapedText(raw) {
+    if (typeof raw !== 'string') return '';
+
+    let value = raw;
+    for (let i = 0; i < 3; i++) {
+        if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
+            break;
+        }
+        try {
+            const next = JSON.parse(`"${value
+                .replace(/"/g, '\\"')
+                .replace(/\r/g, '\\r')
+                .replace(/\n/g, '\\n')
+                .replace(/\t/g, '\\t')}"`);
+            if (next === value) break;
+            value = next;
+        } catch {
+            break;
+        }
+    }
+    return value;
+}
+
+function randomConversationSuffix(length = 3) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let output = '';
+    for (let i = 0; i < length; i++) {
+        output += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return output;
+}
+
 export const AutoRegister = {
     registrationStartTime: null,
+    switchingAccount: false,
 
     isRegisterPage() {
         return !!document.querySelector('input#name') &&
@@ -353,129 +405,418 @@ export const AutoRegister = {
         }
     },
 
+    async registerByApi(runCtx, options = {}) {
+        const flowName = options.flowName || '一键注册';
+        const showStepToasts = options.showStepToasts !== false;
+        const markSuccess = options.markSuccess !== false;
+
+        let currentStep = '初始化';
+
+        currentStep = '生成临时邮箱';
+        Sidebar.updateState({
+            status: 'generating',
+            statusMessage: `${flowName}：正在生成临时邮箱...`,
+        });
+        if (showStepToasts) {
+            Toast.info(`${flowName}：正在生成临时邮箱`, 2200);
+        }
+
+        this.registrationStartTime = Math.floor(Date.now() / 1000);
+        gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
+
+        const email = await ApiService.generateEmail();
+        const username = generateUsername();
+        const password = generatePassword();
+        logInfo(runCtx, 'GENERATE', `${flowName} 生成注册信息完成`, { email, username, password });
+
+        Sidebar.updateState({ email, username, password, statusMessage: `${flowName}：正在填充表单...` });
+
+        gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
+        gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
+        gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
+
+        this.fillForm(email, username, password);
+
+        currentStep = '发送验证码';
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: `${flowName}：正在发送验证码...`,
+            verificationCode: '',
+        });
+        await this.sendRegisterEmailCode(email, runCtx);
+        if (showStepToasts) {
+            Toast.info(`${flowName}：验证码已发送，正在轮询邮箱`, 2200);
+        }
+
+        currentStep = '轮询邮箱验证码';
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: `${flowName}：验证码已发送，正在自动轮询邮箱...`,
+        });
+
+        const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2000, runCtx);
+        if (!code) {
+            throw new Error('未在轮询窗口内获取到验证码');
+        }
+        if (showStepToasts) {
+            Toast.success(`${flowName}：已获取验证码`, 1800);
+        }
+
+        Sidebar.updateState({
+            verificationCode: code,
+            statusMessage: `${flowName}：验证码已获取: ${code}`,
+        });
+
+        const { codeInput } = this.getFormElements();
+        if (codeInput) {
+            this.simulateInput(codeInput, code);
+            logInfo(runCtx, 'FORM', `${flowName} 验证码已自动填充到输入框`);
+        } else {
+            logWarn(runCtx, 'FORM', `${flowName} 未找到验证码输入框，跳过自动填充`);
+        }
+
+        currentStep = '获取注册令牌';
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: `${flowName}：正在获取注册令牌...`,
+        });
+        const regToken = await this.getRegToken(runCtx);
+
+        currentStep = '提交注册';
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: `${flowName}：正在提交注册...`,
+        });
+        const token = await this.registerWithCode({
+            username,
+            email,
+            password,
+            code,
+            regToken,
+        }, runCtx);
+
+        localStorage.setItem('console_token', token);
+        logInfo(runCtx, 'AUTH', `${flowName} 已写入 localStorage.console_token`);
+        logDebug(runCtx, 'AUTH', `${flowName} localStorage 写入 token 完整值`, { token });
+        if (showStepToasts) {
+            Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+        }
+
+        currentStep = '跳过首次引导';
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: `${flowName}：注册成功，正在跳过首次引导...`,
+        });
+
+        let guideSkipped = true;
+        try {
+            await this.skipFirstGuide(token, runCtx);
+        } catch (guideError) {
+            guideSkipped = false;
+            logError(runCtx, 'SKIP_GUIDE', `${flowName} 首次引导跳过失败`, {
+                errorName: guideError?.name,
+                message: guideError?.message,
+                stack: guideError?.stack,
+            });
+            Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6000);
+        }
+
+        if (markSuccess) {
+            Sidebar.updateState({
+                status: 'success',
+                statusMessage: guideSkipped
+                    ? `${flowName}成功，已写入 console_token 并跳过首次引导`
+                    : `${flowName}成功，已写入 console_token（首次引导跳过失败）`,
+            });
+            Toast.success(guideSkipped
+                ? `${flowName}完成：已自动跳过首次引导并写入登录态`
+                : `${flowName}完成：已写入登录态；首次引导跳过失败`, 5000);
+        } else {
+            Sidebar.updateState({
+                status: 'fetching',
+                statusMessage: `${flowName}已完成注册，准备执行后续操作...`,
+            });
+        }
+
+        return {
+            token,
+            guideSkipped,
+            email,
+            username,
+            password,
+            code,
+        };
+    },
+
+    extractInstalledAppId() {
+        const matched = window.location.pathname.match(/\/(?:test-)?installed\/([0-9a-f-]+)/i);
+        return matched?.[1] || '';
+    },
+
+    readConversationIdByAppId(appId) {
+        const raw = localStorage.getItem('conversationIdInfo');
+        if (!raw) {
+            throw new Error('未找到 localStorage.conversationIdInfo');
+        }
+
+        let mapping;
+        try {
+            mapping = JSON.parse(raw);
+        } catch {
+            throw new Error('conversationIdInfo 不是合法 JSON');
+        }
+
+        if (!mapping || typeof mapping !== 'object') {
+            throw new Error('conversationIdInfo 结构无效');
+        }
+
+        const conversationId = typeof mapping[appId] === 'string' ? mapping[appId].trim() : '';
+        if (!conversationId) {
+            throw new Error(`conversationIdInfo 中未找到 appId=${appId} 对应的 conversation_id`);
+        }
+
+        return conversationId;
+    },
+
+    async fetchLatestConversationAnswer({ appId, conversationId, token, runCtx }) {
+        const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=20&type=recent`;
+        const payload = await this.requestSiteApi(path, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+        }, runCtx, 'SWITCH_FETCH_MESSAGES');
+
+        const messages = Array.isArray(payload?.data)
+            ? payload.data
+            : (Array.isArray(payload?.data?.data) ? payload.data.data : []);
+        if (!messages.length) {
+            throw new Error('messages 接口未返回可用 data');
+        }
+
+        const latest = [...messages].sort((a, b) => normalizeTimestamp(b?.created_at) - normalizeTimestamp(a?.created_at))[0];
+        const answer = typeof latest?.answer === 'string' ? latest.answer : '';
+        if (!answer.trim()) {
+            throw new Error('最新消息 answer 为空');
+        }
+
+        return {
+            answer,
+            createdAt: latest?.created_at ?? null,
+        };
+    },
+
+    async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
+        const path = `${SITE_ENDPOINTS.CHAT_MESSAGES}/${appId}/chat-messages`;
+        const url = `${window.location.origin}${path}`;
+        const body = {
+            response_mode: 'streaming',
+            conversation_name: conversationName,
+            history_start_at: null,
+            inputs: {},
+            query,
+        };
+
+        logInfo(runCtx, 'SWITCH_CHAT', '开始请求 chat-messages', {
+            path,
+            conversationName,
+            queryLength: query.length,
+        });
+        logDebug(runCtx, 'SWITCH_CHAT', 'chat-messages 请求体', body);
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+
+            const finishAndReload = (trigger, responseMeta = {}) => {
+                if (settled) return;
+                settled = true;
+                logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到 ${trigger} 响应，准备刷新页面`, responseMeta);
+                Sidebar.updateState({
+                    status: 'success',
+                    statusMessage: '更换账号完成，已收到 chat-messages 响应，正在刷新页面...',
+                });
+                Toast.success('更换账号成功，页面即将刷新', 2600);
+                setTimeout(() => {
+                    window.location.reload();
+                }, 300);
+                resolve();
+            };
+
+            gmXmlHttpRequest({
+                method: 'POST',
+                url,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Language': X_LANGUAGE,
+                    Authorization: `Bearer ${token}`,
+                },
+                data: JSON.stringify(body),
+                timeout: 20000,
+                anonymous: true,
+                onprogress: (response) => {
+                    if (settled) return;
+                    const status = Number(response?.status || 0);
+                    const textLength = (response?.responseText || '').length;
+                    if ((status >= 200 && status < 300) || textLength > 0) {
+                        finishAndReload('onprogress', { status, textLength });
+                    }
+                },
+                onload: (response) => {
+                    if (settled) return;
+                    const status = Number(response?.status || 0);
+                    const textLength = (response?.responseText || '').length;
+                    if ((status >= 200 && status < 300) || textLength > 0) {
+                        finishAndReload('onload', { status, textLength });
+                        return;
+                    }
+                    reject(new Error(`chat-messages 请求失败: HTTP ${status}`));
+                },
+                onerror: (error) => {
+                    if (settled) return;
+                    reject(new Error(error?.error || 'chat-messages 网络请求失败'));
+                },
+                ontimeout: () => {
+                    if (settled) return;
+                    reject(new Error('chat-messages 请求超时'));
+                },
+                onabort: () => {
+                    if (settled) return;
+                    reject(new Error('chat-messages 请求被中止'));
+                },
+            });
+        });
+    },
+
     async startOneClickRegister() {
         const runCtx = createRunContext('REG');
-        let currentStep = '初始化';
         logInfo(runCtx, 'START', '开始一键注册流程', {
             href: window.location.href,
             debugEnabled: isDebugEnabled(),
         });
         try {
-            currentStep = '生成临时邮箱';
-            Sidebar.updateState({
-                status: 'generating',
-                statusMessage: '正在生成临时邮箱...',
+            await this.registerByApi(runCtx, {
+                flowName: '一键注册',
+                showStepToasts: true,
+                markSuccess: true,
             });
-
-            this.registrationStartTime = Math.floor(Date.now() / 1000);
-            gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-
-            const email = await ApiService.generateEmail();
-            const username = generateUsername();
-            const password = generatePassword();
-            logInfo(runCtx, 'GENERATE', '生成注册信息完成', { email, username, password });
-
-            Sidebar.updateState({ email, username, password, statusMessage: '正在填充表单...' });
-
-            gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
-            gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
-            gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
-
-            this.fillForm(email, username, password);
-
-            currentStep = '发送验证码';
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: '正在发送验证码...',
-                verificationCode: '',
-            });
-            await this.sendRegisterEmailCode(email, runCtx);
-
-            currentStep = '轮询邮箱验证码';
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: '验证码已发送，正在自动轮询邮箱...',
-            });
-
-            const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2000, runCtx);
-            if (!code) {
-                throw new Error('未在轮询窗口内获取到验证码');
-            }
-
-            Sidebar.updateState({
-                verificationCode: code,
-                statusMessage: `验证码已获取: ${code}`,
-            });
-
-            const { codeInput } = this.getFormElements();
-            if (codeInput) {
-                this.simulateInput(codeInput, code);
-                logInfo(runCtx, 'FORM', '验证码已自动填充到输入框');
-            } else {
-                logWarn(runCtx, 'FORM', '未找到验证码输入框，跳过自动填充');
-            }
-
-            currentStep = '获取注册令牌';
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: '正在获取注册令牌...',
-            });
-            const regToken = await this.getRegToken(runCtx);
-
-            currentStep = '提交注册';
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: '正在提交注册...',
-            });
-            const token = await this.registerWithCode({
-                username,
-                email,
-                password,
-                code,
-                regToken,
-            }, runCtx);
-
-            localStorage.setItem('console_token', token);
-            logInfo(runCtx, 'AUTH', '已写入 localStorage.console_token');
-            logDebug(runCtx, 'AUTH', 'localStorage 写入 token 完整值', { token });
-
-            currentStep = '跳过首次引导';
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: '注册成功，正在跳过首次引导...',
-            });
-
-            let guideSkipped = true;
-            try {
-                await this.skipFirstGuide(token, runCtx);
-            } catch (guideError) {
-                guideSkipped = false;
-                logError(runCtx, 'SKIP_GUIDE', '首次引导跳过失败', {
-                    errorName: guideError?.name,
-                    message: guideError?.message,
-                    stack: guideError?.stack,
-                });
-                Toast.warning(`注册成功，但跳过首次引导失败: ${guideError.message}`, 6000);
-            }
-
-            Sidebar.updateState({
-                status: 'success',
-                statusMessage: guideSkipped
-                    ? '注册成功，已写入 console_token 并跳过首次引导'
-                    : '注册成功，已写入 console_token（首次引导跳过失败）',
-            });
-            Toast.success(guideSkipped
-                ? '注册成功，已自动跳过首次引导并写入登录态'
-                : '注册成功，已写入登录态；首次引导跳过失败', 5000);
-            logInfo(runCtx, 'DONE', '自动注册流程完成');
+            logInfo(runCtx, 'DONE', '一键注册流程完成');
         } catch (error) {
-            const message = `${currentStep}失败: ${error.message}`;
+            const message = `一键注册失败: ${error.message}`;
             Sidebar.updateState({ status: 'error', statusMessage: message });
             Toast.error(message);
             logError(runCtx, 'FAIL', message, {
                 errorName: error?.name,
                 stack: error?.stack,
             });
+        }
+    },
+
+    async switchAccount(extraText) {
+        const runCtx = createRunContext('SWITCH');
+        const appendText = typeof extraText === 'string' ? extraText.trim() : '';
+        const switchBtn = document.getElementById('aifengyue-switch-account');
+
+        if (this.switchingAccount) {
+            Toast.warning('更换账号正在执行，请稍候');
+            logWarn(runCtx, 'PRECHECK', '重复触发更换账号，已拦截');
+            return;
+        }
+
+        if (!appendText) {
+            const message = '请输入更换账号附加文本后再执行';
+            Sidebar.updateState({ status: 'error', statusMessage: message });
+            Toast.error(message);
+            logError(runCtx, 'PRECHECK', message);
+            return;
+        }
+
+        this.switchingAccount = true;
+        if (switchBtn) {
+            switchBtn.disabled = true;
+        }
+
+        logInfo(runCtx, 'START', '开始更换账号流程', {
+            href: window.location.href,
+            appendTextLength: appendText.length,
+            debugEnabled: isDebugEnabled(),
+        });
+
+        try {
+            const appId = this.extractInstalledAppId();
+            if (!appId) {
+                throw new Error('当前页面不是 installed/test-installed 详情页，无法提取应用 ID');
+            }
+
+            const oldToken = (localStorage.getItem('console_token') || '').trim();
+            if (!oldToken) {
+                throw new Error('未找到旧账号 console_token，请先登录旧账号后再更换');
+            }
+
+            const conversationId = this.readConversationIdByAppId(appId);
+            Sidebar.updateState({
+                status: 'fetching',
+                statusMessage: '更换账号：正在读取旧会话最新消息...',
+            });
+            Toast.info('更换账号：正在提取旧会话最新回答', 2400);
+
+            const latest = await this.fetchLatestConversationAnswer({
+                appId,
+                conversationId,
+                token: oldToken,
+                runCtx,
+            });
+            const decodedAnswer = decodeEscapedText(latest.answer);
+            if (!decodedAnswer.trim()) {
+                throw new Error('最新消息 answer 解码后为空');
+            }
+
+            logInfo(runCtx, 'SWITCH_FETCH_MESSAGES', '已提取旧会话最新消息', {
+                appId,
+                conversationId,
+                createdAt: latest.createdAt,
+                answerLength: decodedAnswer.length,
+            });
+
+            Sidebar.updateState({
+                status: 'fetching',
+                statusMessage: '更换账号：已提取旧回答，正在注册新账号...',
+            });
+            Toast.info('更换账号：开始注册新账号', 2200);
+
+            const registerResult = await this.registerByApi(runCtx, {
+                flowName: '更换账号',
+                showStepToasts: true,
+                markSuccess: false,
+            });
+
+            const query = `${decodedAnswer}\n\n${appendText}`;
+            const conversationName = `新的对话-${randomConversationSuffix(3)}`;
+            Sidebar.updateState({
+                status: 'fetching',
+                statusMessage: '更换账号：新账号已就绪，正在发送 chat-messages...',
+            });
+            Toast.info('更换账号：正在发送 chat-messages', 2200);
+
+            await this.sendChatMessagesAndReload({
+                appId,
+                token: registerResult.token,
+                query,
+                conversationName,
+                runCtx,
+            });
+        } catch (error) {
+            const message = `更换账号失败: ${error.message}`;
+            Sidebar.updateState({ status: 'error', statusMessage: message });
+            Toast.error(message, 6000);
+            logError(runCtx, 'FAIL', message, {
+                errorName: error?.name,
+                stack: error?.stack,
+            });
+        } finally {
+            this.switchingAccount = false;
+            if (switchBtn) {
+                switchBtn.disabled = false;
+            }
         }
     },
 

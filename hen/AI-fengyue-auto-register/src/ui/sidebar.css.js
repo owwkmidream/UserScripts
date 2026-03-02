@@ -1,6 +1,16 @@
 import { gmAddStyle } from '../gm.js';
 
 const SIDEBAR_STYLES = `
+    :root {
+        --aifengyue-sidebar-width: 380px;
+    }
+
+    html.aifengyue-sidebar-inline-mode,
+    body.aifengyue-sidebar-inline-mode {
+        margin-right: var(--aifengyue-sidebar-width) !important;
+        transition: margin-right 0.3s ease;
+    }
+
     #aifengyue-sidebar-toggle {
         position: fixed;
         right: 0;
@@ -33,9 +43,9 @@ const SIDEBAR_STYLES = `
 
     #aifengyue-sidebar {
         position: fixed;
-        right: -400px;
+        right: calc(-1 * var(--aifengyue-sidebar-width) - 20px);
         top: 0;
-        width: 380px;
+        width: var(--aifengyue-sidebar-width);
         height: 100vh;
         background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
         z-index: 2147483646;
@@ -47,6 +57,12 @@ const SIDEBAR_STYLES = `
     }
     #aifengyue-sidebar.open {
         right: 0;
+    }
+    #aifengyue-sidebar.mode-inline {
+        box-shadow: -5px 0 30px rgba(0, 0, 0, 0.35);
+    }
+    #aifengyue-sidebar.mode-floating {
+        box-shadow: -5px 0 30px rgba(0, 0, 0, 0.5);
     }
 
     .aifengyue-sidebar-header {
@@ -111,7 +127,8 @@ const SIDEBAR_STYLES = `
         font-size: 13px;
         color: #b0b0b0;
     }
-    .aifengyue-input-group input {
+    .aifengyue-input-group input,
+    .aifengyue-input-group select {
         width: 100%;
         padding: 10px 14px;
         border: 1px solid #3a3a5a;
@@ -122,7 +139,11 @@ const SIDEBAR_STYLES = `
         transition: border-color 0.2s, box-shadow 0.2s;
         box-sizing: border-box;
     }
-    .aifengyue-input-group input:focus {
+    .aifengyue-input-group select {
+        cursor: pointer;
+    }
+    .aifengyue-input-group input:focus,
+    .aifengyue-input-group select:focus {
         outline: none;
         border-color: #667eea;
         box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
@@ -143,6 +164,10 @@ const SIDEBAR_STYLES = `
         align-items: center;
         justify-content: center;
         gap: 8px;
+    }
+    .aifengyue-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
     }
     .aifengyue-btn-primary {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);

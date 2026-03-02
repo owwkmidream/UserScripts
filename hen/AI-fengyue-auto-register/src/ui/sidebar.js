@@ -1,6 +1,6 @@
 import { CONFIG, SIDEBAR_INITIAL_STATE } from '../constants.js';
 import { APP_STATE } from '../state.js';
-import { gmGetValue } from '../gm.js';
+import { gmGetValue, gmSetValue } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
 
 function getToast() {
@@ -22,15 +22,21 @@ function getModelPopupSorter() {
 export const Sidebar = {
     element: null,
     isOpen: false,
+    layoutMode: 'inline',
     state: APP_STATE.sidebar.state,
 
     init() {
         if (this.element && document.body.contains(this.element) && document.getElementById('aifengyue-sidebar-toggle')) {
             return;
         }
+        this.layoutMode = this.getLayoutMode();
         this.createSidebar();
         this.createToggleButton();
         this.loadSavedData();
+        this.applyLayoutModeClass();
+        if (this.layoutMode === 'inline') {
+            this.open();
+        }
     },
 
     createSidebar() {
@@ -66,6 +72,17 @@ export const Sidebar = {
                             <span id="aifengyue-usage-remaining" style="font-size: 11px; color: #6a6a8a;">剩余: 1000 次</span>
                             <button id="aifengyue-reset-usage" style="font-size: 11px; color: #667eea; background: none; border: none; cursor: pointer; padding: 0;">重置统计</button>
                         </div>
+                    </div>
+                </div>
+
+                <div class="aifengyue-section">
+                    <div class="aifengyue-section-title">界面设置</div>
+                    <div class="aifengyue-input-group">
+                        <label>侧边栏布局</label>
+                        <select id="aifengyue-layout-mode">
+                            <option value="inline">插入右侧（占空间）</option>
+                            <option value="floating">悬浮右侧（不占空间）</option>
+                        </select>
                     </div>
                 </div>
 
@@ -125,6 +142,13 @@ export const Sidebar = {
                     </div>
                     <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick" style="margin-top: 10px; width: 100%;">
                         ⚡ 一键注册（接口）
+                    </button>
+                    <div class="aifengyue-input-group" style="margin-top: 12px;">
+                        <label>更换账号附加文本</label>
+                        <input type="text" id="aifengyue-switch-text" placeholder="输入拼接到 query 的附加文本">
+                    </div>
+                    <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account" style="margin-top: 8px; width: 100%;">
+                        🔁 更换账号
                     </button>
                     <div class="aifengyue-hint" style="margin-top: 12px; font-size: 12px; color: #8a8aaa; line-height: 1.6;">
                         💡 注册页模式：填表后由你完成人机验证并提交。非注册页可用"一键注册（接口）"。
@@ -193,12 +217,24 @@ export const Sidebar = {
             getToast()?.success('API Key 已保存');
         });
 
+        this.element.querySelector('#aifengyue-layout-mode').addEventListener('change', (e) => {
+            const mode = e.target.value;
+            this.setLayoutMode(mode);
+            getToast()?.info(`侧边栏已切换为${mode === 'inline' ? '插入模式' : '悬浮模式'}`);
+        });
+
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
             getAutoRegister()?.start();
         });
 
         this.element.querySelector('#aifengyue-start-oneclick').addEventListener('click', () => {
             getAutoRegister()?.startOneClickRegister();
+        });
+
+        this.element.querySelector('#aifengyue-switch-account').addEventListener('click', () => {
+            const input = this.element.querySelector('#aifengyue-switch-text');
+            const extraText = input?.value?.trim() || '';
+            getAutoRegister()?.switchAccount(extraText);
         });
 
         this.element.querySelector('#aifengyue-refresh-email').addEventListener('click', () => {
@@ -268,8 +304,48 @@ export const Sidebar = {
         if (apiKey) {
             this.element.querySelector('#aifengyue-api-key').value = apiKey;
         }
+        const layoutModeInput = this.element.querySelector('#aifengyue-layout-mode');
+        if (layoutModeInput) {
+            layoutModeInput.value = this.layoutMode;
+        }
         this.updateUsageDisplay();
         this.updateToolPanel();
+    },
+
+    getLayoutMode() {
+        const mode = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, 'inline');
+        return mode === 'floating' ? 'floating' : 'inline';
+    },
+
+    setLayoutMode(mode) {
+        this.layoutMode = mode === 'floating' ? 'floating' : 'inline';
+        gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, this.layoutMode);
+        this.applyLayoutModeClass();
+        if (this.layoutMode === 'inline') {
+            this.open();
+        }
+    },
+
+    applyLayoutModeClass() {
+        if (!this.element) return;
+        this.element.classList.toggle('mode-inline', this.layoutMode === 'inline');
+        this.element.classList.toggle('mode-floating', this.layoutMode === 'floating');
+
+        const modeInput = this.element.querySelector('#aifengyue-layout-mode');
+        if (modeInput) {
+            modeInput.value = this.layoutMode;
+        }
+        const toggle = document.getElementById('aifengyue-sidebar-toggle');
+        if (toggle) {
+            toggle.textContent = this.layoutMode === 'inline' ? '打开助手' : '注册助手';
+        }
+        this.syncInlineSpaceClass();
+    },
+
+    syncInlineSpaceClass() {
+        const isInlineOpen = this.layoutMode === 'inline' && this.isOpen;
+        document.documentElement.classList.toggle('aifengyue-sidebar-inline-mode', isInlineOpen);
+        document.body.classList.toggle('aifengyue-sidebar-inline-mode', isInlineOpen);
     },
 
     updateUsageDisplay() {
@@ -308,6 +384,7 @@ export const Sidebar = {
         const toggle = document.getElementById('aifengyue-sidebar-toggle');
         if (toggle) toggle.classList.add('hidden');
         this.isOpen = true;
+        this.syncInlineSpaceClass();
     },
 
     close() {
@@ -316,6 +393,7 @@ export const Sidebar = {
         const toggle = document.getElementById('aifengyue-sidebar-toggle');
         if (toggle) toggle.classList.remove('hidden');
         this.isOpen = false;
+        this.syncInlineSpaceClass();
     },
 
     resetState() {
@@ -335,7 +413,7 @@ export const Sidebar = {
             idle: { text: '空闲', color: 'idle' },
             generating: { text: '生成中...', color: 'generating' },
             waiting: { text: '等待操作', color: 'polling' },
-            fetching: { text: '获取验证码...', color: 'polling' },
+            fetching: { text: '执行中...', color: 'polling' },
             success: { text: '成功', color: 'success' },
             error: { text: '错误', color: 'error' },
         };
