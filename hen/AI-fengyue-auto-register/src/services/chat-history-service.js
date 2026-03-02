@@ -67,6 +67,7 @@ function readIndex() {
     const fallback = {
         activeChainByAppId: {},
         conversationToChain: {},
+        conversationTokenByKey: {},
         lastSyncByChainId: {},
     };
 
@@ -84,6 +85,9 @@ function readIndex() {
                 : {},
             conversationToChain: parsed.conversationToChain && typeof parsed.conversationToChain === 'object'
                 ? { ...parsed.conversationToChain }
+                : {},
+            conversationTokenByKey: parsed.conversationTokenByKey && typeof parsed.conversationTokenByKey === 'object'
+                ? { ...parsed.conversationTokenByKey }
                 : {},
             lastSyncByChainId: parsed.lastSyncByChainId && typeof parsed.lastSyncByChainId === 'object'
                 ? { ...parsed.lastSyncByChainId }
@@ -125,6 +129,82 @@ function asDisplayContent(value) {
 
 function looksLikeHtml(value) {
     return /<\/?[a-z][\s\S]*>/i.test(value);
+}
+
+function uniqueTextArray(values) {
+    const output = [];
+    const seen = new Set();
+    for (const value of values || []) {
+        if (typeof value !== 'string') continue;
+        if (!value) continue;
+        if (seen.has(value)) continue;
+        seen.add(value);
+        output.push(value);
+    }
+    return output;
+}
+
+function isPrefixBoundary(rest) {
+    if (!rest) return true;
+    return /^[\s\r\n\u00a0:：,，.。!！?？;；、\-—]/.test(rest);
+}
+
+function trimPrefixConnectors(text) {
+    return String(text || '')
+        .replace(/^[\s\r\n\u00a0]+/, '')
+        .replace(/^[：:，,。.!！？?；;、\-—]+/, '')
+        .replace(/^[\s\r\n\u00a0]+/, '');
+}
+
+function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
+    const source = asDisplayContent(queryText);
+    if (!source) {
+        return {
+            text: '',
+            removedPrefix: '',
+        };
+    }
+
+    const candidates = uniqueTextArray(answerHistory)
+        .sort((a, b) => b.length - a.length);
+
+    for (const candidate of candidates) {
+        if (!candidate) continue;
+        if (!source.startsWith(candidate)) continue;
+
+        const rest = source.slice(candidate.length);
+        if (!isPrefixBoundary(rest)) continue;
+
+        return {
+            text: trimPrefixConnectors(rest),
+            removedPrefix: candidate,
+        };
+    }
+
+    return {
+        text: source,
+        removedPrefix: '',
+    };
+}
+
+function renderMessageBody(text, emptyPlaceholder = '(空)') {
+    const normalized = asDisplayContent(text);
+    if (!normalized) {
+        return `<pre class="af-plain">${escapeHtml(emptyPlaceholder)}</pre>`;
+    }
+    if (looksLikeHtml(normalized)) {
+        return `<div class="markdown-body false" style="font-size:14px;">${normalized}</div>`;
+    }
+    return `<pre class="af-plain">${escapeHtml(normalized)}</pre>`;
+}
+
+function hasMeaningfulText(value) {
+    const normalized = asDisplayContent(value).trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === 'null' || normalized === 'undefined' || normalized === '""' || normalized === "''") {
+        return false;
+    }
+    return true;
 }
 
 function toChainRecord(base, extras = {}) {
@@ -407,6 +487,33 @@ export const ChatHistoryService = {
         });
     },
 
+    async getChainStats(chainId) {
+        const normalizedChainId = normalizeId(chainId);
+        if (!normalizedChainId) {
+            return {
+                messageCount: 0,
+                answerCount: 0,
+            };
+        }
+
+        const records = await this.listMessagesByChain(normalizedChainId);
+        let answerCount = 0;
+        for (const record of records) {
+            const rawMessage = record?.rawMessage && typeof record.rawMessage === 'object'
+                ? record.rawMessage
+                : {};
+            const answer = rawMessage.answer ?? record?.answer ?? '';
+            if (hasMeaningfulText(answer)) {
+                answerCount += 1;
+            }
+        }
+
+        return {
+            messageCount: records.length,
+            answerCount,
+        };
+    },
+
     async buildChainViewerHtml({ appId, chainId }) {
         const normalizedAppId = normalizeId(appId);
         const normalizedChainId = normalizeId(chainId);
@@ -421,9 +528,9 @@ export const ChatHistoryService = {
         ]);
 
         const name = escapeHtml(appMeta?.name || normalizedAppId);
-        const description = appMeta?.description || '';
-        const style = appMeta?.builtInCss || '';
+        const style = String(appMeta?.builtInCss || '');
         const conversationIds = uniqueStringArray(chain?.conversationIds || []);
+        const answerHistory = [];
 
         const messageHtml = records.length > 0
             ? records.map((record, index) => {
@@ -432,32 +539,45 @@ export const ChatHistoryService = {
                     : {};
                 const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? '');
                 const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? '');
-                const renderedAnswer = looksLikeHtml(answerText)
-                    ? answerText
-                    : `<pre class="af-plain">${escapeHtml(answerText || '(空)')}</pre>`;
-                const renderedQuery = `<pre class="af-plain">${escapeHtml(queryText || '(空)')}</pre>`;
-                const rawJson = escapeHtml(JSON.stringify(rawMessage, null, 2));
+                const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
+                const renderedQuery = renderMessageBody(dedupResult.text || '(去重后为空)', '(去重后为空)');
+                const renderedAnswer = renderMessageBody(answerText, '(空回复)');
+                const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
+                const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || '-'));
+                if (answerText) {
+                    answerHistory.push(answerText);
+                }
+                const dedupHint = dedupResult.removedPrefix
+                    ? '<div class="af-dedup-hint">已自动去重历史前缀 answer</div>'
+                    : '';
 
                 return `
-                    <article class="af-msg">
-                        <header class="af-msg-head">
-                            <span>#${index + 1}</span>
-                            <span>${escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt))}</span>
-                            <span>${escapeHtml(String(rawMessage.id || record?.messageId || '-'))}</span>
-                        </header>
-                        <section class="af-msg-block">
-                            <h3>Query</h3>
-                            ${renderedQuery}
-                        </section>
-                        <section class="af-msg-block">
-                            <h3>Answer</h3>
-                            <div class="af-answer-root">${renderedAnswer}</div>
-                        </section>
-                        <details class="af-raw">
-                            <summary>Raw JSON</summary>
-                            <pre>${rawJson}</pre>
-                        </details>
-                    </article>
+                    <div class="group flex mb-2 last:mb-0 af-row-user">
+                        <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 bg-gray-100/90 rounded-xl text-sm af-user-bubble">
+                                ${renderedQuery}
+                            </div>
+                            <div class="af-bubble-meta af-user-meta">
+                                <span>#${index + 1}</span>
+                                <span>${createdAtText}</span>
+                                <span>${messageIdText}</span>
+                            </div>
+                            ${dedupHint}
+                        </div>
+                    </div>
+                    <div class="flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
+                        <div class="chat-answer-container group grow w-0 mr-2 md:mr-4 af-answer-container">
+                            <div class="group relative ml-0">
+                                <div class="relative inline-block px-4 py-3 w-full bg-gray-100/90 rounded-xl text-sm text-gray-900 af-answer-bubble">
+                                    ${renderedAnswer}
+                                </div>
+                                <div class="af-bubble-meta af-answer-meta">
+                                    <span>${createdAtText}</span>
+                                    <span>${messageIdText}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 `;
             }).join('\n')
             : '<div class="af-empty">当前链路暂无消息，点击“手动同步”拉取历史。</div>';
@@ -471,62 +591,110 @@ export const ChatHistoryService = {
     <style>
         :root {
             color-scheme: light;
-            --af-bg: #f3f5f9;
+            --af-bg: #eef2f7;
             --af-card: #ffffff;
-            --af-border: #d8dee9;
-            --af-text: #1d2433;
-            --af-muted: #5f6b82;
-            --af-plain: #f7f9fc;
-            --af-accent: #2563eb;
+            --af-border: #d7dde8;
+            --af-muted: #6b7280;
+            --af-user: #d8fdd2;
+            --af-assistant: #ffffff;
+        }
+        * {
+            box-sizing: border-box;
         }
         body {
             margin: 0;
             font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
             background: var(--af-bg);
-            color: var(--af-text);
-            padding: 16px;
+            color: #1f2937;
         }
-        .af-head {
-            border: 1px solid var(--af-border);
-            background: var(--af-card);
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 14px;
+        #installedBuiltInCss.af-chat-root {
+            position: relative;
+            min-height: 100vh;
+            overflow: hidden;
+            background: var(--af-bg);
         }
-        .af-title {
-            font-size: 18px;
-            font-weight: 700;
-            margin: 0 0 8px;
+        .af-chat-shell {
+            max-width: 840px;
+            margin: 0 auto;
+            padding: 10px 12px 20px;
         }
-        .af-meta {
-            color: var(--af-muted);
-            font-size: 12px;
-            line-height: 1.6;
-        }
-        .af-description {
-            margin-top: 10px;
-            border-top: 1px dashed var(--af-border);
-            padding-top: 10px;
-        }
-        .af-msg {
-            border: 1px solid var(--af-border);
-            background: var(--af-card);
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 12px;
-        }
-        .af-msg-head {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            font-size: 12px;
-            color: var(--af-muted);
+        .af-chat-header {
+            position: sticky;
+            top: 0;
+            z-index: 4;
+            backdrop-filter: blur(8px);
+            background: rgba(238, 242, 247, 0.86);
+            border-bottom: 1px solid var(--af-border);
+            padding: 10px 4px 12px;
             margin-bottom: 10px;
         }
-        .af-msg-block h3 {
-            margin: 10px 0 8px;
-            font-size: 13px;
-            color: var(--af-accent);
+        .af-chat-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin: 0;
+            line-height: 1.3;
+        }
+        .af-chat-sub {
+            margin-top: 6px;
+            color: var(--af-muted);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .af-row-user {
+            justify-content: flex-end;
+        }
+        .af-row-answer {
+            justify-content: flex-start;
+        }
+        .af-bubble-wrap {
+            max-width: 86%;
+            width: fit-content;
+        }
+        .af-answer-container {
+            max-width: 86%;
+            width: auto !important;
+            flex-grow: 0 !important;
+        }
+        .af-user-bubble {
+            background: var(--af-user) !important;
+            border: 1px solid rgba(52, 211, 153, 0.26);
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+            overflow-x: auto;
+        }
+        .af-answer-bubble {
+            background: var(--af-assistant) !important;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+            overflow-x: auto;
+        }
+        .af-bubble-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 5px;
+            color: var(--af-muted);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .af-user-meta {
+            justify-content: flex-end;
+            text-align: right;
+        }
+        .af-answer-meta {
+            justify-content: flex-start;
+        }
+        .af-dedup-hint {
+            margin-top: 2px;
+            font-size: 11px;
+            color: #0f766e;
+            text-align: right;
         }
         .af-plain {
             margin: 0;
@@ -534,35 +702,14 @@ export const ChatHistoryService = {
             word-break: break-word;
             border: 1px solid var(--af-border);
             border-radius: 8px;
-            background: var(--af-plain);
             padding: 10px;
-            font-size: 12px;
-            line-height: 1.6;
+            font-size: 13px;
+            line-height: 1.65;
+            background: rgba(255, 255, 255, 0.72);
         }
-        .af-answer-root {
-            border: 1px solid var(--af-border);
-            border-radius: 8px;
-            background: #fff;
-            padding: 10px;
-            overflow-x: auto;
-        }
-        .af-raw {
-            margin-top: 10px;
-        }
-        .af-raw summary {
-            cursor: pointer;
-            color: var(--af-muted);
-            font-size: 12px;
-        }
-        .af-raw pre {
-            margin-top: 8px;
-            white-space: pre-wrap;
+        .markdown-body {
+            overflow-wrap: anywhere;
             word-break: break-word;
-            font-size: 11px;
-            background: #101522;
-            color: #d8e2ff;
-            border-radius: 8px;
-            padding: 10px;
         }
         .af-empty {
             border: 1px dashed var(--af-border);
@@ -576,17 +723,22 @@ export const ChatHistoryService = {
     </style>
 </head>
 <body>
-    <section class="af-head">
-        <h1 class="af-title">${name} - 本地会话链</h1>
-        <div class="af-meta">
-            <div>appId: ${escapeHtml(normalizedAppId)}</div>
-            <div>chainId: ${escapeHtml(normalizedChainId)}</div>
-            <div>conversationIds: ${escapeHtml(conversationIds.join(', ') || '-')}</div>
-            <div>消息数: ${records.length}</div>
+    <div id="installedBuiltInCss" class="relative w-full h-full overflow-hidden af-chat-root">
+        <div class="af-chat-shell">
+            <div class="af-chat-header">
+                <h1 class="af-chat-title">${name}</h1>
+                <div class="af-chat-sub">
+                    <div>appId: ${escapeHtml(normalizedAppId)}</div>
+                    <div>chainId: ${escapeHtml(normalizedChainId)}</div>
+                    <div>conversationIds: ${escapeHtml(conversationIds.join(', ') || '-')}</div>
+                    <div>消息数: ${records.length}</div>
+                </div>
+            </div>
+            <div class="overflow-y-auto w-full h-full chat-container mx-auto">
+                ${messageHtml}
+            </div>
         </div>
-        <div class="af-description">${description || ''}</div>
-    </section>
-    ${messageHtml}
+    </div>
 </body>
 </html>`;
     },

@@ -433,13 +433,13 @@ const SIDEBAR_STYLES = `
         font-weight: 500;
     }
     .aifengyue-input-group input,
-    .aifengyue-input-group select {
+    .aifengyue-input-group select,
+    .aifengyue-input-group textarea {
         width: 100%;
-        height: 36px;
         box-sizing: border-box;
         border: 1px solid var(--af-input-border);
         border-radius: var(--af-radius-sm);
-        padding: 0 10px;
+        padding: 8px 10px;
         font-size: 13px;
         font-family: var(--af-font);
         color: var(--af-text);
@@ -447,12 +447,28 @@ const SIDEBAR_STYLES = `
         outline: none;
         transition: border-color 0.2s, box-shadow 0.2s;
     }
+    .aifengyue-input-group input,
+    .aifengyue-input-group select {
+        height: 36px;
+        padding: 0 10px;
+    }
+    .aifengyue-input-group textarea {
+        min-height: 96px;
+        max-height: 320px;
+        line-height: 1.5;
+        resize: vertical;
+    }
     .aifengyue-input-group input:focus,
-    .aifengyue-input-group select:focus {
+    .aifengyue-input-group select:focus,
+    .aifengyue-input-group textarea:focus {
         border-color: var(--af-primary);
         box-shadow: 0 0 0 3px var(--af-primary-glow);
     }
     .aifengyue-input-group input::placeholder {
+        color: var(--af-muted);
+        opacity: 0.6;
+    }
+    .aifengyue-input-group textarea::placeholder {
         color: var(--af-muted);
         opacity: 0.6;
     }
@@ -562,16 +578,98 @@ const SIDEBAR_STYLES = `
     /* --- 会话面板 --- */
     .aifengyue-conversation-viewer {
         width: 100%;
-        min-height: 360px;
+        min-height: 520px;
         border: 1px solid var(--af-border);
         border-radius: 10px;
         background: #fff;
     }
     #aifengyue-conversation-chain:disabled,
     #aifengyue-conversation-refresh:disabled,
-    #aifengyue-conversation-sync:disabled {
+    #aifengyue-conversation-sync:disabled,
+    #aifengyue-conversation-open-preview:disabled {
         opacity: 0.55;
         cursor: not-allowed;
+    }
+
+    /* --- 会话预览浮层 --- */
+    #aifengyue-conversation-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: none;
+    }
+    #aifengyue-conversation-modal.open {
+        display: block;
+    }
+    .aifengyue-conv-modal-backdrop {
+        width: 100%;
+        height: 100%;
+        background: rgba(15, 23, 42, 0.56);
+        backdrop-filter: blur(2px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .aifengyue-conv-modal-content {
+        width: min(1200px, calc(100vw - 40px));
+        min-width: 700px;
+        height: min(86vh, 980px);
+        border-radius: 12px;
+        background: #f7f8fb;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        box-shadow: 0 18px 48px rgba(2, 6, 23, 0.42);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .aifengyue-conv-modal-head {
+        height: 46px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px 0 14px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(255, 255, 255, 0.92);
+        flex-shrink: 0;
+    }
+    .aifengyue-conv-modal-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #1f2937;
+    }
+    .aifengyue-conv-modal-close {
+        width: 30px;
+        height: 30px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #fff;
+        color: #374151;
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+    }
+    .aifengyue-conv-modal-close:hover {
+        border-color: #9ca3af;
+        background: #f9fafb;
+    }
+    #aifengyue-conversation-modal .aifengyue-conversation-viewer {
+        border: none;
+        border-radius: 0;
+        min-height: 0;
+        height: 100%;
+        width: 100%;
+        background: #fff;
+    }
+    @media (max-width: 760px) {
+        .aifengyue-conv-modal-content {
+            min-width: 0;
+            width: calc(100vw - 16px);
+            height: calc(100vh - 16px);
+        }
+        .aifengyue-conv-modal-backdrop {
+            padding: 8px;
+        }
     }
 
     /* --- 配额统计 --- */

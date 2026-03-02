@@ -495,6 +495,67 @@
 	function looksLikeHtml(value) {
 		return /<\/?[a-z][\s\S]*>/i.test(value);
 	}
+	function uniqueTextArray(values) {
+		const output = [];
+		const seen = new Set();
+		for (const value of values || []) {
+			if (typeof value !== "string") continue;
+			if (!value) continue;
+			if (seen.has(value)) continue;
+			seen.add(value);
+			output.push(value);
+		}
+		return output;
+	}
+	function isPrefixBoundary(rest) {
+		if (!rest) return true;
+		return /^[\s\r\n\u00a0:：,，.。!！?？;；、\-—]/.test(rest);
+	}
+	function trimPrefixConnectors(text) {
+		return String(text || "").replace(/^[\s\r\n\u00a0]+/, "").replace(/^[：:，,。.!！？?；;、\-—]+/, "").replace(/^[\s\r\n\u00a0]+/, "");
+	}
+	function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
+		const source = asDisplayContent(queryText);
+		if (!source) {
+			return {
+				text: "",
+				removedPrefix: ""
+			};
+		}
+		const candidates = uniqueTextArray(answerHistory).sort((a, b) => b.length - a.length);
+		for (const candidate of candidates) {
+			if (!candidate) continue;
+			if (!source.startsWith(candidate)) continue;
+			const rest = source.slice(candidate.length);
+			if (!isPrefixBoundary(rest)) continue;
+			return {
+				text: trimPrefixConnectors(rest),
+				removedPrefix: candidate
+			};
+		}
+		return {
+			text: source,
+			removedPrefix: ""
+		};
+	}
+	function renderMessageBody(text, emptyPlaceholder = "(空)") {
+		const normalized = asDisplayContent(text);
+		if (!normalized) {
+			return `<pre class="af-plain">${escapeHtml(emptyPlaceholder)}</pre>`;
+		}
+		if (looksLikeHtml(normalized)) {
+			return `<div class="markdown-body false" style="font-size:14px;">${normalized}</div>`;
+		}
+		return `<pre class="af-plain">${escapeHtml(normalized)}</pre>`;
+	}
+	function hasMeaningfulText(value) {
+		const normalized = asDisplayContent(value).trim().toLowerCase();
+		if (!normalized) return false;
+		if (normalized === "null" || normalized === "undefined" || normalized === "\"\"" || normalized === "''") {
+			return false;
+		}
+		return true;
+	}
 	function toChainRecord(base, extras = {}) {
 		return {
 			chainId: normalizeId(base.chainId),
@@ -733,6 +794,28 @@
 				return String(a?.storeKey || "").localeCompare(String(b?.storeKey || ""));
 			});
 		},
+		async getChainStats(chainId) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) {
+				return {
+					messageCount: 0,
+					answerCount: 0
+				};
+			}
+			const records = await this.listMessagesByChain(normalizedChainId);
+			let answerCount = 0;
+			for (const record of records) {
+				const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+				const answer = rawMessage.answer ?? record?.answer ?? "";
+				if (hasMeaningfulText(answer)) {
+					answerCount += 1;
+				}
+			}
+			return {
+				messageCount: records.length,
+				answerCount
+			};
+		},
 		async buildChainViewerHtml({ appId, chainId }) {
 			const normalizedAppId = normalizeId(appId);
 			const normalizedChainId = normalizeId(chainId);
@@ -745,36 +828,49 @@
 				this.listMessagesByChain(normalizedChainId)
 			]);
 			const name = escapeHtml(appMeta?.name || normalizedAppId);
-			const description = appMeta?.description || "";
-			const style = appMeta?.builtInCss || "";
+			const style = String(appMeta?.builtInCss || "");
 			const conversationIds = uniqueStringArray(chain?.conversationIds || []);
+			const answerHistory = [];
 			const messageHtml = records.length > 0 ? records.map((record, index) => {
 				const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
 				const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? "");
 				const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? "");
-				const renderedAnswer = looksLikeHtml(answerText) ? answerText : `<pre class="af-plain">${escapeHtml(answerText || "(空)")}</pre>`;
-				const renderedQuery = `<pre class="af-plain">${escapeHtml(queryText || "(空)")}</pre>`;
-				const rawJson = escapeHtml(JSON.stringify(rawMessage, null, 2));
+				const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
+				const renderedQuery = renderMessageBody(dedupResult.text || "(去重后为空)", "(去重后为空)");
+				const renderedAnswer = renderMessageBody(answerText, "(空回复)");
+				const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
+				const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || "-"));
+				if (answerText) {
+					answerHistory.push(answerText);
+				}
+				const dedupHint = dedupResult.removedPrefix ? "<div class=\"af-dedup-hint\">已自动去重历史前缀 answer</div>" : "";
 				return `
-                    <article class="af-msg">
-                        <header class="af-msg-head">
-                            <span>#${index + 1}</span>
-                            <span>${escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt))}</span>
-                            <span>${escapeHtml(String(rawMessage.id || record?.messageId || "-"))}</span>
-                        </header>
-                        <section class="af-msg-block">
-                            <h3>Query</h3>
-                            ${renderedQuery}
-                        </section>
-                        <section class="af-msg-block">
-                            <h3>Answer</h3>
-                            <div class="af-answer-root">${renderedAnswer}</div>
-                        </section>
-                        <details class="af-raw">
-                            <summary>Raw JSON</summary>
-                            <pre>${rawJson}</pre>
-                        </details>
-                    </article>
+                    <div class="group flex mb-2 last:mb-0 af-row-user">
+                        <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 bg-gray-100/90 rounded-xl text-sm af-user-bubble">
+                                ${renderedQuery}
+                            </div>
+                            <div class="af-bubble-meta af-user-meta">
+                                <span>#${index + 1}</span>
+                                <span>${createdAtText}</span>
+                                <span>${messageIdText}</span>
+                            </div>
+                            ${dedupHint}
+                        </div>
+                    </div>
+                    <div class="flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
+                        <div class="chat-answer-container group grow w-0 mr-2 md:mr-4 af-answer-container">
+                            <div class="group relative ml-0">
+                                <div class="relative inline-block px-4 py-3 w-full bg-gray-100/90 rounded-xl text-sm text-gray-900 af-answer-bubble">
+                                    ${renderedAnswer}
+                                </div>
+                                <div class="af-bubble-meta af-answer-meta">
+                                    <span>${createdAtText}</span>
+                                    <span>${messageIdText}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 `;
 			}).join("\n") : "<div class=\"af-empty\">当前链路暂无消息，点击“手动同步”拉取历史。</div>";
 			return `<!doctype html>
@@ -786,62 +882,110 @@
     <style>
         :root {
             color-scheme: light;
-            --af-bg: #f3f5f9;
+            --af-bg: #eef2f7;
             --af-card: #ffffff;
-            --af-border: #d8dee9;
-            --af-text: #1d2433;
-            --af-muted: #5f6b82;
-            --af-plain: #f7f9fc;
-            --af-accent: #2563eb;
+            --af-border: #d7dde8;
+            --af-muted: #6b7280;
+            --af-user: #d8fdd2;
+            --af-assistant: #ffffff;
+        }
+        * {
+            box-sizing: border-box;
         }
         body {
             margin: 0;
             font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
             background: var(--af-bg);
-            color: var(--af-text);
-            padding: 16px;
+            color: #1f2937;
         }
-        .af-head {
-            border: 1px solid var(--af-border);
-            background: var(--af-card);
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 14px;
+        #installedBuiltInCss.af-chat-root {
+            position: relative;
+            min-height: 100vh;
+            overflow: hidden;
+            background: var(--af-bg);
         }
-        .af-title {
-            font-size: 18px;
-            font-weight: 700;
-            margin: 0 0 8px;
+        .af-chat-shell {
+            max-width: 840px;
+            margin: 0 auto;
+            padding: 10px 12px 20px;
         }
-        .af-meta {
-            color: var(--af-muted);
-            font-size: 12px;
-            line-height: 1.6;
-        }
-        .af-description {
-            margin-top: 10px;
-            border-top: 1px dashed var(--af-border);
-            padding-top: 10px;
-        }
-        .af-msg {
-            border: 1px solid var(--af-border);
-            background: var(--af-card);
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 12px;
-        }
-        .af-msg-head {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            font-size: 12px;
-            color: var(--af-muted);
+        .af-chat-header {
+            position: sticky;
+            top: 0;
+            z-index: 4;
+            backdrop-filter: blur(8px);
+            background: rgba(238, 242, 247, 0.86);
+            border-bottom: 1px solid var(--af-border);
+            padding: 10px 4px 12px;
             margin-bottom: 10px;
         }
-        .af-msg-block h3 {
-            margin: 10px 0 8px;
-            font-size: 13px;
-            color: var(--af-accent);
+        .af-chat-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin: 0;
+            line-height: 1.3;
+        }
+        .af-chat-sub {
+            margin-top: 6px;
+            color: var(--af-muted);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .af-row-user {
+            justify-content: flex-end;
+        }
+        .af-row-answer {
+            justify-content: flex-start;
+        }
+        .af-bubble-wrap {
+            max-width: 86%;
+            width: fit-content;
+        }
+        .af-answer-container {
+            max-width: 86%;
+            width: auto !important;
+            flex-grow: 0 !important;
+        }
+        .af-user-bubble {
+            background: var(--af-user) !important;
+            border: 1px solid rgba(52, 211, 153, 0.26);
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+            overflow-x: auto;
+        }
+        .af-answer-bubble {
+            background: var(--af-assistant) !important;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+            overflow-x: auto;
+        }
+        .af-bubble-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 5px;
+            color: var(--af-muted);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .af-user-meta {
+            justify-content: flex-end;
+            text-align: right;
+        }
+        .af-answer-meta {
+            justify-content: flex-start;
+        }
+        .af-dedup-hint {
+            margin-top: 2px;
+            font-size: 11px;
+            color: #0f766e;
+            text-align: right;
         }
         .af-plain {
             margin: 0;
@@ -849,35 +993,14 @@
             word-break: break-word;
             border: 1px solid var(--af-border);
             border-radius: 8px;
-            background: var(--af-plain);
             padding: 10px;
-            font-size: 12px;
-            line-height: 1.6;
+            font-size: 13px;
+            line-height: 1.65;
+            background: rgba(255, 255, 255, 0.72);
         }
-        .af-answer-root {
-            border: 1px solid var(--af-border);
-            border-radius: 8px;
-            background: #fff;
-            padding: 10px;
-            overflow-x: auto;
-        }
-        .af-raw {
-            margin-top: 10px;
-        }
-        .af-raw summary {
-            cursor: pointer;
-            color: var(--af-muted);
-            font-size: 12px;
-        }
-        .af-raw pre {
-            margin-top: 8px;
-            white-space: pre-wrap;
+        .markdown-body {
+            overflow-wrap: anywhere;
             word-break: break-word;
-            font-size: 11px;
-            background: #101522;
-            color: #d8e2ff;
-            border-radius: 8px;
-            padding: 10px;
         }
         .af-empty {
             border: 1px dashed var(--af-border);
@@ -891,17 +1014,22 @@
     </style>
 </head>
 <body>
-    <section class="af-head">
-        <h1 class="af-title">${name} - 本地会话链</h1>
-        <div class="af-meta">
-            <div>appId: ${escapeHtml(normalizedAppId)}</div>
-            <div>chainId: ${escapeHtml(normalizedChainId)}</div>
-            <div>conversationIds: ${escapeHtml(conversationIds.join(", ") || "-")}</div>
-            <div>消息数: ${records.length}</div>
+    <div id="installedBuiltInCss" class="relative w-full h-full overflow-hidden af-chat-root">
+        <div class="af-chat-shell">
+            <div class="af-chat-header">
+                <h1 class="af-chat-title">${name}</h1>
+                <div class="af-chat-sub">
+                    <div>appId: ${escapeHtml(normalizedAppId)}</div>
+                    <div>chainId: ${escapeHtml(normalizedChainId)}</div>
+                    <div>conversationIds: ${escapeHtml(conversationIds.join(", ") || "-")}</div>
+                    <div>消息数: ${records.length}</div>
+                </div>
+            </div>
+            <div class="overflow-y-auto w-full h-full chat-container mx-auto">
+                ${messageHtml}
+            </div>
         </div>
-        <div class="af-description">${description || ""}</div>
-    </section>
-    ${messageHtml}
+    </div>
 </body>
 </html>`;
 		}
@@ -929,6 +1057,9 @@
 	}
 	const Sidebar = {
 		element: null,
+		conversationModal: null,
+		conversationModalOpen: false,
+		conversationModalEscHandler: null,
 		isOpen: false,
 		layoutMode: "inline",
 		activeTab: "register",
@@ -947,6 +1078,7 @@
 			this.layoutMode = this.getLayoutMode();
 			this.theme = this.getTheme();
 			this.createSidebar();
+			this.createConversationModal();
 			this.createToggleButton();
 			this.loadSavedData();
 			this.applyLayoutModeClass();
@@ -1034,7 +1166,7 @@
                         </button>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <input type="text" id="aifengyue-switch-text" placeholder="输入拼接到 query 的附加文本">
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -1093,7 +1225,12 @@
                     </div>
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">会话预览</div>
-                        <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-open-preview">
+                            🔍 打开悬浮预览
+                        </button>
+                        <div class="aifengyue-hint">
+                            预览将以悬浮窗口打开，按 ESC 可关闭。
+                        </div>
                     </div>
                 </div>
 
@@ -1144,6 +1281,52 @@
         `;
 			document.body.appendChild(this.element);
 			this.bindEvents();
+		},
+		createConversationModal() {
+			const existing = document.getElementById("aifengyue-conversation-modal");
+			if (existing) {
+				existing.remove();
+			}
+			const modal = document.createElement("div");
+			modal.id = "aifengyue-conversation-modal";
+			modal.innerHTML = `
+            <div class="aifengyue-conv-modal-backdrop">
+                <div class="aifengyue-conv-modal-content" role="dialog" aria-modal="true" aria-label="会话预览">
+                    <div class="aifengyue-conv-modal-head">
+                        <div class="aifengyue-conv-modal-title">本地会话预览</div>
+                        <button id="aifengyue-conversation-modal-close" class="aifengyue-conv-modal-close" title="关闭">✕</button>
+                    </div>
+                    <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
+                </div>
+            </div>
+        `;
+			document.body.appendChild(modal);
+			this.conversationModal = modal;
+			this.conversationModalOpen = false;
+			const closeBtn = modal.querySelector("#aifengyue-conversation-modal-close");
+			closeBtn?.addEventListener("click", () => this.closeConversationModal());
+			if (this.conversationModalEscHandler) {
+				document.removeEventListener("keydown", this.conversationModalEscHandler);
+			}
+			this.conversationModalEscHandler = (event) => {
+				if (event.key === "Escape" && this.conversationModalOpen) {
+					this.closeConversationModal();
+				}
+			};
+			document.addEventListener("keydown", this.conversationModalEscHandler);
+		},
+		openConversationModal() {
+			if (!this.conversationModal) {
+				this.createConversationModal();
+			}
+			if (!this.conversationModal) return;
+			this.conversationModal.classList.add("open");
+			this.conversationModalOpen = true;
+		},
+		closeConversationModal() {
+			if (!this.conversationModal) return;
+			this.conversationModal.classList.remove("open");
+			this.conversationModalOpen = false;
 		},
 		createToggleButton() {
 			const existing = document.getElementById("aifengyue-sidebar-toggle");
@@ -1264,6 +1447,10 @@
 			this.element.querySelector("#aifengyue-conversation-sync").addEventListener("click", async () => {
 				await this.syncConversationPanel();
 			});
+			this.element.querySelector("#aifengyue-conversation-open-preview").addEventListener("click", async () => {
+				this.openConversationModal();
+				await this.renderConversationViewer();
+			});
 		},
 		loadSavedData() {
 			const apiKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, "");
@@ -1306,12 +1493,15 @@
 			const chainSelect = this.element?.querySelector("#aifengyue-conversation-chain");
 			const refreshBtn = this.element?.querySelector("#aifengyue-conversation-refresh");
 			const syncBtn = this.element?.querySelector("#aifengyue-conversation-sync");
+			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
 			if (chainSelect) chainSelect.disabled = !!busy;
 			if (refreshBtn) refreshBtn.disabled = !!busy;
 			if (syncBtn) syncBtn.disabled = !!busy;
+			if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
 		},
 		renderConversationSelectOptions() {
 			const select = this.element?.querySelector("#aifengyue-conversation-chain");
+			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
 			if (!select) return;
 			select.innerHTML = "";
 			if (!this.conversation.chains.length) {
@@ -1320,23 +1510,32 @@
 				option.textContent = "暂无链路";
 				select.appendChild(option);
 				select.value = "";
+				if (openPreviewBtn) openPreviewBtn.disabled = true;
 				return;
 			}
 			this.conversation.chains.forEach((chain, index) => {
 				const option = document.createElement("option");
 				option.value = chain.chainId;
 				const conversationCount = Array.isArray(chain.conversationIds) ? chain.conversationIds.length : 0;
+				const messageCount = Number(chain.messageCount || 0);
+				const answerCount = Number(chain.answerCount || 0);
 				const updatedAt = chain.updatedAt ? new Date(chain.updatedAt).toLocaleString() : "-";
-				option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${updatedAt}`;
+				option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${answerCount}答复 | ${messageCount}消息 | ${updatedAt}`;
 				select.appendChild(option);
 			});
 			if (this.conversation.activeChainId) {
 				select.value = this.conversation.activeChainId;
 			}
+			if (openPreviewBtn) {
+				openPreviewBtn.disabled = false;
+			}
 		},
 		async renderConversationViewer() {
-			const viewer = this.element?.querySelector("#aifengyue-conversation-viewer");
-			if (!viewer) return;
+			const viewer = document.getElementById("aifengyue-conversation-viewer");
+			if (!viewer) {
+				console.warn("[AI风月注册助手][CONV] 未找到会话预览 iframe");
+				return;
+			}
 			if (!this.conversation.appId || !this.conversation.activeChainId) {
 				viewer.srcdoc = "<html><body><p style=\"font-family:Segoe UI;padding:16px;\">暂无可展示会话。</p></body></html>";
 				return;
@@ -2846,21 +3045,6 @@
 				queryLength: query.length
 			});
 			logDebug(runCtx, "SWITCH_CHAT", "chat-messages 请求体", body);
-			let baselineConversationIds = [];
-			try {
-				const baselineList = await this.fetchInstalledConversations({
-					appId,
-					token,
-					runCtx,
-					step: "SWITCH_LIST_CONVERSATIONS_BASELINE",
-					limit: 500,
-					pinned: false,
-					maxAttempts: 1
-				});
-				baselineConversationIds = baselineList.map((item) => typeof item?.id === "string" ? item.id.trim() : "").filter(Boolean);
-			} catch (error) {
-				logWarn(runCtx, "SWITCH_CHAT", "读取会话基线列表失败，将继续请求 chat-messages", { message: error?.message || String(error) });
-			}
 			const responseMeta = await this.runWithObjectiveRetries((attempt, attempts) => {
 				if (attempt > 1) {
 					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 重试中 (${attempt}/${attempts})`);
@@ -2882,19 +3066,7 @@
 			const isSuccess = hasStatus && status >= 200 && status < 300;
 			const statusText = hasStatus ? `HTTP ${status}` : "未知状态";
 			let conversationId = typeof responseMeta?.conversationId === "string" ? responseMeta.conversationId.trim() : "";
-			let source = conversationId ? "sse" : "none";
-			if (!conversationId) {
-				const polled = await this.pollConversationIdFromConversations({
-					appId,
-					token,
-					runCtx,
-					baselineConversationIds,
-					maxAttempts: 8,
-					intervalMs: 650
-				});
-				conversationId = polled.conversationId;
-				source = polled.source;
-			}
+			let source = conversationId ? "sse-conversation-id" : "sse-first-chunk";
 			logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到响应（${statusText}）`, {
 				...responseMeta,
 				conversationId: conversationId || null,
@@ -2910,13 +3082,46 @@
 		sendChatMessagesOnce({ token, url, body, runCtx }) {
 			return new Promise((resolve, reject) => {
 				let settled = false;
-				let fallbackTimer = null;
+				const requestStartedAt = Date.now();
+				let hardTimeoutTimer = null;
 				let capturedConversationId = "";
-				const clearFallbackTimer = () => {
-					if (fallbackTimer) {
-						clearTimeout(fallbackTimer);
-						fallbackTimer = null;
+				let requestController = null;
+				let abortedByScript = false;
+				const elapsedMs = () => Date.now() - requestStartedAt;
+				const clearTimers = () => {
+					if (hardTimeoutTimer) {
+						clearTimeout(hardTimeoutTimer);
+						hardTimeoutTimer = null;
 					}
+				};
+				const abortRequest = (reason) => {
+					if (!requestController || typeof requestController.abort !== "function") {
+						return;
+					}
+					try {
+						abortedByScript = true;
+						requestController.abort();
+						logInfo(runCtx, "SWITCH_CHAT", `已主动中止 chat-messages SSE: ${reason || "no-reason"}`);
+					} catch (error) {
+						logWarn(runCtx, "SWITCH_CHAT", "主动中止 chat-messages SSE 失败", {
+							reason: reason || "no-reason",
+							message: error?.message || String(error)
+						});
+					} finally {
+						requestController = null;
+					}
+				};
+				const callbackMeta = (response) => {
+					const status = Number(response?.status || 0);
+					const readyState = Number(response?.readyState || 0);
+					const responseText = typeof response?.responseText === "string" ? response.responseText : "";
+					return {
+						status,
+						readyState,
+						textLength: responseText.length,
+						responseText,
+						elapsedMs: elapsedMs()
+					};
 				};
 				const tryCaptureConversationId = (rawText, trigger) => {
 					if (capturedConversationId) return capturedConversationId;
@@ -2929,14 +3134,30 @@
 				const finish = (trigger, responseMeta = {}) => {
 					if (settled) return;
 					settled = true;
-					clearFallbackTimer();
+					clearTimers();
+					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已结束: ${trigger}`, {
+						elapsedMs: elapsedMs(),
+						...responseMeta,
+						conversationId: capturedConversationId || responseMeta?.conversationId || null
+					});
 					resolve({
 						trigger,
 						...responseMeta,
 						conversationId: capturedConversationId || responseMeta?.conversationId || ""
 					});
 				};
-				gmXmlHttpRequest({
+				hardTimeoutTimer = setTimeout(() => {
+					if (settled) return;
+					logWarn(runCtx, "SWITCH_CHAT", "chat-messages 8s 兜底超时，强制结束并刷新后续流程");
+					finish("failsafe-timeout", {
+						status: 0,
+						readyState: 0,
+						textLength: 0,
+						elapsedMs: elapsedMs()
+					});
+					abortRequest("failsafe-timeout");
+				}, 8e3);
+				requestController = gmXmlHttpRequest({
 					method: "POST",
 					url,
 					headers: {
@@ -2947,54 +3168,92 @@
 					data: JSON.stringify(body),
 					timeout: 2e4,
 					anonymous: true,
-					onprogress: (response) => {
+					onreadystatechange: (response) => {
 						if (settled) return;
-						const status = Number(response?.status || 0);
-						const responseText = response?.responseText || "";
-						const textLength = responseText.length;
-						tryCaptureConversationId(responseText, "onprogress");
-						if (capturedConversationId) {
-							finish("onprogress", {
-								status,
-								textLength,
+						const meta = callbackMeta(response);
+						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onreadystatechange", {
+							status: meta.status,
+							readyState: meta.readyState,
+							textLength: meta.textLength,
+							elapsedMs: meta.elapsedMs
+						});
+						if (meta.readyState >= 2) {
+							tryCaptureConversationId(meta.responseText, "onreadystatechange");
+							finish(`onreadystatechange-${meta.readyState}`, {
+								status: meta.status,
+								readyState: meta.readyState,
+								textLength: meta.textLength,
+								elapsedMs: meta.elapsedMs,
 								conversationId: capturedConversationId
 							});
-							return;
+							abortRequest(capturedConversationId ? "conversation-id-captured-readyState" : `readyState-${meta.readyState}`);
 						}
-						if (textLength > 0 && !fallbackTimer) {
-							fallbackTimer = setTimeout(() => {
-								finish("onprogress-fallback", {
-									status,
-									textLength
-								});
-							}, 1200);
-						}
+					},
+					onprogress: (response) => {
+						if (settled) return;
+						const meta = callbackMeta(response);
+						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onprogress", {
+							status: meta.status,
+							readyState: meta.readyState,
+							textLength: meta.textLength,
+							elapsedMs: meta.elapsedMs
+						});
+						tryCaptureConversationId(meta.responseText, "onprogress");
+						finish("onprogress-first-chunk", {
+							status: meta.status,
+							readyState: meta.readyState,
+							textLength: meta.textLength,
+							elapsedMs: meta.elapsedMs,
+							conversationId: capturedConversationId
+						});
+						abortRequest(capturedConversationId ? "conversation-id-captured" : "first-stream-chunk");
 					},
 					onload: (response) => {
 						if (settled) return;
-						const status = Number(response?.status || 0);
-						const responseText = response?.responseText || "";
-						const textLength = responseText.length;
-						tryCaptureConversationId(responseText, "onload");
+						const meta = callbackMeta(response);
+						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onload", {
+							status: meta.status,
+							readyState: meta.readyState,
+							textLength: meta.textLength,
+							elapsedMs: meta.elapsedMs
+						});
+						tryCaptureConversationId(meta.responseText, "onload");
 						finish("onload", {
-							status,
-							textLength,
+							status: meta.status,
+							readyState: meta.readyState,
+							textLength: meta.textLength,
+							elapsedMs: meta.elapsedMs,
 							conversationId: capturedConversationId
 						});
 					},
 					onerror: (error) => {
 						if (settled) return;
-						clearFallbackTimer();
+						clearTimers();
+						logWarn(runCtx, "SWITCH_CHAT", "chat-messages onerror", {
+							status: Number(error?.status || 0),
+							message: error?.error || "network-error",
+							elapsedMs: elapsedMs()
+						});
 						reject(withHttpStatusError(error?.error || "chat-messages 网络请求失败", Number(error?.status || 0)));
 					},
 					ontimeout: () => {
 						if (settled) return;
-						clearFallbackTimer();
+						clearTimers();
+						logWarn(runCtx, "SWITCH_CHAT", "chat-messages ontimeout", { elapsedMs: elapsedMs() });
 						reject(new Error("chat-messages 请求超时"));
 					},
 					onabort: () => {
 						if (settled) return;
-						clearFallbackTimer();
+						clearTimers();
+						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onabort", {
+							abortedByScript,
+							elapsedMs: elapsedMs(),
+							conversationId: capturedConversationId || null
+						});
+						if (abortedByScript) {
+							finish("onabort-by-script", { conversationId: capturedConversationId });
+							return;
+						}
 						reject(new Error("chat-messages 请求被中止"));
 					}
 				});
@@ -3174,14 +3433,17 @@
 				const newConversationId = typeof chatResult?.conversationId === "string" ? chatResult.conversationId.trim() : "";
 				if (newConversationId) {
 					this.upsertConversationIdInfo(appId, newConversationId, runCtx);
-					const newBinding = await ChatHistoryService.bindConversation({
+					ChatHistoryService.bindConversation({
 						appId,
 						conversationId: newConversationId,
 						previousConversationId: conversationId,
 						preferredChainId: activeChainId
+					}).then((newBinding) => {
+						activeChainId = newBinding.chainId;
+						ChatHistoryService.setActiveChainId(appId, activeChainId);
+					}).catch((bindError) => {
+						logWarn(runCtx, "SWITCH_CHAT", "刷新前写入会话链失败（不影响立即刷新）", { message: bindError?.message || String(bindError) });
 					});
-					activeChainId = newBinding.chainId;
-					ChatHistoryService.setActiveChainId(appId, activeChainId);
 				}
 				const sourceText = chatResult?.source ? `，来源 ${chatResult.source}` : "";
 				const statusText = Number.isFinite(Number(chatResult?.status)) ? `HTTP ${Number(chatResult.status)}` : "未知状态";
@@ -3196,7 +3458,7 @@
 				}
 				setTimeout(() => {
 					window.location.reload();
-				}, 800);
+				}, 120);
 			} catch (error) {
 				const message = `更换账号失败: ${error.message}`;
 				Sidebar.updateState({
@@ -3233,14 +3495,21 @@
 				});
 			}
 			const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
+			const chainsWithStats = await Promise.all(chains.map(async (chain) => {
+				const stats = await ChatHistoryService.getChainStats(chain.chainId);
+				return {
+					...chain,
+					...stats
+				};
+			}));
 			let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
-			if (!activeChainId && chains[0]?.chainId) {
-				activeChainId = chains[0].chainId;
+			if (!activeChainId && chainsWithStats[0]?.chainId) {
+				activeChainId = chainsWithStats[0].chainId;
 				ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
 			}
 			return {
 				appId: resolvedAppId,
-				chains,
+				chains: chainsWithStats,
 				activeChainId,
 				currentConversationId
 			};
@@ -4436,13 +4705,13 @@
         font-weight: 500;
     }
     .aifengyue-input-group input,
-    .aifengyue-input-group select {
+    .aifengyue-input-group select,
+    .aifengyue-input-group textarea {
         width: 100%;
-        height: 36px;
         box-sizing: border-box;
         border: 1px solid var(--af-input-border);
         border-radius: var(--af-radius-sm);
-        padding: 0 10px;
+        padding: 8px 10px;
         font-size: 13px;
         font-family: var(--af-font);
         color: var(--af-text);
@@ -4450,12 +4719,28 @@
         outline: none;
         transition: border-color 0.2s, box-shadow 0.2s;
     }
+    .aifengyue-input-group input,
+    .aifengyue-input-group select {
+        height: 36px;
+        padding: 0 10px;
+    }
+    .aifengyue-input-group textarea {
+        min-height: 96px;
+        max-height: 320px;
+        line-height: 1.5;
+        resize: vertical;
+    }
     .aifengyue-input-group input:focus,
-    .aifengyue-input-group select:focus {
+    .aifengyue-input-group select:focus,
+    .aifengyue-input-group textarea:focus {
         border-color: var(--af-primary);
         box-shadow: 0 0 0 3px var(--af-primary-glow);
     }
     .aifengyue-input-group input::placeholder {
+        color: var(--af-muted);
+        opacity: 0.6;
+    }
+    .aifengyue-input-group textarea::placeholder {
         color: var(--af-muted);
         opacity: 0.6;
     }
@@ -4565,16 +4850,98 @@
     /* --- 会话面板 --- */
     .aifengyue-conversation-viewer {
         width: 100%;
-        min-height: 360px;
+        min-height: 520px;
         border: 1px solid var(--af-border);
         border-radius: 10px;
         background: #fff;
     }
     #aifengyue-conversation-chain:disabled,
     #aifengyue-conversation-refresh:disabled,
-    #aifengyue-conversation-sync:disabled {
+    #aifengyue-conversation-sync:disabled,
+    #aifengyue-conversation-open-preview:disabled {
         opacity: 0.55;
         cursor: not-allowed;
+    }
+
+    /* --- 会话预览浮层 --- */
+    #aifengyue-conversation-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: none;
+    }
+    #aifengyue-conversation-modal.open {
+        display: block;
+    }
+    .aifengyue-conv-modal-backdrop {
+        width: 100%;
+        height: 100%;
+        background: rgba(15, 23, 42, 0.56);
+        backdrop-filter: blur(2px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .aifengyue-conv-modal-content {
+        width: min(1200px, calc(100vw - 40px));
+        min-width: 700px;
+        height: min(86vh, 980px);
+        border-radius: 12px;
+        background: #f7f8fb;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        box-shadow: 0 18px 48px rgba(2, 6, 23, 0.42);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .aifengyue-conv-modal-head {
+        height: 46px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px 0 14px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(255, 255, 255, 0.92);
+        flex-shrink: 0;
+    }
+    .aifengyue-conv-modal-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #1f2937;
+    }
+    .aifengyue-conv-modal-close {
+        width: 30px;
+        height: 30px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #fff;
+        color: #374151;
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+    }
+    .aifengyue-conv-modal-close:hover {
+        border-color: #9ca3af;
+        background: #f9fafb;
+    }
+    #aifengyue-conversation-modal .aifengyue-conversation-viewer {
+        border: none;
+        border-radius: 0;
+        min-height: 0;
+        height: 100%;
+        width: 100%;
+        background: #fff;
+    }
+    @media (max-width: 760px) {
+        .aifengyue-conv-modal-content {
+            min-width: 0;
+            width: calc(100vw - 16px);
+            height: calc(100vh - 16px);
+        }
+        .aifengyue-conv-modal-backdrop {
+            padding: 8px;
+        }
     }
 
     /* --- 配额统计 --- */

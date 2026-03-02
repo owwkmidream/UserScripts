@@ -24,6 +24,9 @@ function getModelPopupSorter() {
 
 export const Sidebar = {
     element: null,
+    conversationModal: null,
+    conversationModalOpen: false,
+    conversationModalEscHandler: null,
     isOpen: false,
     layoutMode: 'inline',
     activeTab: 'register',
@@ -43,6 +46,7 @@ export const Sidebar = {
         this.layoutMode = this.getLayoutMode();
         this.theme = this.getTheme();
         this.createSidebar();
+        this.createConversationModal();
         this.createToggleButton();
         this.loadSavedData();
         this.applyLayoutModeClass();
@@ -132,7 +136,7 @@ export const Sidebar = {
                         </button>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <input type="text" id="aifengyue-switch-text" placeholder="输入拼接到 query 的附加文本">
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -191,7 +195,12 @@ export const Sidebar = {
                     </div>
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">会话预览</div>
-                        <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-open-preview">
+                            🔍 打开悬浮预览
+                        </button>
+                        <div class="aifengyue-hint">
+                            预览将以悬浮窗口打开，按 ESC 可关闭。
+                        </div>
                     </div>
                 </div>
 
@@ -242,6 +251,58 @@ export const Sidebar = {
         `;
         document.body.appendChild(this.element);
         this.bindEvents();
+    },
+
+    createConversationModal() {
+        const existing = document.getElementById('aifengyue-conversation-modal');
+        if (existing) {
+            existing.remove();
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'aifengyue-conversation-modal';
+        modal.innerHTML = `
+            <div class="aifengyue-conv-modal-backdrop">
+                <div class="aifengyue-conv-modal-content" role="dialog" aria-modal="true" aria-label="会话预览">
+                    <div class="aifengyue-conv-modal-head">
+                        <div class="aifengyue-conv-modal-title">本地会话预览</div>
+                        <button id="aifengyue-conversation-modal-close" class="aifengyue-conv-modal-close" title="关闭">✕</button>
+                    </div>
+                    <iframe id="aifengyue-conversation-viewer" class="aifengyue-conversation-viewer" sandbox="allow-same-origin"></iframe>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        this.conversationModal = modal;
+        this.conversationModalOpen = false;
+
+        const closeBtn = modal.querySelector('#aifengyue-conversation-modal-close');
+        closeBtn?.addEventListener('click', () => this.closeConversationModal());
+
+        if (this.conversationModalEscHandler) {
+            document.removeEventListener('keydown', this.conversationModalEscHandler);
+        }
+        this.conversationModalEscHandler = (event) => {
+            if (event.key === 'Escape' && this.conversationModalOpen) {
+                this.closeConversationModal();
+            }
+        };
+        document.addEventListener('keydown', this.conversationModalEscHandler);
+    },
+
+    openConversationModal() {
+        if (!this.conversationModal) {
+            this.createConversationModal();
+        }
+        if (!this.conversationModal) return;
+        this.conversationModal.classList.add('open');
+        this.conversationModalOpen = true;
+    },
+
+    closeConversationModal() {
+        if (!this.conversationModal) return;
+        this.conversationModal.classList.remove('open');
+        this.conversationModalOpen = false;
     },
 
     createToggleButton() {
@@ -369,6 +430,11 @@ export const Sidebar = {
         this.element.querySelector('#aifengyue-conversation-sync').addEventListener('click', async () => {
             await this.syncConversationPanel();
         });
+
+        this.element.querySelector('#aifengyue-conversation-open-preview').addEventListener('click', async () => {
+            this.openConversationModal();
+            await this.renderConversationViewer();
+        });
     },
 
     loadSavedData() {
@@ -417,13 +483,16 @@ export const Sidebar = {
         const chainSelect = this.element?.querySelector('#aifengyue-conversation-chain');
         const refreshBtn = this.element?.querySelector('#aifengyue-conversation-refresh');
         const syncBtn = this.element?.querySelector('#aifengyue-conversation-sync');
+        const openPreviewBtn = this.element?.querySelector('#aifengyue-conversation-open-preview');
         if (chainSelect) chainSelect.disabled = !!busy;
         if (refreshBtn) refreshBtn.disabled = !!busy;
         if (syncBtn) syncBtn.disabled = !!busy;
+        if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
     },
 
     renderConversationSelectOptions() {
         const select = this.element?.querySelector('#aifengyue-conversation-chain');
+        const openPreviewBtn = this.element?.querySelector('#aifengyue-conversation-open-preview');
         if (!select) return;
 
         select.innerHTML = '';
@@ -433,6 +502,7 @@ export const Sidebar = {
             option.textContent = '暂无链路';
             select.appendChild(option);
             select.value = '';
+            if (openPreviewBtn) openPreviewBtn.disabled = true;
             return;
         }
 
@@ -440,19 +510,27 @@ export const Sidebar = {
             const option = document.createElement('option');
             option.value = chain.chainId;
             const conversationCount = Array.isArray(chain.conversationIds) ? chain.conversationIds.length : 0;
+            const messageCount = Number(chain.messageCount || 0);
+            const answerCount = Number(chain.answerCount || 0);
             const updatedAt = chain.updatedAt ? new Date(chain.updatedAt).toLocaleString() : '-';
-            option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${updatedAt}`;
+            option.textContent = `链路${index + 1} | ${conversationCount}会话 | ${answerCount}答复 | ${messageCount}消息 | ${updatedAt}`;
             select.appendChild(option);
         });
 
         if (this.conversation.activeChainId) {
             select.value = this.conversation.activeChainId;
         }
+        if (openPreviewBtn) {
+            openPreviewBtn.disabled = false;
+        }
     },
 
     async renderConversationViewer() {
-        const viewer = this.element?.querySelector('#aifengyue-conversation-viewer');
-        if (!viewer) return;
+        const viewer = document.getElementById('aifengyue-conversation-viewer');
+        if (!viewer) {
+            console.warn('[AI风月注册助手][CONV] 未找到会话预览 iframe');
+            return;
+        }
 
         if (!this.conversation.appId || !this.conversation.activeChainId) {
             viewer.srcdoc = '<html><body><p style="font-family:Segoe UI;padding:16px;">暂无可展示会话。</p></body></html>';

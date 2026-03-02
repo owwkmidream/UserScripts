@@ -1188,26 +1188,6 @@ export const AutoRegister = {
         });
         logDebug(runCtx, 'SWITCH_CHAT', 'chat-messages 请求体', body);
 
-        let baselineConversationIds = [];
-        try {
-            const baselineList = await this.fetchInstalledConversations({
-                appId,
-                token,
-                runCtx,
-                step: 'SWITCH_LIST_CONVERSATIONS_BASELINE',
-                limit: 500,
-                pinned: false,
-                maxAttempts: 1,
-            });
-            baselineConversationIds = baselineList
-                .map((item) => (typeof item?.id === 'string' ? item.id.trim() : ''))
-                .filter(Boolean);
-        } catch (error) {
-            logWarn(runCtx, 'SWITCH_CHAT', '读取会话基线列表失败，将继续请求 chat-messages', {
-                message: error?.message || String(error),
-            });
-        }
-
         const responseMeta = await this.runWithObjectiveRetries(
             (attempt, attempts) => {
                 if (attempt > 1) {
@@ -1236,20 +1216,7 @@ export const AutoRegister = {
         let conversationId = typeof responseMeta?.conversationId === 'string'
             ? responseMeta.conversationId.trim()
             : '';
-        let source = conversationId ? 'sse' : 'none';
-
-        if (!conversationId) {
-            const polled = await this.pollConversationIdFromConversations({
-                appId,
-                token,
-                runCtx,
-                baselineConversationIds,
-                maxAttempts: 8,
-                intervalMs: 650,
-            });
-            conversationId = polled.conversationId;
-            source = polled.source;
-        }
+        let source = conversationId ? 'sse-conversation-id' : 'sse-first-chunk';
 
         logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已收到响应（${statusText}）`, {
             ...responseMeta,
@@ -1263,14 +1230,50 @@ export const AutoRegister = {
     sendChatMessagesOnce({ token, url, body, runCtx }) {
         return new Promise((resolve, reject) => {
             let settled = false;
-            let fallbackTimer = null;
+            const requestStartedAt = Date.now();
+            let hardTimeoutTimer = null;
             let capturedConversationId = '';
+            let requestController = null;
+            let abortedByScript = false;
 
-            const clearFallbackTimer = () => {
-                if (fallbackTimer) {
-                    clearTimeout(fallbackTimer);
-                    fallbackTimer = null;
+            const elapsedMs = () => Date.now() - requestStartedAt;
+
+            const clearTimers = () => {
+                if (hardTimeoutTimer) {
+                    clearTimeout(hardTimeoutTimer);
+                    hardTimeoutTimer = null;
                 }
+            };
+
+            const abortRequest = (reason) => {
+                if (!requestController || typeof requestController.abort !== 'function') {
+                    return;
+                }
+                try {
+                    abortedByScript = true;
+                    requestController.abort();
+                    logInfo(runCtx, 'SWITCH_CHAT', `已主动中止 chat-messages SSE: ${reason || 'no-reason'}`);
+                } catch (error) {
+                    logWarn(runCtx, 'SWITCH_CHAT', '主动中止 chat-messages SSE 失败', {
+                        reason: reason || 'no-reason',
+                        message: error?.message || String(error),
+                    });
+                } finally {
+                    requestController = null;
+                }
+            };
+
+            const callbackMeta = (response) => {
+                const status = Number(response?.status || 0);
+                const readyState = Number(response?.readyState || 0);
+                const responseText = typeof response?.responseText === 'string' ? response.responseText : '';
+                return {
+                    status,
+                    readyState,
+                    textLength: responseText.length,
+                    responseText,
+                    elapsedMs: elapsedMs(),
+                };
             };
 
             const tryCaptureConversationId = (rawText, trigger) => {
@@ -1288,7 +1291,12 @@ export const AutoRegister = {
             const finish = (trigger, responseMeta = {}) => {
                 if (settled) return;
                 settled = true;
-                clearFallbackTimer();
+                clearTimers();
+                logInfo(runCtx, 'SWITCH_CHAT', `chat-messages 已结束: ${trigger}`, {
+                    elapsedMs: elapsedMs(),
+                    ...responseMeta,
+                    conversationId: capturedConversationId || responseMeta?.conversationId || null,
+                });
                 resolve({
                     trigger,
                     ...responseMeta,
@@ -1296,7 +1304,19 @@ export const AutoRegister = {
                 });
             };
 
-            gmXmlHttpRequest({
+            hardTimeoutTimer = setTimeout(() => {
+                if (settled) return;
+                logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages 8s 兜底超时，强制结束并刷新后续流程');
+                finish('failsafe-timeout', {
+                    status: 0,
+                    readyState: 0,
+                    textLength: 0,
+                    elapsedMs: elapsedMs(),
+                });
+                abortRequest('failsafe-timeout');
+            }, 8000);
+
+            requestController = gmXmlHttpRequest({
                 method: 'POST',
                 url,
                 headers: {
@@ -1307,47 +1327,97 @@ export const AutoRegister = {
                 data: JSON.stringify(body),
                 timeout: 20000,
                 anonymous: true,
+                onreadystatechange: (response) => {
+                    if (settled) return;
+                    const meta = callbackMeta(response);
+                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onreadystatechange', {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                    });
+
+                    if (meta.readyState >= 2) {
+                        tryCaptureConversationId(meta.responseText, 'onreadystatechange');
+                        finish(`onreadystatechange-${meta.readyState}`, {
+                            status: meta.status,
+                            readyState: meta.readyState,
+                            textLength: meta.textLength,
+                            elapsedMs: meta.elapsedMs,
+                            conversationId: capturedConversationId,
+                        });
+                        abortRequest(capturedConversationId ? 'conversation-id-captured-readyState' : `readyState-${meta.readyState}`);
+                    }
+                },
                 onprogress: (response) => {
                     if (settled) return;
-                    const status = Number(response?.status || 0);
-                    const responseText = response?.responseText || '';
-                    const textLength = responseText.length;
+                    const meta = callbackMeta(response);
+                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onprogress', {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                    });
+                    tryCaptureConversationId(meta.responseText, 'onprogress');
 
-                    tryCaptureConversationId(responseText, 'onprogress');
-
-                    if (capturedConversationId) {
-                        finish('onprogress', { status, textLength, conversationId: capturedConversationId });
-                        return;
-                    }
-
-                    // 已收到流数据但尚未解析出 conversation_id：短暂等待更多 chunk，再兜底结束。
-                    if (textLength > 0 && !fallbackTimer) {
-                        fallbackTimer = setTimeout(() => {
-                            finish('onprogress-fallback', { status, textLength });
-                        }, 1200);
-                    }
+                    // 一旦 SSE 有首个响应，立即结束并中断后台流，避免占用连接导致前端看不到流式内容。
+                    finish('onprogress-first-chunk', {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                        conversationId: capturedConversationId,
+                    });
+                    abortRequest(capturedConversationId ? 'conversation-id-captured' : 'first-stream-chunk');
                 },
                 onload: (response) => {
                     if (settled) return;
-                    const status = Number(response?.status || 0);
-                    const responseText = response?.responseText || '';
-                    const textLength = responseText.length;
-                    tryCaptureConversationId(responseText, 'onload');
-                    finish('onload', { status, textLength, conversationId: capturedConversationId });
+                    const meta = callbackMeta(response);
+                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onload', {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                    });
+                    tryCaptureConversationId(meta.responseText, 'onload');
+                    finish('onload', {
+                        status: meta.status,
+                        readyState: meta.readyState,
+                        textLength: meta.textLength,
+                        elapsedMs: meta.elapsedMs,
+                        conversationId: capturedConversationId,
+                    });
                 },
                 onerror: (error) => {
                     if (settled) return;
-                    clearFallbackTimer();
+                    clearTimers();
+                    logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages onerror', {
+                        status: Number(error?.status || 0),
+                        message: error?.error || 'network-error',
+                        elapsedMs: elapsedMs(),
+                    });
                     reject(withHttpStatusError(error?.error || 'chat-messages 网络请求失败', Number(error?.status || 0)));
                 },
                 ontimeout: () => {
                     if (settled) return;
-                    clearFallbackTimer();
+                    clearTimers();
+                    logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages ontimeout', {
+                        elapsedMs: elapsedMs(),
+                    });
                     reject(new Error('chat-messages 请求超时'));
                 },
                 onabort: () => {
                     if (settled) return;
-                    clearFallbackTimer();
+                    clearTimers();
+                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onabort', {
+                        abortedByScript,
+                        elapsedMs: elapsedMs(),
+                        conversationId: capturedConversationId || null,
+                    });
+                    if (abortedByScript) {
+                        finish('onabort-by-script', { conversationId: capturedConversationId });
+                        return;
+                    }
                     reject(new Error('chat-messages 请求被中止'));
                 },
             });
@@ -1552,14 +1622,19 @@ export const AutoRegister = {
                 : '';
             if (newConversationId) {
                 this.upsertConversationIdInfo(appId, newConversationId, runCtx);
-                const newBinding = await ChatHistoryService.bindConversation({
+                ChatHistoryService.bindConversation({
                     appId,
                     conversationId: newConversationId,
                     previousConversationId: conversationId,
                     preferredChainId: activeChainId,
+                }).then((newBinding) => {
+                    activeChainId = newBinding.chainId;
+                    ChatHistoryService.setActiveChainId(appId, activeChainId);
+                }).catch((bindError) => {
+                    logWarn(runCtx, 'SWITCH_CHAT', '刷新前写入会话链失败（不影响立即刷新）', {
+                        message: bindError?.message || String(bindError),
+                    });
                 });
-                activeChainId = newBinding.chainId;
-                ChatHistoryService.setActiveChainId(appId, activeChainId);
             }
 
             const sourceText = chatResult?.source ? `，来源 ${chatResult.source}` : '';
@@ -1580,7 +1655,7 @@ export const AutoRegister = {
 
             setTimeout(() => {
                 window.location.reload();
-            }, 800);
+            }, 120);
         } catch (error) {
             const message = `更换账号失败: ${error.message}`;
             Sidebar.updateState({ status: 'error', statusMessage: message });
@@ -1617,15 +1692,24 @@ export const AutoRegister = {
         }
 
         const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
+        const chainsWithStats = await Promise.all(
+            chains.map(async (chain) => {
+                const stats = await ChatHistoryService.getChainStats(chain.chainId);
+                return {
+                    ...chain,
+                    ...stats,
+                };
+            })
+        );
         let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
-        if (!activeChainId && chains[0]?.chainId) {
-            activeChainId = chains[0].chainId;
+        if (!activeChainId && chainsWithStats[0]?.chainId) {
+            activeChainId = chainsWithStats[0].chainId;
             ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
         }
 
         return {
             appId: resolvedAppId,
-            chains,
+            chains: chainsWithStats,
             activeChainId,
             currentConversationId,
         };
