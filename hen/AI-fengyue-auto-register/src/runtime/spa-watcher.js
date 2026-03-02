@@ -44,10 +44,6 @@ export const SPAWatcher = {
                 if (this.isSignupPage()) {
                     console.log('[AI风月注册助手] 检测到注册页面');
                     this.ensureDOM();
-                    if (Sidebar.element && !Sidebar.isOpen) {
-                        Sidebar.open();
-                        Toast.success('检测到注册页面,已自动打开助手', 3000);
-                    }
                 } else {
                     console.log('[AI风月注册助手] 离开注册页面');
                 }

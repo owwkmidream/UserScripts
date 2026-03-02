@@ -22,10 +22,6 @@ function init() {
     setTimeout(() => {
         if (SPAWatcher.isSignupPage()) {
             SPAWatcher.ensureDOM();
-            if (Sidebar.element && !Sidebar.isOpen) {
-                Sidebar.open();
-                Toast.success('检测到注册页面,已自动打开助手', 3000);
-            }
         }
 
         IframeExtractor.checkAndUpdate();
