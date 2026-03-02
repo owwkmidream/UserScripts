@@ -353,6 +353,22 @@
 				request.onerror = () => reject(request.error || new Error("读取链路失败"));
 			}));
 		},
+		async listAllChains() {
+			return withStore(STORE_CHAINS, "readonly", (store) => new Promise((resolve, reject) => {
+				const list = [];
+				const request = store.openCursor();
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) {
+						resolve(list);
+						return;
+					}
+					list.push(cursor.value);
+					cursor.continue();
+				};
+				request.onerror = () => reject(request.error || new Error("读取全部链路失败"));
+			}));
+		},
 		async putMessages(records) {
 			if (!Array.isArray(records) || records.length === 0) return 0;
 			return withStore(STORE_MESSAGES, "readwrite", async (store) => {
@@ -378,6 +394,33 @@
 					cursor.continue();
 				};
 				request.onerror = () => reject(request.error || new Error("读取消息失败"));
+			}));
+		},
+		async deleteChain(chainId) {
+			return withStore(STORE_CHAINS, "readwrite", async (store) => {
+				await requestToPromise(store.delete(chainId));
+				return true;
+			});
+		},
+		async deleteMessagesByChain(chainId) {
+			return withStore(STORE_MESSAGES, "readwrite", (store) => new Promise((resolve, reject) => {
+				let deletedCount = 0;
+				const index = store.index("chainId");
+				const request = index.openCursor(IDBKeyRange.only(chainId));
+				request.onsuccess = () => {
+					const cursor = request.result;
+					if (!cursor) {
+						resolve(deletedCount);
+						return;
+					}
+					const deleteRequest = cursor.delete();
+					deleteRequest.onsuccess = () => {
+						deletedCount += 1;
+						cursor.continue();
+					};
+					deleteRequest.onerror = () => reject(deleteRequest.error || new Error("删除会话消息失败"));
+				};
+				request.onerror = () => reject(request.error || new Error("读取待删除会话消息失败"));
 			}));
 		},
 		async listMessagesByConversation(conversationId) {
@@ -717,6 +760,59 @@
 				if (updatedDiff !== 0) return updatedDiff;
 				return Number(b.createdAt || 0) - Number(a.createdAt || 0);
 			});
+		},
+		async listAllChains() {
+			const chains = await ChatHistoryStore.listAllChains();
+			return (chains || []).map((chain) => toChainRecord(chain)).sort((a, b) => {
+				const updatedDiff = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+				if (updatedDiff !== 0) return updatedDiff;
+				return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+			});
+		},
+		async deleteChain(chainId) {
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedChainId) {
+				throw new Error("chainId 为空，无法删除链路");
+			}
+			const chain = await this.getChain(normalizedChainId);
+			if (!chain) {
+				return {
+					deleted: false,
+					chainId: normalizedChainId,
+					appId: "",
+					deletedMessageCount: 0,
+					removedConversationMappingCount: 0
+				};
+			}
+			const deletedMessageCount = await ChatHistoryStore.deleteMessagesByChain(normalizedChainId);
+			await ChatHistoryStore.deleteChain(normalizedChainId);
+			const index = readIndex();
+			let removedConversationMappingCount = 0;
+			for (const [key, mappedChainId] of Object.entries(index.conversationToChain || {})) {
+				if (normalizeId(mappedChainId) !== normalizedChainId) continue;
+				delete index.conversationToChain[key];
+				if (index.conversationTokenByKey && Object.prototype.hasOwnProperty.call(index.conversationTokenByKey, key)) {
+					delete index.conversationTokenByKey[key];
+				}
+				removedConversationMappingCount += 1;
+			}
+			for (const [appId, activeChainId] of Object.entries(index.activeChainByAppId || {})) {
+				if (normalizeId(activeChainId) === normalizedChainId) {
+					delete index.activeChainByAppId[appId];
+				}
+			}
+			if (index.lastSyncByChainId && Object.prototype.hasOwnProperty.call(index.lastSyncByChainId, normalizedChainId)) {
+				delete index.lastSyncByChainId[normalizedChainId];
+			}
+			writeIndex(index);
+			return {
+				deleted: true,
+				chainId: normalizedChainId,
+				appId: normalizeId(chain.appId),
+				deletedMessageCount,
+				removedConversationMappingCount,
+				deletedConversationCount: uniqueStringArray(chain.conversationIds || []).length
+			};
 		},
 		async bindConversation({ appId, conversationId, previousConversationId = "", preferredChainId = "", tokenSignature = "" }) {
 			const normalizedAppId = normalizeId(appId);
@@ -1308,6 +1404,8 @@
 			appId: "",
 			chains: [],
 			activeChainId: "",
+			globalChains: [],
+			activeGlobalChainId: "",
 			loading: false
 		},
 		init() {
@@ -1482,6 +1580,33 @@
                         </div>
                         <div class="aifengyue-hint" id="aifengyue-conversation-status">
                             仅在应用详情页可用，会显示本地保存的链式会话。
+                        </div>
+                    </div>
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">全局链路查看器</div>
+                        <div class="aifengyue-input-group">
+                            <label>全部本地链路（跨 App）</label>
+                            <select id="aifengyue-conversation-global-chain">
+                                <option value="">暂无链路</option>
+                            </select>
+                        </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-global-refresh">
+                                🔄 刷新全部
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-global-open-preview">
+                                🔍 预览选中
+                            </button>
+                        </div>
+                        <button class="aifengyue-btn aifengyue-btn-danger" id="aifengyue-conversation-global-delete">
+                            🗑 删除选中链路
+                        </button>
+                        <div class="aifengyue-conv-latest-card">
+                            <div class="aifengyue-conv-latest-head">全局选中链路最新 Query 尾部</div>
+                            <div class="aifengyue-conv-latest-body" id="aifengyue-conversation-global-latest-query">-</div>
+                        </div>
+                        <div class="aifengyue-hint" id="aifengyue-conversation-global-status">
+                            可查看本地全部会话链，支持跨 App 预览和删除。
                         </div>
                     </div>
                     <div class="aifengyue-section">
@@ -1732,8 +1857,19 @@
 				this.renderConversationLatestQueryTail();
 				await this.renderConversationViewer();
 			});
+			this.element.querySelector("#aifengyue-conversation-global-chain").addEventListener("change", (e) => {
+				const chainId = typeof e?.target?.value === "string" ? e.target.value : "";
+				this.conversation.activeGlobalChainId = chainId;
+				this.renderGlobalConversationLatestQueryTail();
+			});
 			this.element.querySelector("#aifengyue-conversation-refresh").addEventListener("click", async () => {
 				await this.refreshConversationPanel({
+					showToast: true,
+					keepSelection: true
+				});
+			});
+			this.element.querySelector("#aifengyue-conversation-global-refresh").addEventListener("click", async () => {
+				await this.refreshGlobalConversationPanel({
 					showToast: true,
 					keepSelection: true
 				});
@@ -1758,6 +1894,12 @@
 			this.element.querySelector("#aifengyue-conversation-open-preview").addEventListener("click", async () => {
 				this.openConversationModal();
 				await this.renderConversationViewer();
+			});
+			this.element.querySelector("#aifengyue-conversation-global-open-preview").addEventListener("click", async () => {
+				await this.openGlobalConversationPreview();
+			});
+			this.element.querySelector("#aifengyue-conversation-global-delete").addEventListener("click", async () => {
+				await this.deleteSelectedGlobalConversationChain();
 			});
 		},
 		loadSavedData() {
@@ -1804,23 +1946,37 @@
 				statusEl.textContent = message;
 			}
 		},
+		setGlobalConversationStatus(message) {
+			const statusEl = this.element?.querySelector("#aifengyue-conversation-global-status");
+			if (statusEl) {
+				statusEl.textContent = message;
+			}
+		},
 		setConversationBusy(busy) {
 			this.conversation.loading = !!busy;
 			const chainSelect = this.element?.querySelector("#aifengyue-conversation-chain");
+			const globalChainSelect = this.element?.querySelector("#aifengyue-conversation-global-chain");
 			const refreshBtn = this.element?.querySelector("#aifengyue-conversation-refresh");
+			const globalRefreshBtn = this.element?.querySelector("#aifengyue-conversation-global-refresh");
 			const syncBtn = this.element?.querySelector("#aifengyue-conversation-sync");
 			const exportBtn = this.element?.querySelector("#aifengyue-conversation-export");
 			const importTriggerBtn = this.element?.querySelector("#aifengyue-conversation-import-trigger");
 			const importFileInput = this.element?.querySelector("#aifengyue-conversation-import-file");
 			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
+			const globalOpenPreviewBtn = this.element?.querySelector("#aifengyue-conversation-global-open-preview");
+			const globalDeleteBtn = this.element?.querySelector("#aifengyue-conversation-global-delete");
 			const switchBtn = this.element?.querySelector("#aifengyue-switch-account");
 			if (chainSelect) chainSelect.disabled = !!busy;
+			if (globalChainSelect) globalChainSelect.disabled = !!busy;
 			if (refreshBtn) refreshBtn.disabled = !!busy;
+			if (globalRefreshBtn) globalRefreshBtn.disabled = !!busy;
 			if (syncBtn) syncBtn.disabled = !!busy;
 			if (exportBtn) exportBtn.disabled = !!busy;
 			if (importTriggerBtn) importTriggerBtn.disabled = !!busy;
 			if (importFileInput) importFileInput.disabled = !!busy;
 			if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
+			if (globalOpenPreviewBtn) globalOpenPreviewBtn.disabled = !!busy;
+			if (globalDeleteBtn) globalDeleteBtn.disabled = !!busy;
 			if (switchBtn) switchBtn.disabled = !!busy;
 		},
 		renderConversationSelectOptions() {
@@ -1872,24 +2028,81 @@
 			const latestQueryTail = typeof activeChain?.latestQueryTail === "string" ? activeChain.latestQueryTail.trim() : "";
 			tailEl.textContent = latestQueryTail || "-";
 		},
-		async renderConversationViewer() {
+		renderGlobalConversationSelectOptions() {
+			const select = this.element?.querySelector("#aifengyue-conversation-global-chain");
+			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-global-open-preview");
+			const deleteBtn = this.element?.querySelector("#aifengyue-conversation-global-delete");
+			if (!select) return;
+			select.innerHTML = "";
+			if (!Array.isArray(this.conversation.globalChains) || this.conversation.globalChains.length === 0) {
+				const option = document.createElement("option");
+				option.value = "";
+				option.textContent = "暂无链路";
+				select.appendChild(option);
+				select.value = "";
+				this.conversation.activeGlobalChainId = "";
+				if (openPreviewBtn) openPreviewBtn.disabled = true;
+				if (deleteBtn) deleteBtn.disabled = true;
+				this.renderGlobalConversationLatestQueryTail();
+				return;
+			}
+			this.conversation.globalChains.forEach((chain, index) => {
+				const option = document.createElement("option");
+				option.value = chain.chainId;
+				const conversationCount = Array.isArray(chain.conversationIds) ? chain.conversationIds.length : 0;
+				const messageCount = Number(chain.messageCount || 0);
+				const answerCount = Number(chain.answerCount || 0);
+				const updatedAt = chain.updatedAt ? new Date(chain.updatedAt).toLocaleString() : "-";
+				const appLabel = typeof chain.appName === "string" && chain.appName.trim() ? chain.appName.trim() : chain.appId;
+				option.textContent = `${index + 1}. ${appLabel} | ${conversationCount}会话 | ${answerCount}答复 | ${messageCount}消息 | ${updatedAt}`;
+				select.appendChild(option);
+			});
+			if (this.conversation.activeGlobalChainId && this.conversation.globalChains.some((chain) => chain.chainId === this.conversation.activeGlobalChainId)) {
+				select.value = this.conversation.activeGlobalChainId;
+			} else {
+				this.conversation.activeGlobalChainId = this.conversation.globalChains[0]?.chainId || "";
+				select.value = this.conversation.activeGlobalChainId;
+			}
+			if (openPreviewBtn) {
+				openPreviewBtn.disabled = false;
+			}
+			if (deleteBtn && !this.conversation.loading) {
+				deleteBtn.disabled = false;
+			}
+			this.renderGlobalConversationLatestQueryTail();
+		},
+		getActiveGlobalConversationChain() {
+			if (!Array.isArray(this.conversation.globalChains) || this.conversation.globalChains.length === 0) {
+				return null;
+			}
+			return this.conversation.globalChains.find((chain) => chain.chainId === this.conversation.activeGlobalChainId) || this.conversation.globalChains[0];
+		},
+		renderGlobalConversationLatestQueryTail() {
+			const tailEl = this.element?.querySelector("#aifengyue-conversation-global-latest-query");
+			if (!tailEl) return;
+			const activeChain = this.getActiveGlobalConversationChain();
+			if (!activeChain) {
+				tailEl.textContent = "-";
+				return;
+			}
+			const latestQueryTail = typeof activeChain.latestQueryTail === "string" ? activeChain.latestQueryTail.trim() : "";
+			tailEl.textContent = latestQueryTail || "-";
+		},
+		async renderConversationViewer({ appId = "", chainId = "" } = {}) {
 			const viewer = document.getElementById("aifengyue-conversation-viewer");
 			if (!viewer) {
 				console.warn("[AI风月注册助手][CONV] 未找到会话预览 iframe");
 				return;
 			}
-			if (!this.conversation.appId || !this.conversation.activeChainId) {
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.conversation.appId;
+			const resolvedChainId = (typeof chainId === "string" ? chainId.trim() : "") || this.conversation.activeChainId;
+			if (!resolvedAppId || !resolvedChainId) {
 				viewer.srcdoc = "<html><body><p style=\"font-family:Segoe UI;padding:16px;\">暂无可展示会话。</p></body></html>";
 				return;
 			}
-			const autoRegister = getAutoRegister();
-			if (!autoRegister) {
-				viewer.srcdoc = "<html><body><p style=\"font-family:Segoe UI;padding:16px;\">AutoRegister 未初始化。</p></body></html>";
-				return;
-			}
-			const html = await autoRegister.getConversationViewerHtml({
-				appId: this.conversation.appId,
-				chainId: this.conversation.activeChainId
+			const html = await ChatHistoryService.buildChainViewerHtml({
+				appId: resolvedAppId,
+				chainId: resolvedChainId
 			});
 			viewer.onload = () => {
 				try {
@@ -1919,6 +2132,11 @@
 			const autoRegister = getAutoRegister();
 			if (!autoRegister) {
 				this.setConversationStatus("AutoRegister 未初始化");
+				await this.refreshGlobalConversationPanel({
+					showToast: false,
+					keepSelection: true,
+					useBusy: false
+				});
 				return;
 			}
 			this.setConversationBusy(true);
@@ -1940,6 +2158,11 @@
 				}
 				this.renderConversationSelectOptions();
 				await this.renderConversationViewer();
+				await this.refreshGlobalConversationPanel({
+					showToast: false,
+					keepSelection: true,
+					useBusy: false
+				});
 				if (!this.conversation.appId) {
 					this.setConversationStatus("当前页面不是应用详情页，无法读取会话链。");
 				} else if (!this.conversation.chains.length) {
@@ -1955,6 +2178,103 @@
 			} catch (error) {
 				this.setConversationStatus(`刷新失败: ${error.message}`);
 				getToast()?.error(`会话刷新失败: ${error.message}`);
+			} finally {
+				this.setConversationBusy(false);
+			}
+		},
+		async refreshGlobalConversationPanel({ showToast = false, keepSelection = true, useBusy = true } = {}) {
+			if (!this.element) return;
+			if (useBusy) {
+				this.setConversationBusy(true);
+			}
+			try {
+				const previousChainId = keepSelection ? this.conversation.activeGlobalChainId : "";
+				const chains = await ChatHistoryService.listAllChains();
+				const chainsWithDetails = await Promise.all(chains.map(async (chain) => {
+					const [stats, appMeta] = await Promise.all([ChatHistoryService.getChainStats(chain.chainId), ChatHistoryService.getAppMeta(chain.appId)]);
+					return {
+						...chain,
+						...stats,
+						appName: typeof appMeta?.name === "string" ? appMeta.name : ""
+					};
+				}));
+				this.conversation.globalChains = chainsWithDetails;
+				this.conversation.activeGlobalChainId = "";
+				if (previousChainId && chainsWithDetails.some((chain) => chain.chainId === previousChainId)) {
+					this.conversation.activeGlobalChainId = previousChainId;
+				} else if (chainsWithDetails[0]?.chainId) {
+					this.conversation.activeGlobalChainId = chainsWithDetails[0].chainId;
+				}
+				this.renderGlobalConversationSelectOptions();
+				if (!chainsWithDetails.length) {
+					this.setGlobalConversationStatus("本地暂无链路，可先执行更换账号或导入 JSON。");
+				} else {
+					const appCount = new Set(chainsWithDetails.map((item) => item.appId).filter(Boolean)).size;
+					this.setGlobalConversationStatus(`已加载 ${chainsWithDetails.length} 条链路，覆盖 ${appCount} 个 App。`);
+				}
+				if (showToast) {
+					getToast()?.success("全局链路已刷新");
+				}
+			} catch (error) {
+				this.setGlobalConversationStatus(`全局链路刷新失败: ${error.message}`);
+				getToast()?.error(`全局链路刷新失败: ${error.message}`);
+			} finally {
+				if (useBusy) {
+					this.setConversationBusy(false);
+				}
+			}
+		},
+		async openGlobalConversationPreview() {
+			const chain = this.getActiveGlobalConversationChain();
+			if (!chain?.appId || !chain?.chainId) {
+				getToast()?.warning("当前没有可预览的全局链路");
+				return;
+			}
+			this.openConversationModal();
+			await this.renderConversationViewer({
+				appId: chain.appId,
+				chainId: chain.chainId
+			});
+		},
+		async deleteSelectedGlobalConversationChain() {
+			const chain = this.getActiveGlobalConversationChain();
+			if (!chain?.chainId) {
+				getToast()?.warning("当前没有可删除的链路");
+				return;
+			}
+			const appLabel = typeof chain.appName === "string" && chain.appName.trim() ? `${chain.appName.trim()} (${chain.appId})` : chain.appId;
+			const confirmed = confirm(`确认删除该链路？\nApp: ${appLabel || "-"}\nChain: ${chain.chainId}\n\n删除后将移除该链路下全部本地消息，且不可恢复。`);
+			if (!confirmed) return;
+			this.setConversationBusy(true);
+			try {
+				const summary = await ChatHistoryService.deleteChain(chain.chainId);
+				if (!summary.deleted) {
+					this.setGlobalConversationStatus(`链路不存在或已删除：${chain.chainId}`);
+					getToast()?.warning("目标链路不存在或已删除");
+					await this.refreshGlobalConversationPanel({
+						showToast: false,
+						keepSelection: false,
+						useBusy: false
+					});
+					return;
+				}
+				if (this.conversation.activeChainId === chain.chainId) {
+					this.conversation.activeChainId = "";
+				}
+				if (this.conversation.activeGlobalChainId === chain.chainId) {
+					this.conversation.activeGlobalChainId = "";
+				}
+				await this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: false
+				});
+				const statusText = `已删除链路：${chain.chainId}（删除 ${summary.deletedMessageCount} 条消息）`;
+				this.setGlobalConversationStatus(statusText);
+				this.setConversationStatus(statusText);
+				getToast()?.success(statusText);
+			} catch (error) {
+				this.setGlobalConversationStatus(`删除失败: ${error.message}`);
+				getToast()?.error(`删除链路失败: ${error.message}`);
 			} finally {
 				this.setConversationBusy(false);
 			}
@@ -2746,32 +3066,63 @@
 			const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
 			const method = options.method || "GET";
 			const url = `${window.location.origin}${path}`;
+			const timeoutMs = options.timeout ?? 3e4;
+			const headers = {
+				"Content-Type": "application/json",
+				"X-Language": X_LANGUAGE$1,
+				...options.headers || {}
+			};
 			logInfo(runCtx, step, `${method} ${path} 请求开始`);
 			logDebug(runCtx, step, "请求详情", {
 				url,
-				headers: {
-					"Content-Type": "application/json",
-					"X-Language": X_LANGUAGE$1,
-					...options.headers || {}
-				},
+				headers,
 				body: options.body ?? null,
-				anonymous: true
+				requestMode: "page-fetch-first"
 			});
-			const response = await gmRequestJson({
-				method,
-				url,
-				headers: {
-					"Content-Type": "application/json",
-					"X-Language": X_LANGUAGE$1,
-					...options.headers || {}
-				},
-				body: options.body,
-				timeout: options.timeout ?? 3e4,
-				anonymous: true
-			});
-			const payload = response.json;
+			let httpStatus = 0;
+			let raw = "";
+			let payload = null;
+			const runPageFetch = async () => {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), timeoutMs);
+				try {
+					const response = await fetch(url, {
+						method,
+						headers,
+						body: options.body === undefined ? undefined : JSON.stringify(options.body),
+						credentials: "include",
+						signal: controller.signal,
+						cache: "no-store"
+					});
+					httpStatus = Number(response.status || 0);
+					raw = await response.text();
+					try {
+						payload = raw ? JSON.parse(raw) : null;
+					} catch {
+						payload = null;
+					}
+				} finally {
+					clearTimeout(timer);
+				}
+			};
+			try {
+				await runPageFetch();
+			} catch (fetchError) {
+				logWarn(runCtx, step, "页面 fetch 请求失败，回退 GM 请求", { message: fetchError?.message || String(fetchError) });
+				const fallbackResponse = await gmRequestJson({
+					method,
+					url,
+					headers,
+					body: options.body,
+					timeout: timeoutMs,
+					anonymous: true
+				});
+				httpStatus = Number(fallbackResponse.status || 0);
+				raw = fallbackResponse.raw || "";
+				payload = fallbackResponse.json;
+			}
 			logInfo(runCtx, step, `${method} ${path} 响应`, {
-				httpStatus: response.status,
+				httpStatus,
 				statusField: payload?.status,
 				result: payload?.result,
 				success: payload?.success,
@@ -2779,11 +3130,11 @@
 				message: payload?.message
 			});
 			logDebug(runCtx, step, "原始响应内容", {
-				raw: response.raw,
+				raw,
 				json: payload
 			});
-			if (response.status < 200 || response.status >= 300) {
-				throw withHttpStatusError(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`), response.status);
+			if (httpStatus < 200 || httpStatus >= 300) {
+				throw withHttpStatusError(readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${httpStatus}`), httpStatus);
 			}
 			if (payload === null) {
 				throw new Error(`接口 ${path} 返回非 JSON 响应`);
@@ -3666,7 +4017,9 @@
 				const requestStartedAt = Date.now();
 				let hardTimeoutTimer = null;
 				let capturedConversationId = "";
-				let requestController = null;
+				let statusCode = 0;
+				let streamText = "";
+				const requestController = new AbortController();
 				let abortedByScript = false;
 				const elapsedMs = () => Date.now() - requestStartedAt;
 				const clearTimers = () => {
@@ -3676,20 +4029,15 @@
 					}
 				};
 				const abortRequest = (reason) => {
-					if (!requestController || typeof requestController.abort !== "function") {
-						return;
-					}
 					try {
 						abortedByScript = true;
-						requestController.abort();
+						requestController.abort(reason || "abort");
 						logInfo(runCtx, "SWITCH_CHAT", `已主动中止 chat-messages SSE: ${reason || "no-reason"}`);
 					} catch (error) {
 						logWarn(runCtx, "SWITCH_CHAT", "主动中止 chat-messages SSE 失败", {
 							reason: reason || "no-reason",
 							message: error?.message || String(error)
 						});
-					} finally {
-						requestController = null;
 					}
 				};
 				if (typeof onAbortReady === "function") {
@@ -3699,18 +4047,6 @@
 						});
 					} catch {}
 				}
-				const callbackMeta = (response) => {
-					const status = Number(response?.status || 0);
-					const readyState = Number(response?.readyState || 0);
-					const responseText = typeof response?.responseText === "string" ? response.responseText : "";
-					return {
-						status,
-						readyState,
-						textLength: responseText.length,
-						responseText,
-						elapsedMs: elapsedMs()
-					};
-				};
 				const tryCaptureConversationId = (rawText, trigger) => {
 					if (capturedConversationId) return capturedConversationId;
 					const conversationId = this.parseConversationIdFromEventStream(rawText);
@@ -3738,138 +4074,122 @@
 					if (settled) return;
 					logWarn(runCtx, "SWITCH_CHAT", "chat-messages 8s 兜底超时，强制结束并刷新后续流程");
 					finish("failsafe-timeout", {
-						status: 0,
+						status: statusCode || 0,
 						readyState: 0,
-						textLength: 0,
+						textLength: streamText.length,
 						elapsedMs: elapsedMs()
 					});
 					abortRequest("failsafe-timeout");
 				}, 8e3);
-				requestController = gmXmlHttpRequest({
-					method: "POST",
-					url,
-					headers: {
-						"Content-Type": "application/json",
-						"X-Language": X_LANGUAGE$1,
-						Authorization: `Bearer ${token}`
-					},
-					data: JSON.stringify(body),
-					timeout: 2e4,
-					anonymous: false,
-					fetch: false,
-					onreadystatechange: (response) => {
-						if (settled) return;
-						const meta = callbackMeta(response);
-						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onreadystatechange", {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs
+				(async () => {
+					try {
+						const response = await fetch(url, {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+								"X-Language": X_LANGUAGE$1,
+								Authorization: `Bearer ${token}`
+							},
+							body: JSON.stringify(body),
+							credentials: "include",
+							cache: "no-store",
+							signal: requestController.signal
 						});
-						if (meta.readyState < 3) {
-							logInfo(runCtx, "SWITCH_CHAT", "onreadystatechange 仅收到响应头，继续等待首条 SSE data", {
-								readyState: meta.readyState,
-								textLength: meta.textLength,
-								elapsedMs: meta.elapsedMs
-							});
-							return;
-						}
-						tryCaptureConversationId(meta.responseText, "onreadystatechange");
-						const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
-						if (!hasStreamData) {
-							logInfo(runCtx, "SWITCH_CHAT", "onreadystatechange 已到流阶段但尚无可用 data，继续等待", {
-								readyState: meta.readyState,
-								textLength: meta.textLength,
-								elapsedMs: meta.elapsedMs
-							});
-							return;
-						}
-						finish(`onreadystatechange-${meta.readyState}`, {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs,
-							conversationId: capturedConversationId
-						});
-						abortRequest(capturedConversationId ? "conversation-id-captured-readyState" : `readyState-${meta.readyState}`);
-					},
-					onprogress: (response) => {
-						if (settled) return;
-						const meta = callbackMeta(response);
-						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onprogress", {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs
-						});
-						tryCaptureConversationId(meta.responseText, "onprogress");
-						const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
-						if (!hasStreamData) {
-							logInfo(runCtx, "SWITCH_CHAT", "onprogress 触发但尚无可用 data，继续等待", {
-								readyState: meta.readyState,
-								textLength: meta.textLength,
-								elapsedMs: meta.elapsedMs
-							});
-							return;
-						}
-						finish("onprogress-first-chunk", {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs,
-							conversationId: capturedConversationId
-						});
-						abortRequest(capturedConversationId ? "conversation-id-captured" : "first-stream-chunk");
-					},
-					onload: (response) => {
-						if (settled) return;
-						const meta = callbackMeta(response);
-						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onload", {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs
-						});
-						tryCaptureConversationId(meta.responseText, "onload");
-						finish("onload", {
-							status: meta.status,
-							readyState: meta.readyState,
-							textLength: meta.textLength,
-							elapsedMs: meta.elapsedMs,
-							conversationId: capturedConversationId
-						});
-					},
-					onerror: (error) => {
-						if (settled) return;
-						clearTimers();
-						logWarn(runCtx, "SWITCH_CHAT", "chat-messages onerror", {
-							status: Number(error?.status || 0),
-							message: error?.error || "network-error",
+						statusCode = Number(response.status || 0);
+						logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch 已建立连接", {
+							status: statusCode,
+							ok: response.ok,
 							elapsedMs: elapsedMs()
 						});
-						reject(withHttpStatusError(error?.error || "chat-messages 网络请求失败", Number(error?.status || 0)));
-					},
-					ontimeout: () => {
-						if (settled) return;
-						clearTimers();
-						logWarn(runCtx, "SWITCH_CHAT", "chat-messages ontimeout", { elapsedMs: elapsedMs() });
-						reject(new Error("chat-messages 请求超时"));
-					},
-					onabort: () => {
-						if (settled) return;
-						clearTimers();
-						logInfo(runCtx, "SWITCH_CHAT", "chat-messages onabort", {
-							abortedByScript,
-							elapsedMs: elapsedMs(),
-							conversationId: capturedConversationId || null
-						});
-						if (abortedByScript) {
-							finish("onabort-by-script", { conversationId: capturedConversationId });
+						if (!response.ok) {
+							throw withHttpStatusError(`chat-messages 请求失败: HTTP ${statusCode}`, statusCode);
+						}
+						const reader = response.body?.getReader?.();
+						if (!reader) {
+							streamText = await response.text();
+							tryCaptureConversationId(streamText, "fetch-no-stream");
+							finish("fetch-no-stream", {
+								status: statusCode,
+								readyState: 4,
+								textLength: streamText.length,
+								elapsedMs: elapsedMs(),
+								conversationId: capturedConversationId
+							});
 							return;
 						}
-						reject(new Error("chat-messages 请求被中止"));
+						const decoder = new TextDecoder();
+						while (true) {
+							const { value, done } = await reader.read();
+							if (done) {
+								break;
+							}
+							const chunkText = decoder.decode(value, { stream: true });
+							if (!chunkText) {
+								continue;
+							}
+							streamText += chunkText;
+							tryCaptureConversationId(streamText, "fetch-stream");
+							const hasSseData = /(?:^|\n)\s*data:\s*/m.test(streamText) || !!capturedConversationId;
+							logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch stream chunk", {
+								status: statusCode,
+								chunkLength: chunkText.length,
+								textLength: streamText.length,
+								hasSseData,
+								elapsedMs: elapsedMs(),
+								conversationId: capturedConversationId || null
+							});
+							if (!hasSseData) {
+								continue;
+							}
+							finish("fetch-stream-first-chunk", {
+								status: statusCode,
+								readyState: 3,
+								textLength: streamText.length,
+								elapsedMs: elapsedMs(),
+								conversationId: capturedConversationId
+							});
+							abortRequest(capturedConversationId ? "conversation-id-captured-fetch-stream" : "first-stream-chunk-fetch-stream");
+							return;
+						}
+						tryCaptureConversationId(streamText, "fetch-stream-end");
+						finish("fetch-stream-end", {
+							status: statusCode,
+							readyState: 4,
+							textLength: streamText.length,
+							elapsedMs: elapsedMs(),
+							conversationId: capturedConversationId
+						});
+					} catch (error) {
+						if (settled) return;
+						clearTimers();
+						if (error?.name === "AbortError") {
+							logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch onabort", {
+								abortedByScript,
+								elapsedMs: elapsedMs(),
+								textLength: streamText.length,
+								conversationId: capturedConversationId || null
+							});
+							if (abortedByScript) {
+								finish("fetch-onabort-by-script", {
+									status: statusCode || 0,
+									readyState: 0,
+									textLength: streamText.length,
+									elapsedMs: elapsedMs(),
+									conversationId: capturedConversationId
+								});
+								return;
+							}
+							reject(new Error("chat-messages 请求被中止"));
+							return;
+						}
+						logWarn(runCtx, "SWITCH_CHAT", "chat-messages fetch 失败", {
+							status: statusCode || 0,
+							message: error?.message || String(error),
+							elapsedMs: elapsedMs()
+						});
+						reject(withHttpStatusError(error?.message || "chat-messages fetch 请求失败", statusCode || 0));
 					}
-				});
+				})();
 			});
 		},
 		async startOneClickRegister() {
@@ -5499,6 +5819,27 @@
         background: var(--af-btn2-hover);
         border-color: color-mix(in srgb, var(--af-primary) 40%, var(--af-btn2-border));
     }
+    .aifengyue-btn-danger {
+        margin-top: 8px;
+        background: rgba(239, 68, 68, 0.12);
+        color: #991b1b;
+        border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .aifengyue-btn-danger:hover {
+        background: rgba(239, 68, 68, 0.18);
+        border-color: rgba(220, 38, 38, 0.56);
+        color: #7f1d1d;
+    }
+    #aifengyue-sidebar[data-theme="dark"] .aifengyue-btn-danger {
+        background: rgba(248, 113, 113, 0.16);
+        color: #fecaca;
+        border-color: rgba(248, 113, 113, 0.45);
+    }
+    #aifengyue-sidebar[data-theme="dark"] .aifengyue-btn-danger:hover {
+        background: rgba(248, 113, 113, 0.24);
+        border-color: rgba(248, 113, 113, 0.7);
+        color: #fee2e2;
+    }
     .aifengyue-btn-group {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -5566,11 +5907,15 @@
         background: #fff;
     }
     #aifengyue-conversation-chain:disabled,
+    #aifengyue-conversation-global-chain:disabled,
     #aifengyue-conversation-refresh:disabled,
+    #aifengyue-conversation-global-refresh:disabled,
     #aifengyue-conversation-sync:disabled,
     #aifengyue-conversation-export:disabled,
     #aifengyue-conversation-import-trigger:disabled,
-    #aifengyue-conversation-open-preview:disabled {
+    #aifengyue-conversation-open-preview:disabled,
+    #aifengyue-conversation-global-open-preview:disabled,
+    #aifengyue-conversation-global-delete:disabled {
         opacity: 0.55;
         cursor: not-allowed;
     }

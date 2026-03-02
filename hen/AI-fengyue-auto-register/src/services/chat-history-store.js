@@ -121,6 +121,23 @@ export const ChatHistoryStore = {
         }));
     },
 
+    async listAllChains() {
+        return withStore(STORE_CHAINS, 'readonly', (store) => new Promise((resolve, reject) => {
+            const list = [];
+            const request = store.openCursor();
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) {
+                    resolve(list);
+                    return;
+                }
+                list.push(cursor.value);
+                cursor.continue();
+            };
+            request.onerror = () => reject(request.error || new Error('读取全部链路失败'));
+        }));
+    },
+
     async putMessages(records) {
         if (!Array.isArray(records) || records.length === 0) return 0;
         return withStore(STORE_MESSAGES, 'readwrite', async (store) => {
@@ -150,6 +167,35 @@ export const ChatHistoryStore = {
         }));
     },
 
+    async deleteChain(chainId) {
+        return withStore(STORE_CHAINS, 'readwrite', async (store) => {
+            await requestToPromise(store.delete(chainId));
+            return true;
+        });
+    },
+
+    async deleteMessagesByChain(chainId) {
+        return withStore(STORE_MESSAGES, 'readwrite', (store) => new Promise((resolve, reject) => {
+            let deletedCount = 0;
+            const index = store.index('chainId');
+            const request = index.openCursor(IDBKeyRange.only(chainId));
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) {
+                    resolve(deletedCount);
+                    return;
+                }
+                const deleteRequest = cursor.delete();
+                deleteRequest.onsuccess = () => {
+                    deletedCount += 1;
+                    cursor.continue();
+                };
+                deleteRequest.onerror = () => reject(deleteRequest.error || new Error('删除会话消息失败'));
+            };
+            request.onerror = () => reject(request.error || new Error('读取待删除会话消息失败'));
+        }));
+    },
+
     async listMessagesByConversation(conversationId) {
         return withStore(STORE_MESSAGES, 'readonly', (store) => new Promise((resolve, reject) => {
             const list = [];
@@ -168,4 +214,3 @@ export const ChatHistoryStore = {
         }));
     },
 };
-

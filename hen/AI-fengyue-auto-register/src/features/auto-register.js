@@ -1,5 +1,5 @@
 import { CONFIG } from '../constants.js';
-import { gmGetValue, gmRequestJson, gmSetValue, gmXmlHttpRequest } from '../gm.js';
+import { gmGetValue, gmRequestJson, gmSetValue } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
 import { ChatHistoryService } from '../services/chat-history-service.js';
 import { Sidebar } from '../ui/sidebar.js';
@@ -253,35 +253,71 @@ export const AutoRegister = {
         const acceptableCodes = Array.isArray(options.acceptableCodes) ? options.acceptableCodes : [0, 200];
         const method = options.method || 'GET';
         const url = `${window.location.origin}${path}`;
+        const timeoutMs = options.timeout ?? 30000;
+        const headers = {
+            'Content-Type': 'application/json',
+            'X-Language': X_LANGUAGE,
+            ...(options.headers || {}),
+        };
 
         logInfo(runCtx, step, `${method} ${path} 请求开始`);
         logDebug(runCtx, step, '请求详情', {
             url,
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Language': X_LANGUAGE,
-                ...(options.headers || {}),
-            },
+            headers,
             body: options.body ?? null,
-            anonymous: true,
+            requestMode: 'page-fetch-first',
         });
 
-        const response = await gmRequestJson({
-            method,
-            url,
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Language': X_LANGUAGE,
-                ...(options.headers || {}),
-            },
-            body: options.body,
-            timeout: options.timeout ?? 30000,
-            anonymous: true,
-        });
-        const payload = response.json;
+        let httpStatus = 0;
+        let raw = '';
+        let payload = null;
+
+        const runPageFetch = async () => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const response = await fetch(url, {
+                    method,
+                    headers,
+                    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+                    credentials: 'include',
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                httpStatus = Number(response.status || 0);
+                raw = await response.text();
+                try {
+                    payload = raw ? JSON.parse(raw) : null;
+                } catch {
+                    payload = null;
+                }
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+
+        try {
+            await runPageFetch();
+        } catch (fetchError) {
+            logWarn(runCtx, step, '页面 fetch 请求失败，回退 GM 请求', {
+                message: fetchError?.message || String(fetchError),
+            });
+
+            const fallbackResponse = await gmRequestJson({
+                method,
+                url,
+                headers,
+                body: options.body,
+                timeout: timeoutMs,
+                anonymous: true,
+            });
+            httpStatus = Number(fallbackResponse.status || 0);
+            raw = fallbackResponse.raw || '';
+            payload = fallbackResponse.json;
+        }
 
         logInfo(runCtx, step, `${method} ${path} 响应`, {
-            httpStatus: response.status,
+            httpStatus,
             statusField: payload?.status,
             result: payload?.result,
             success: payload?.success,
@@ -289,14 +325,14 @@ export const AutoRegister = {
             message: payload?.message,
         });
         logDebug(runCtx, step, '原始响应内容', {
-            raw: response.raw,
+            raw,
             json: payload,
         });
 
-        if (response.status < 200 || response.status >= 300) {
+        if (httpStatus < 200 || httpStatus >= 300) {
             throw withHttpStatusError(
-                readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${response.status}`),
-                response.status
+                readErrorMessage(payload, `接口 ${path} 请求失败: HTTP ${httpStatus}`),
+                httpStatus
             );
         }
 
@@ -1372,7 +1408,9 @@ export const AutoRegister = {
             const requestStartedAt = Date.now();
             let hardTimeoutTimer = null;
             let capturedConversationId = '';
-            let requestController = null;
+            let statusCode = 0;
+            let streamText = '';
+            const requestController = new AbortController();
             let abortedByScript = false;
 
             const elapsedMs = () => Date.now() - requestStartedAt;
@@ -1385,20 +1423,15 @@ export const AutoRegister = {
             };
 
             const abortRequest = (reason) => {
-                if (!requestController || typeof requestController.abort !== 'function') {
-                    return;
-                }
                 try {
                     abortedByScript = true;
-                    requestController.abort();
+                    requestController.abort(reason || 'abort');
                     logInfo(runCtx, 'SWITCH_CHAT', `已主动中止 chat-messages SSE: ${reason || 'no-reason'}`);
                 } catch (error) {
                     logWarn(runCtx, 'SWITCH_CHAT', '主动中止 chat-messages SSE 失败', {
                         reason: reason || 'no-reason',
                         message: error?.message || String(error),
                     });
-                } finally {
-                    requestController = null;
                 }
             };
             if (typeof onAbortReady === 'function') {
@@ -1410,19 +1443,6 @@ export const AutoRegister = {
                     // ignore
                 }
             }
-
-            const callbackMeta = (response) => {
-                const status = Number(response?.status || 0);
-                const readyState = Number(response?.readyState || 0);
-                const responseText = typeof response?.responseText === 'string' ? response.responseText : '';
-                return {
-                    status,
-                    readyState,
-                    textLength: responseText.length,
-                    responseText,
-                    elapsedMs: elapsedMs(),
-                };
-            };
 
             const tryCaptureConversationId = (rawText, trigger) => {
                 if (capturedConversationId) return capturedConversationId;
@@ -1456,147 +1476,131 @@ export const AutoRegister = {
                 if (settled) return;
                 logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages 8s 兜底超时，强制结束并刷新后续流程');
                 finish('failsafe-timeout', {
-                    status: 0,
+                    status: statusCode || 0,
                     readyState: 0,
-                    textLength: 0,
+                    textLength: streamText.length,
                     elapsedMs: elapsedMs(),
                 });
                 abortRequest('failsafe-timeout');
             }, 8000);
 
-            requestController = gmXmlHttpRequest({
-                method: 'POST',
-                url,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Language': X_LANGUAGE,
-                    Authorization: `Bearer ${token}`,
-                },
-                data: JSON.stringify(body),
-                timeout: 20000,
-                // chat-messages 需要稳定的 SSE 增量文本，强制走 XHR 模式避免 fetch 模式下 progress/readyState 行为不一致。
-                anonymous: false,
-                fetch: false,
-                onreadystatechange: (response) => {
-                    if (settled) return;
-                    const meta = callbackMeta(response);
-                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onreadystatechange', {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
+            (async () => {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Language': X_LANGUAGE,
+                            Authorization: `Bearer ${token}`,
+                        },
+                        body: JSON.stringify(body),
+                        credentials: 'include',
+                        cache: 'no-store',
+                        signal: requestController.signal,
                     });
 
-                    if (meta.readyState < 3) {
-                        logInfo(runCtx, 'SWITCH_CHAT', 'onreadystatechange 仅收到响应头，继续等待首条 SSE data', {
-                            readyState: meta.readyState,
-                            textLength: meta.textLength,
-                            elapsedMs: meta.elapsedMs,
+                    statusCode = Number(response.status || 0);
+                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages fetch 已建立连接', {
+                        status: statusCode,
+                        ok: response.ok,
+                        elapsedMs: elapsedMs(),
+                    });
+                    if (!response.ok) {
+                        throw withHttpStatusError(`chat-messages 请求失败: HTTP ${statusCode}`, statusCode);
+                    }
+
+                    const reader = response.body?.getReader?.();
+                    if (!reader) {
+                        streamText = await response.text();
+                        tryCaptureConversationId(streamText, 'fetch-no-stream');
+                        finish('fetch-no-stream', {
+                            status: statusCode,
+                            readyState: 4,
+                            textLength: streamText.length,
+                            elapsedMs: elapsedMs(),
+                            conversationId: capturedConversationId,
                         });
                         return;
                     }
 
-                    tryCaptureConversationId(meta.responseText, 'onreadystatechange');
-                    const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
-                    if (!hasStreamData) {
-                        logInfo(runCtx, 'SWITCH_CHAT', 'onreadystatechange 已到流阶段但尚无可用 data，继续等待', {
-                            readyState: meta.readyState,
-                            textLength: meta.textLength,
-                            elapsedMs: meta.elapsedMs,
+                    const decoder = new TextDecoder();
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) {
+                            break;
+                        }
+
+                        const chunkText = decoder.decode(value, { stream: true });
+                        if (!chunkText) {
+                            continue;
+                        }
+                        streamText += chunkText;
+                        tryCaptureConversationId(streamText, 'fetch-stream');
+                        const hasSseData = /(?:^|\n)\s*data:\s*/m.test(streamText) || !!capturedConversationId;
+                        logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages fetch stream chunk', {
+                            status: statusCode,
+                            chunkLength: chunkText.length,
+                            textLength: streamText.length,
+                            hasSseData,
+                            elapsedMs: elapsedMs(),
+                            conversationId: capturedConversationId || null,
                         });
+
+                        if (!hasSseData) {
+                            continue;
+                        }
+
+                        finish('fetch-stream-first-chunk', {
+                            status: statusCode,
+                            readyState: 3,
+                            textLength: streamText.length,
+                            elapsedMs: elapsedMs(),
+                            conversationId: capturedConversationId,
+                        });
+                        abortRequest(capturedConversationId ? 'conversation-id-captured-fetch-stream' : 'first-stream-chunk-fetch-stream');
                         return;
                     }
 
-                    finish(`onreadystatechange-${meta.readyState}`, {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
+                    tryCaptureConversationId(streamText, 'fetch-stream-end');
+                    finish('fetch-stream-end', {
+                        status: statusCode,
+                        readyState: 4,
+                        textLength: streamText.length,
+                        elapsedMs: elapsedMs(),
                         conversationId: capturedConversationId,
                     });
-                    abortRequest(capturedConversationId ? 'conversation-id-captured-readyState' : `readyState-${meta.readyState}`);
-                },
-                onprogress: (response) => {
+                } catch (error) {
                     if (settled) return;
-                    const meta = callbackMeta(response);
-                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onprogress', {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
-                    });
-                    tryCaptureConversationId(meta.responseText, 'onprogress');
-                    const hasStreamData = meta.textLength > 0 || !!capturedConversationId;
-                    if (!hasStreamData) {
-                        logInfo(runCtx, 'SWITCH_CHAT', 'onprogress 触发但尚无可用 data，继续等待', {
-                            readyState: meta.readyState,
-                            textLength: meta.textLength,
-                            elapsedMs: meta.elapsedMs,
+                    clearTimers();
+                    if (error?.name === 'AbortError') {
+                        logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages fetch onabort', {
+                            abortedByScript,
+                            elapsedMs: elapsedMs(),
+                            textLength: streamText.length,
+                            conversationId: capturedConversationId || null,
                         });
+                        if (abortedByScript) {
+                            finish('fetch-onabort-by-script', {
+                                status: statusCode || 0,
+                                readyState: 0,
+                                textLength: streamText.length,
+                                elapsedMs: elapsedMs(),
+                                conversationId: capturedConversationId,
+                            });
+                            return;
+                        }
+                        reject(new Error('chat-messages 请求被中止'));
                         return;
                     }
 
-                    // 一旦 SSE 有首个响应，立即结束并中断后台流，避免占用连接导致前端看不到流式内容。
-                    finish('onprogress-first-chunk', {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
-                        conversationId: capturedConversationId,
-                    });
-                    abortRequest(capturedConversationId ? 'conversation-id-captured' : 'first-stream-chunk');
-                },
-                onload: (response) => {
-                    if (settled) return;
-                    const meta = callbackMeta(response);
-                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onload', {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
-                    });
-                    tryCaptureConversationId(meta.responseText, 'onload');
-                    finish('onload', {
-                        status: meta.status,
-                        readyState: meta.readyState,
-                        textLength: meta.textLength,
-                        elapsedMs: meta.elapsedMs,
-                        conversationId: capturedConversationId,
-                    });
-                },
-                onerror: (error) => {
-                    if (settled) return;
-                    clearTimers();
-                    logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages onerror', {
-                        status: Number(error?.status || 0),
-                        message: error?.error || 'network-error',
+                    logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages fetch 失败', {
+                        status: statusCode || 0,
+                        message: error?.message || String(error),
                         elapsedMs: elapsedMs(),
                     });
-                    reject(withHttpStatusError(error?.error || 'chat-messages 网络请求失败', Number(error?.status || 0)));
-                },
-                ontimeout: () => {
-                    if (settled) return;
-                    clearTimers();
-                    logWarn(runCtx, 'SWITCH_CHAT', 'chat-messages ontimeout', {
-                        elapsedMs: elapsedMs(),
-                    });
-                    reject(new Error('chat-messages 请求超时'));
-                },
-                onabort: () => {
-                    if (settled) return;
-                    clearTimers();
-                    logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages onabort', {
-                        abortedByScript,
-                        elapsedMs: elapsedMs(),
-                        conversationId: capturedConversationId || null,
-                    });
-                    if (abortedByScript) {
-                        finish('onabort-by-script', { conversationId: capturedConversationId });
-                        return;
-                    }
-                    reject(new Error('chat-messages 请求被中止'));
-                },
-            });
+                    reject(withHttpStatusError(error?.message || 'chat-messages fetch 请求失败', statusCode || 0));
+                }
+            })();
         });
     },
 

@@ -407,6 +407,69 @@ export const ChatHistoryService = {
             });
     },
 
+    async listAllChains() {
+        const chains = await ChatHistoryStore.listAllChains();
+        return (chains || [])
+            .map((chain) => toChainRecord(chain))
+            .sort((a, b) => {
+                const updatedDiff = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+                if (updatedDiff !== 0) return updatedDiff;
+                return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+            });
+    },
+
+    async deleteChain(chainId) {
+        const normalizedChainId = normalizeId(chainId);
+        if (!normalizedChainId) {
+            throw new Error('chainId 为空，无法删除链路');
+        }
+
+        const chain = await this.getChain(normalizedChainId);
+        if (!chain) {
+            return {
+                deleted: false,
+                chainId: normalizedChainId,
+                appId: '',
+                deletedMessageCount: 0,
+                removedConversationMappingCount: 0,
+            };
+        }
+
+        const deletedMessageCount = await ChatHistoryStore.deleteMessagesByChain(normalizedChainId);
+        await ChatHistoryStore.deleteChain(normalizedChainId);
+
+        const index = readIndex();
+        let removedConversationMappingCount = 0;
+        for (const [key, mappedChainId] of Object.entries(index.conversationToChain || {})) {
+            if (normalizeId(mappedChainId) !== normalizedChainId) continue;
+            delete index.conversationToChain[key];
+            if (index.conversationTokenByKey && Object.prototype.hasOwnProperty.call(index.conversationTokenByKey, key)) {
+                delete index.conversationTokenByKey[key];
+            }
+            removedConversationMappingCount += 1;
+        }
+
+        for (const [appId, activeChainId] of Object.entries(index.activeChainByAppId || {})) {
+            if (normalizeId(activeChainId) === normalizedChainId) {
+                delete index.activeChainByAppId[appId];
+            }
+        }
+
+        if (index.lastSyncByChainId && Object.prototype.hasOwnProperty.call(index.lastSyncByChainId, normalizedChainId)) {
+            delete index.lastSyncByChainId[normalizedChainId];
+        }
+        writeIndex(index);
+
+        return {
+            deleted: true,
+            chainId: normalizedChainId,
+            appId: normalizeId(chain.appId),
+            deletedMessageCount,
+            removedConversationMappingCount,
+            deletedConversationCount: uniqueStringArray(chain.conversationIds || []).length,
+        };
+    },
+
     async bindConversation({
         appId,
         conversationId,
