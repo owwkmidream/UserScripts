@@ -590,9 +590,35 @@ const SIDEBAR_STYLES = `
     #aifengyue-conversation-chain:disabled,
     #aifengyue-conversation-refresh:disabled,
     #aifengyue-conversation-sync:disabled,
+    #aifengyue-conversation-export:disabled,
+    #aifengyue-conversation-import-trigger:disabled,
     #aifengyue-conversation-open-preview:disabled {
         opacity: 0.55;
         cursor: not-allowed;
+    }
+    .aifengyue-conv-latest-card {
+        margin-top: 10px;
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: var(--af-bg-card);
+        padding: 10px;
+    }
+    .aifengyue-conv-latest-head {
+        font-size: 11px;
+        color: var(--af-muted);
+        margin-bottom: 6px;
+        letter-spacing: 0.4px;
+    }
+    .aifengyue-conv-latest-body {
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--af-text);
+        border: 1px solid var(--af-border);
+        background: var(--af-input-bg);
+        border-radius: 8px;
+        padding: 8px 10px;
+        word-break: break-word;
+        white-space: pre-wrap;
     }
 
     /* --- 会话预览浮层 --- */
@@ -613,12 +639,12 @@ const SIDEBAR_STYLES = `
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 20px;
+        padding: 10px 16px;
     }
     .aifengyue-conv-modal-content {
         width: min(1200px, calc(100vw - 40px));
         min-width: 700px;
-        height: min(86vh, 980px);
+        height: min(94vh, 1200px);
         border-radius: 12px;
         background: #f7f8fb;
         border: 1px solid rgba(148, 163, 184, 0.4);

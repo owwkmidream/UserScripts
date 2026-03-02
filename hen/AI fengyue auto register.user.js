@@ -547,10 +547,42 @@
 			return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
 		}
 		if (looksLikeHtml(normalized)) {
-			return `<div class="markdown-body false" style="font-size:14px;">${normalized}</div>`;
+			const normalizedHtml = normalizeLineBreakTokens(normalized);
+			return `<div class="markdown-body false" style="font-size:14px;white-space:pre-wrap;">${normalizedHtml}</div>`;
 		}
-		const plainText = normalized.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
+		const plainText = normalizeLineBreakTokens(normalized);
 		return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
+	}
+	function normalizeLineBreakTokens(text) {
+		let value = String(text ?? "");
+		for (let i = 0; i < 4; i++) {
+			const next = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\\+r\\+n/g, "\n").replace(/\\+n/g, "\n").replace(/\\+r/g, "\n");
+			if (next === value) {
+				break;
+			}
+			value = next;
+		}
+		return value;
+	}
+	function extractLatestQueryTail(records, tailLength = 28) {
+		if (!Array.isArray(records) || records.length === 0) return "";
+		for (let i = records.length - 1; i >= 0; i--) {
+			const record = records[i];
+			const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+			const query = asDisplayContent(rawMessage.query ?? record?.query ?? "");
+			if (!hasMeaningfulText(query)) continue;
+			const singleLine = normalizeLineBreakTokens(query).replace(/\s+/g, " ").trim();
+			if (!singleLine) continue;
+			return singleLine.length > tailLength ? `...${singleLine.slice(-tailLength)}` : singleLine;
+		}
+		return "";
+	}
+	function cloneJsonCompatible(value, fallback = null) {
+		try {
+			return JSON.parse(JSON.stringify(value));
+		} catch {
+			return fallback;
+		}
 	}
 	function hasMeaningfulText(value) {
 		const normalized = asDisplayContent(value).trim().toLowerCase();
@@ -844,7 +876,8 @@
 			if (!normalizedChainId) {
 				return {
 					messageCount: 0,
-					answerCount: 0
+					answerCount: 0,
+					latestQueryTail: ""
 				};
 			}
 			const records = await this.listMessagesByChain(normalizedChainId);
@@ -858,7 +891,166 @@
 			}
 			return {
 				messageCount: records.length,
-				answerCount
+				answerCount,
+				latestQueryTail: extractLatestQueryTail(records)
+			};
+		},
+		async exportChainBundle({ appId, chainId }) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedChainId = normalizeId(chainId);
+			if (!normalizedAppId || !normalizedChainId) {
+				throw new Error("缺少 appId 或 chainId，无法导出会话链");
+			}
+			const [appMeta, chain, records] = await Promise.all([
+				this.getAppMeta(normalizedAppId),
+				this.getChain(normalizedChainId),
+				this.listMessagesByChain(normalizedChainId)
+			]);
+			if (!chain) {
+				throw new Error(`会话链不存在: ${normalizedChainId}`);
+			}
+			if (normalizeId(chain.appId) !== normalizedAppId) {
+				throw new Error(`会话链 appId 不匹配: ${normalizedChainId}`);
+			}
+			const exportMessages = (records || []).map((record) => {
+				const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+				return {
+					storeKey: String(record?.storeKey || ""),
+					appId: normalizedAppId,
+					chainId: normalizedChainId,
+					conversationId: normalizeId(record?.conversationId),
+					messageId: normalizeId(record?.messageId),
+					createdAt: Number(record?.createdAt || 0),
+					updatedAt: Number(record?.updatedAt || 0),
+					query: typeof record?.query === "string" ? record.query : typeof rawMessage.query === "string" ? rawMessage.query : "",
+					answer: typeof record?.answer === "string" ? record.answer : typeof rawMessage.answer === "string" ? rawMessage.answer : "",
+					rawMessage: cloneJsonCompatible(rawMessage, {})
+				};
+			});
+			return {
+				version: 1,
+				type: "aifengyue_chain_bundle",
+				exportedAt: Date.now(),
+				appId: normalizedAppId,
+				appMeta: appMeta ? {
+					appId: normalizedAppId,
+					name: asDisplayContent(appMeta.name),
+					description: asDisplayContent(appMeta.description),
+					builtInCss: asDisplayContent(appMeta.builtInCss),
+					createdAt: Number(appMeta.createdAt || 0),
+					updatedAt: Number(appMeta.updatedAt || 0)
+				} : null,
+				chain: {
+					chainId: normalizedChainId,
+					appId: normalizedAppId,
+					conversationIds: uniqueStringArray(chain.conversationIds || []),
+					createdAt: Number(chain.createdAt || 0),
+					updatedAt: Number(chain.updatedAt || 0),
+					lastSyncAt: this.getChainLastSync(normalizedChainId)
+				},
+				messages: exportMessages,
+				summary: {
+					conversationCount: uniqueStringArray(chain.conversationIds || []).length,
+					messageCount: exportMessages.length,
+					latestQueryTail: extractLatestQueryTail(records)
+				}
+			};
+		},
+		async importChainBundle({ payload, preferAppId = "", preferChainId = "" } = {}) {
+			const source = payload && typeof payload === "object" ? payload : null;
+			if (!source) {
+				throw new Error("导入内容不是合法 JSON 对象");
+			}
+			const sourceChain = source?.chain && typeof source.chain === "object" ? source.chain : {};
+			const sourceAppMeta = source?.appMeta && typeof source.appMeta === "object" ? source.appMeta : {};
+			const sourceMessages = Array.isArray(source?.messages) ? source.messages : [];
+			const normalizedAppId = normalizeId(preferAppId) || normalizeId(source?.appId) || normalizeId(sourceChain?.appId) || normalizeId(sourceAppMeta?.appId);
+			if (!normalizedAppId) {
+				throw new Error("导入失败：未识别 appId");
+			}
+			const sourceConversationIds = uniqueStringArray([...Array.isArray(sourceChain?.conversationIds) ? sourceChain.conversationIds : [], ...sourceMessages.map((item) => {
+				const rawMessage = item?.rawMessage && typeof item.rawMessage === "object" ? item.rawMessage : {};
+				return normalizeId(item?.conversationId) || normalizeId(item?.conversation_id) || normalizeId(rawMessage?.conversationId) || normalizeId(rawMessage?.conversation_id);
+			})]);
+			let targetChainId = normalizeId(preferChainId) || normalizeId(sourceChain?.chainId);
+			if (!targetChainId) {
+				targetChainId = createChainId(normalizedAppId);
+			}
+			let existingChain = await this.getChain(targetChainId);
+			if (existingChain && normalizeId(existingChain.appId) !== normalizedAppId) {
+				targetChainId = createChainId(normalizedAppId);
+				existingChain = null;
+			}
+			const now = Date.now();
+			const seenStoreKeys = new Set();
+			const records = [];
+			for (let i = 0; i < sourceMessages.length; i++) {
+				const item = sourceMessages[i];
+				if (!item || typeof item !== "object") continue;
+				const rawMessage = item?.rawMessage && typeof item.rawMessage === "object" ? item.rawMessage : cloneJsonCompatible(item, {});
+				const conversationId = normalizeId(item?.conversationId) || normalizeId(item?.conversation_id) || normalizeId(rawMessage?.conversationId) || normalizeId(rawMessage?.conversation_id) || sourceConversationIds[0] || `import-conv-${i + 1}`;
+				const messageId = normalizeId(item?.messageId) || normalizeId(item?.id) || normalizeId(rawMessage?.id) || `${conversationId}-idx-${i}`;
+				const createdAt = normalizeTimestamp$1(item?.createdAt ?? item?.created_at ?? rawMessage?.created_at) || now + i;
+				const storeKey = `${targetChainId}::${conversationId}::${messageId}`;
+				if (seenStoreKeys.has(storeKey)) continue;
+				seenStoreKeys.add(storeKey);
+				const query = typeof item?.query === "string" ? item.query : typeof rawMessage?.query === "string" ? rawMessage.query : "";
+				const answer = typeof item?.answer === "string" ? item.answer : typeof rawMessage?.answer === "string" ? rawMessage.answer : "";
+				records.push({
+					storeKey,
+					appId: normalizedAppId,
+					chainId: targetChainId,
+					conversationId,
+					messageId,
+					createdAt,
+					updatedAt: now,
+					query,
+					answer,
+					rawMessage: cloneJsonCompatible(rawMessage, {})
+				});
+			}
+			const mergedConversationIds = uniqueStringArray([
+				...existingChain?.conversationIds || [],
+				...sourceConversationIds,
+				...records.map((record) => record.conversationId)
+			]);
+			if (mergedConversationIds.length === 0) {
+				throw new Error("导入失败：未找到可用 conversation_id");
+			}
+			if (sourceAppMeta && Object.keys(sourceAppMeta).length > 0) {
+				await this.upsertAppMeta({
+					appId: normalizedAppId,
+					name: sourceAppMeta?.name ?? "",
+					description: sourceAppMeta?.description ?? "",
+					builtInCss: sourceAppMeta?.builtInCss ?? ""
+				});
+			}
+			const nextChain = toChainRecord(existingChain || {
+				chainId: targetChainId,
+				appId: normalizedAppId,
+				conversationIds: [],
+				createdAt: now,
+				updatedAt: now
+			}, {
+				chainId: targetChainId,
+				appId: normalizedAppId,
+				conversationIds: mergedConversationIds,
+				updatedAt: now
+			});
+			await ChatHistoryStore.upsertChain(nextChain);
+			const savedCount = await ChatHistoryStore.putMessages(records);
+			for (const conversationId of mergedConversationIds) {
+				this.setConversationChainId(normalizedAppId, conversationId, targetChainId);
+			}
+			this.setActiveChainId(normalizedAppId, targetChainId);
+			this.markChainSynced(targetChainId, Date.now());
+			return {
+				appId: normalizedAppId,
+				chainId: targetChainId,
+				conversationCount: mergedConversationIds.length,
+				sourceMessageCount: sourceMessages.length,
+				importedMessageCount: records.length,
+				savedCount
 			};
 		},
 		async buildChainViewerHtml({ appId, chainId }) {
@@ -1269,6 +1461,19 @@
                                 ⬇ 手动同步
                             </button>
                         </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-export">
+                                📤 导出JSON
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-conversation-import-trigger">
+                                📥 导入JSON
+                            </button>
+                        </div>
+                        <input type="file" id="aifengyue-conversation-import-file" accept=".json,application/json" style="display:none;">
+                        <div class="aifengyue-conv-latest-card">
+                            <div class="aifengyue-conv-latest-head">当前链路最新 Query 尾部</div>
+                            <div class="aifengyue-conv-latest-body" id="aifengyue-conversation-latest-query">-</div>
+                        </div>
                         <div class="aifengyue-hint" id="aifengyue-conversation-status">
                             仅在应用详情页可用，会显示本地保存的链式会话。
                         </div>
@@ -1500,6 +1705,7 @@
 				if (!chainId || !this.conversation.appId) return;
 				this.conversation.activeChainId = chainId;
 				ChatHistoryService.setActiveChainId(this.conversation.appId, chainId);
+				this.renderConversationLatestQueryTail();
 				await this.renderConversationViewer();
 			});
 			this.element.querySelector("#aifengyue-conversation-refresh").addEventListener("click", async () => {
@@ -1510,6 +1716,20 @@
 			});
 			this.element.querySelector("#aifengyue-conversation-sync").addEventListener("click", async () => {
 				await this.syncConversationPanel();
+			});
+			this.element.querySelector("#aifengyue-conversation-export").addEventListener("click", async () => {
+				await this.exportConversationChainJson();
+			});
+			this.element.querySelector("#aifengyue-conversation-import-trigger").addEventListener("click", () => {
+				const fileInput = this.element.querySelector("#aifengyue-conversation-import-file");
+				if (!fileInput) return;
+				fileInput.value = "";
+				fileInput.click();
+			});
+			this.element.querySelector("#aifengyue-conversation-import-file").addEventListener("change", async (e) => {
+				const file = e?.target?.files?.[0];
+				if (!file) return;
+				await this.importConversationChainJson(file);
 			});
 			this.element.querySelector("#aifengyue-conversation-open-preview").addEventListener("click", async () => {
 				this.openConversationModal();
@@ -1561,17 +1781,24 @@
 			const chainSelect = this.element?.querySelector("#aifengyue-conversation-chain");
 			const refreshBtn = this.element?.querySelector("#aifengyue-conversation-refresh");
 			const syncBtn = this.element?.querySelector("#aifengyue-conversation-sync");
+			const exportBtn = this.element?.querySelector("#aifengyue-conversation-export");
+			const importTriggerBtn = this.element?.querySelector("#aifengyue-conversation-import-trigger");
+			const importFileInput = this.element?.querySelector("#aifengyue-conversation-import-file");
 			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
 			const switchBtn = this.element?.querySelector("#aifengyue-switch-account");
 			if (chainSelect) chainSelect.disabled = !!busy;
 			if (refreshBtn) refreshBtn.disabled = !!busy;
 			if (syncBtn) syncBtn.disabled = !!busy;
+			if (exportBtn) exportBtn.disabled = !!busy;
+			if (importTriggerBtn) importTriggerBtn.disabled = !!busy;
+			if (importFileInput) importFileInput.disabled = !!busy;
 			if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
 			if (switchBtn) switchBtn.disabled = !!busy;
 		},
 		renderConversationSelectOptions() {
 			const select = this.element?.querySelector("#aifengyue-conversation-chain");
 			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
+			const exportBtn = this.element?.querySelector("#aifengyue-conversation-export");
 			if (!select) return;
 			select.innerHTML = "";
 			if (!this.conversation.chains.length) {
@@ -1581,6 +1808,8 @@
 				select.appendChild(option);
 				select.value = "";
 				if (openPreviewBtn) openPreviewBtn.disabled = true;
+				if (exportBtn) exportBtn.disabled = true;
+				this.renderConversationLatestQueryTail();
 				return;
 			}
 			this.conversation.chains.forEach((chain, index) => {
@@ -1599,6 +1828,21 @@
 			if (openPreviewBtn) {
 				openPreviewBtn.disabled = false;
 			}
+			if (exportBtn && !this.conversation.loading) {
+				exportBtn.disabled = false;
+			}
+			this.renderConversationLatestQueryTail();
+		},
+		renderConversationLatestQueryTail() {
+			const tailEl = this.element?.querySelector("#aifengyue-conversation-latest-query");
+			if (!tailEl) return;
+			if (!Array.isArray(this.conversation.chains) || this.conversation.chains.length === 0) {
+				tailEl.textContent = "-";
+				return;
+			}
+			const activeChain = this.conversation.chains.find((chain) => chain.chainId === this.conversation.activeChainId) || this.conversation.chains[0];
+			const latestQueryTail = typeof activeChain?.latestQueryTail === "string" ? activeChain.latestQueryTail.trim() : "";
+			tailEl.textContent = latestQueryTail || "-";
 		},
 		async renderConversationViewer() {
 			const viewer = document.getElementById("aifengyue-conversation-viewer");
@@ -1718,6 +1962,77 @@
 			} catch (error) {
 				this.setConversationStatus(`手动同步失败: ${error.message}`);
 				getToast()?.error(`手动同步失败: ${error.message}`);
+			} finally {
+				this.setConversationBusy(false);
+			}
+		},
+		async exportConversationChainJson() {
+			if (!this.conversation.appId || !this.conversation.activeChainId) {
+				getToast()?.warning("当前没有可导出的会话链");
+				return;
+			}
+			this.setConversationBusy(true);
+			try {
+				const bundle = await ChatHistoryService.exportChainBundle({
+					appId: this.conversation.appId,
+					chainId: this.conversation.activeChainId
+				});
+				const content = JSON.stringify(bundle, null, 2);
+				const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+				const url = URL.createObjectURL(blob);
+				const link = document.createElement("a");
+				const safeAppId = String(this.conversation.appId).replace(/[^a-zA-Z0-9_-]/g, "_");
+				const safeChainId = String(this.conversation.activeChainId).replace(/[^a-zA-Z0-9_-]/g, "_");
+				link.href = url;
+				link.download = `aifengyue-chain-${safeAppId}-${safeChainId}.json`;
+				document.body.appendChild(link);
+				link.click();
+				link.remove();
+				URL.revokeObjectURL(url);
+				this.setConversationStatus(`导出完成：${bundle.summary?.messageCount ?? 0} 条消息`);
+				getToast()?.success("会话链导出成功");
+			} catch (error) {
+				this.setConversationStatus(`导出失败: ${error.message}`);
+				getToast()?.error(`导出失败: ${error.message}`);
+			} finally {
+				this.setConversationBusy(false);
+			}
+		},
+		readTextFile(file) {
+			return new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+				reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+				reader.readAsText(file, "utf-8");
+			});
+		},
+		async importConversationChainJson(file) {
+			if (!file) return;
+			this.setConversationBusy(true);
+			try {
+				const text = await this.readTextFile(file);
+				if (!text.trim()) {
+					throw new Error("导入文件内容为空");
+				}
+				let payload;
+				try {
+					payload = JSON.parse(text);
+				} catch {
+					throw new Error("导入文件不是合法 JSON");
+				}
+				const summary = await ChatHistoryService.importChainBundle({
+					payload,
+					preferAppId: this.conversation.appId || ""
+				});
+				this.setConversationStatus(`导入完成: ${summary.conversationCount} 会话，保存 ${summary.savedCount}/${summary.importedMessageCount} 条消息`);
+				getToast()?.success("会话链导入成功");
+				await this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: true
+				});
+			} catch (error) {
+				this.setConversationStatus(`导入失败: ${error.message}`);
+				getToast()?.error(`导入失败: ${error.message}`);
 			} finally {
 				this.setConversationBusy(false);
 			}
@@ -5053,9 +5368,35 @@
     #aifengyue-conversation-chain:disabled,
     #aifengyue-conversation-refresh:disabled,
     #aifengyue-conversation-sync:disabled,
+    #aifengyue-conversation-export:disabled,
+    #aifengyue-conversation-import-trigger:disabled,
     #aifengyue-conversation-open-preview:disabled {
         opacity: 0.55;
         cursor: not-allowed;
+    }
+    .aifengyue-conv-latest-card {
+        margin-top: 10px;
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: var(--af-bg-card);
+        padding: 10px;
+    }
+    .aifengyue-conv-latest-head {
+        font-size: 11px;
+        color: var(--af-muted);
+        margin-bottom: 6px;
+        letter-spacing: 0.4px;
+    }
+    .aifengyue-conv-latest-body {
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--af-text);
+        border: 1px solid var(--af-border);
+        background: var(--af-input-bg);
+        border-radius: 8px;
+        padding: 8px 10px;
+        word-break: break-word;
+        white-space: pre-wrap;
     }
 
     /* --- 会话预览浮层 --- */
@@ -5076,12 +5417,12 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 20px;
+        padding: 10px 16px;
     }
     .aifengyue-conv-modal-content {
         width: min(1200px, calc(100vw - 40px));
         min-width: 700px;
-        height: min(86vh, 980px);
+        height: min(94vh, 1200px);
         border-radius: 12px;
         background: #f7f8fb;
         border: 1px solid rgba(148, 163, 184, 0.4);
