@@ -33,7 +33,8 @@
 			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled",
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
 			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
-			SIDEBAR_THEME: "aifengyue_sidebar_theme"
+			SIDEBAR_THEME: "aifengyue_sidebar_theme",
+			SIDEBAR_DEFAULT_TAB: "aifengyue_sidebar_default_tab"
 		},
 		API_QUOTA_LIMIT: 1e3,
 		VERIFICATION_CODE_PATTERNS: [
@@ -454,6 +455,7 @@
 		const fallback = {
 			activeChainByAppId: {},
 			conversationToChain: {},
+			conversationTokenByKey: {},
 			lastSyncByChainId: {}
 		};
 		const raw = localStorage.getItem(INDEX_KEY);
@@ -466,6 +468,7 @@
 			return {
 				activeChainByAppId: parsed.activeChainByAppId && typeof parsed.activeChainByAppId === "object" ? { ...parsed.activeChainByAppId } : {},
 				conversationToChain: parsed.conversationToChain && typeof parsed.conversationToChain === "object" ? { ...parsed.conversationToChain } : {},
+				conversationTokenByKey: parsed.conversationTokenByKey && typeof parsed.conversationTokenByKey === "object" ? { ...parsed.conversationTokenByKey } : {},
 				lastSyncByChainId: parsed.lastSyncByChainId && typeof parsed.lastSyncByChainId === "object" ? { ...parsed.lastSyncByChainId } : {}
 			};
 		} catch {
@@ -541,12 +544,13 @@
 	function renderMessageBody(text, emptyPlaceholder = "(空)") {
 		const normalized = asDisplayContent(text);
 		if (!normalized) {
-			return `<pre class="af-plain">${escapeHtml(emptyPlaceholder)}</pre>`;
+			return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
 		}
 		if (looksLikeHtml(normalized)) {
 			return `<div class="markdown-body false" style="font-size:14px;">${normalized}</div>`;
 		}
-		return `<pre class="af-plain">${escapeHtml(normalized)}</pre>`;
+		const plainText = normalized.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
+		return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
 	}
 	function hasMeaningfulText(value) {
 		const normalized = asDisplayContent(value).trim().toLowerCase();
@@ -588,6 +592,29 @@
 			index.conversationToChain[makeConversationKey(normalizedAppId, normalizedConversationId)] = normalizedChainId;
 			writeIndex(index);
 			return normalizedChainId;
+		},
+		getConversationTokenSignature(appId, conversationId) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			if (!normalizedAppId || !normalizedConversationId) return "";
+			const index = readIndex();
+			const key = makeConversationKey(normalizedAppId, normalizedConversationId);
+			return normalizeId(index.conversationTokenByKey[key]);
+		},
+		setConversationTokenSignature(appId, conversationId, tokenSignature) {
+			const normalizedAppId = normalizeId(appId);
+			const normalizedConversationId = normalizeId(conversationId);
+			if (!normalizedAppId || !normalizedConversationId) return "";
+			const normalizedTokenSignature = normalizeId(tokenSignature);
+			const index = readIndex();
+			const key = makeConversationKey(normalizedAppId, normalizedConversationId);
+			if (normalizedTokenSignature) {
+				index.conversationTokenByKey[key] = normalizedTokenSignature;
+			} else {
+				delete index.conversationTokenByKey[key];
+			}
+			writeIndex(index);
+			return normalizedTokenSignature;
 		},
 		getActiveChainId(appId) {
 			const normalizedAppId = normalizeId(appId);
@@ -658,11 +685,12 @@
 				return Number(b.createdAt || 0) - Number(a.createdAt || 0);
 			});
 		},
-		async bindConversation({ appId, conversationId, previousConversationId = "", preferredChainId = "" }) {
+		async bindConversation({ appId, conversationId, previousConversationId = "", preferredChainId = "", tokenSignature = "" }) {
 			const normalizedAppId = normalizeId(appId);
 			const normalizedConversationId = normalizeId(conversationId);
 			const normalizedPreviousConversationId = normalizeId(previousConversationId);
 			const normalizedPreferredChainId = normalizeId(preferredChainId);
+			const normalizedTokenSignature = normalizeId(tokenSignature);
 			if (!normalizedAppId || !normalizedConversationId) {
 				throw new Error("appId 或 conversationId 为空，无法绑定链路");
 			}
@@ -670,6 +698,9 @@
 			if (directChainId) {
 				const directChain = await this.getChain(directChainId);
 				if (directChain && directChain.appId === normalizedAppId) {
+					if (normalizedTokenSignature) {
+						this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
+					}
 					this.setActiveChainId(normalizedAppId, directChainId);
 					return {
 						chainId: directChainId,
@@ -728,6 +759,15 @@
 			if (normalizedPreviousConversationId) {
 				this.setConversationChainId(normalizedAppId, normalizedPreviousConversationId, chainId);
 			}
+			if (normalizedTokenSignature) {
+				this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
+				if (normalizedPreviousConversationId) {
+					const previousToken = this.getConversationTokenSignature(normalizedAppId, normalizedPreviousConversationId);
+					if (!previousToken) {
+						this.setConversationTokenSignature(normalizedAppId, normalizedPreviousConversationId, normalizedTokenSignature);
+					}
+				}
+			}
 			this.setActiveChainId(normalizedAppId, chainId);
 			return {
 				chainId,
@@ -735,16 +775,18 @@
 				created
 			};
 		},
-		async saveConversationMessages({ appId, conversationId, chainId = "", messages = [] }) {
+		async saveConversationMessages({ appId, conversationId, chainId = "", tokenSignature = "", messages = [] }) {
 			const normalizedAppId = normalizeId(appId);
 			const normalizedConversationId = normalizeId(conversationId);
+			const normalizedTokenSignature = normalizeId(tokenSignature);
 			if (!normalizedAppId || !normalizedConversationId) {
 				throw new Error("appId 或 conversationId 为空，无法保存消息");
 			}
 			const binding = await this.bindConversation({
 				appId: normalizedAppId,
 				conversationId: normalizedConversationId,
-				preferredChainId: chainId
+				preferredChainId: chainId,
+				tokenSignature: normalizedTokenSignature
 			});
 			const normalizedChainId = binding.chainId;
 			const now = Date.now();
@@ -778,6 +820,9 @@
 					conversationIds: uniqueStringArray([...chain.conversationIds || [], normalizedConversationId]),
 					updatedAt: Date.now()
 				}));
+			}
+			if (normalizedTokenSignature) {
+				this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
 			}
 			return {
 				chainId: normalizedChainId,
@@ -847,7 +892,7 @@
 				return `
                     <div class="group flex mb-2 last:mb-0 af-row-user">
                         <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 bg-gray-100/90 rounded-xl text-sm af-user-bubble">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
                                 ${renderedQuery}
                             </div>
                             <div class="af-bubble-meta af-user-meta">
@@ -858,16 +903,14 @@
                             ${dedupHint}
                         </div>
                     </div>
-                    <div class="flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
-                        <div class="chat-answer-container group grow w-0 mr-2 md:mr-4 af-answer-container">
-                            <div class="group relative ml-0">
-                                <div class="relative inline-block px-4 py-3 w-full bg-gray-100/90 rounded-xl text-sm text-gray-900 af-answer-bubble">
-                                    ${renderedAnswer}
-                                </div>
-                                <div class="af-bubble-meta af-answer-meta">
-                                    <span>${createdAtText}</span>
-                                    <span>${messageIdText}</span>
-                                </div>
+                    <div class="group flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
+                        <div class="chat-answer-container group relative mr-2 md:mr-0 af-bubble-wrap af-answer-wrap">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
+                                ${renderedAnswer}
+                            </div>
+                            <div class="af-bubble-meta af-answer-meta">
+                                <span>${createdAtText}</span>
+                                <span>${messageIdText}</span>
                             </div>
                         </div>
                     </div>
@@ -886,8 +929,7 @@
             --af-card: #ffffff;
             --af-border: #d7dde8;
             --af-muted: #6b7280;
-            --af-user: #d8fdd2;
-            --af-assistant: #ffffff;
+            --af-bubble: #ffffff;
         }
         * {
             box-sizing: border-box;
@@ -937,33 +979,37 @@
             gap: 8px;
         }
         .af-row-user {
+            display: flex;
             justify-content: flex-end;
         }
         .af-row-answer {
+            display: flex;
             justify-content: flex-start;
         }
         .af-bubble-wrap {
-            max-width: 86%;
+            max-width: min(86%, 900px);
             width: fit-content;
+            min-width: min(66%, 360px);
         }
-        .af-answer-container {
-            max-width: 86%;
-            width: auto !important;
-            flex-grow: 0 !important;
+        .af-user-wrap {
+            margin-right: 6%;
+        }
+        .af-answer-wrap {
+            margin-left: 6%;
+        }
+        .af-message-bubble {
+            background: var(--af-bubble) !important;
+            border: 1px solid rgba(148, 163, 184, 0.32) !important;
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+            overflow-x: auto;
+            width: 100%;
         }
         .af-user-bubble {
-            background: var(--af-user) !important;
-            border: 1px solid rgba(52, 211, 153, 0.26);
-            border-radius: 14px;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-            overflow-x: auto;
+            margin-left: auto;
         }
         .af-answer-bubble {
-            background: var(--af-assistant) !important;
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 14px;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-            overflow-x: auto;
+            margin-right: auto;
         }
         .af-bubble-meta {
             display: flex;
@@ -1075,6 +1121,7 @@
 			if (this.element && document.body.contains(this.element) && document.getElementById("aifengyue-sidebar-toggle")) {
 				return;
 			}
+			this.activeTab = this.getDefaultTab();
 			this.layoutMode = this.getLayoutMode();
 			this.theme = this.getTheme();
 			this.createSidebar();
@@ -1164,13 +1211,6 @@
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick">
                             🚀 一键注册
                         </button>
-                        <div class="aifengyue-input-group">
-                            <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
-                        </div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
-                            🔀 更换账号
-                        </button>
                     </div>
 
                     <div class="aifengyue-hint" id="aifengyue-register-hint">
@@ -1203,6 +1243,16 @@
                 </div>
 
                 <div class="aifengyue-panel" data-panel="conversation">
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">更换账号</div>
+                        <div class="aifengyue-input-group">
+                            <label>更换账号附加文本</label>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
+                        </div>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
+                            🔀 更换账号
+                        </button>
+                    </div>
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">本地会话链</div>
                         <div class="aifengyue-input-group">
@@ -1268,6 +1318,15 @@
                             <select id="aifengyue-layout-mode">
                                 <option value="inline">插入右侧（占空间）</option>
                                 <option value="floating">悬浮右侧（不占空间）</option>
+                            </select>
+                        </div>
+                        <div class="aifengyue-input-group">
+                            <label>默认打开 Tab</label>
+                            <select id="aifengyue-default-tab">
+                                <option value="register">注册</option>
+                                <option value="tools">工具</option>
+                                <option value="conversation">会话</option>
+                                <option value="settings">设置</option>
                             </select>
                         </div>
                     </div>
@@ -1357,6 +1416,11 @@
 				const mode = e.target.value;
 				this.setLayoutMode(mode);
 				getToast()?.info(`侧边栏已切换为${mode === "inline" ? "插入模式" : "悬浮模式"}`);
+			});
+			this.element.querySelector("#aifengyue-default-tab").addEventListener("change", (e) => {
+				const tab = typeof e?.target?.value === "string" ? e.target.value : "register";
+				this.setDefaultTab(tab);
+				getToast()?.success(`默认 Tab 已设置为「${this.tabLabel(this.getDefaultTab())}」`);
 			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
@@ -1461,6 +1525,10 @@
 			if (layoutModeInput) {
 				layoutModeInput.value = this.layoutMode;
 			}
+			const defaultTabInput = this.element.querySelector("#aifengyue-default-tab");
+			if (defaultTabInput) {
+				defaultTabInput.value = this.getDefaultTab();
+			}
 			this.updateUsageDisplay();
 			this.render();
 		},
@@ -1494,10 +1562,12 @@
 			const refreshBtn = this.element?.querySelector("#aifengyue-conversation-refresh");
 			const syncBtn = this.element?.querySelector("#aifengyue-conversation-sync");
 			const openPreviewBtn = this.element?.querySelector("#aifengyue-conversation-open-preview");
+			const switchBtn = this.element?.querySelector("#aifengyue-switch-account");
 			if (chainSelect) chainSelect.disabled = !!busy;
 			if (refreshBtn) refreshBtn.disabled = !!busy;
 			if (syncBtn) syncBtn.disabled = !!busy;
 			if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
+			if (switchBtn) switchBtn.disabled = !!busy;
 		},
 		renderConversationSelectOptions() {
 			const select = this.element?.querySelector("#aifengyue-conversation-chain");
@@ -1549,6 +1619,27 @@
 				appId: this.conversation.appId,
 				chainId: this.conversation.activeChainId
 			});
+			viewer.onload = () => {
+				try {
+					const doc = viewer.contentDocument;
+					if (!doc) return;
+					const scrollToBottom = () => {
+						const scrolling = doc.scrollingElement || doc.documentElement || doc.body;
+						if (scrolling) {
+							scrolling.scrollTop = scrolling.scrollHeight;
+						}
+						const container = doc.querySelector(".chat-container");
+						if (container && container.parentElement) {
+							container.parentElement.scrollTop = container.parentElement.scrollHeight;
+						}
+					};
+					scrollToBottom();
+					setTimeout(scrollToBottom, 60);
+					setTimeout(scrollToBottom, 220);
+				} catch (error) {
+					console.warn("[AI风月注册助手][CONV] 预览滚动到底部失败", error);
+				}
+			};
 			viewer.srcdoc = html;
 		},
 		async refreshConversationPanel({ showToast = false, keepSelection = true } = {}) {
@@ -1617,6 +1708,9 @@
 				if (summary.failedCount > 0) {
 					getToast()?.warning(`有 ${summary.failedCount} 个会话同步失败`);
 				}
+				if (Number(summary.skippedNoPermissionCount || 0) > 0) {
+					getToast()?.info(`已跳过 ${summary.skippedNoPermissionCount} 个无权限旧会话`);
+				}
 				await this.refreshConversationPanel({
 					showToast: false,
 					keepSelection: true
@@ -1631,6 +1725,27 @@
 		getLayoutMode() {
 			const mode = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, "inline");
 			return mode === "floating" ? "floating" : "inline";
+		},
+		tabLabel(tab) {
+			switch (tab) {
+				case "register": return "注册";
+				case "tools": return "工具";
+				case "conversation": return "会话";
+				case "settings": return "设置";
+				default: return "注册";
+			}
+		},
+		getDefaultTab() {
+			const tab = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_TAB, "register");
+			return VALID_TABS.includes(tab) ? tab : "register";
+		},
+		setDefaultTab(tab) {
+			const normalized = VALID_TABS.includes(tab) ? tab : "register";
+			gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_TAB, normalized);
+			const input = this.element?.querySelector?.("#aifengyue-default-tab");
+			if (input) {
+				input.value = normalized;
+			}
 		},
 		setLayoutMode(mode) {
 			this.layoutMode = mode === "floating" ? "floating" : "inline";
@@ -2166,6 +2281,17 @@
 			output += chars[Math.floor(Math.random() * chars.length)];
 		}
 		return output;
+	}
+	function buildTokenSignature(token) {
+		const normalized = typeof token === "string" ? token.trim() : "";
+		if (!normalized) return "";
+		let hash = 2166136261;
+		for (let i = 0; i < normalized.length; i++) {
+			hash ^= normalized.charCodeAt(i);
+			hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+		}
+		const hex = (hash >>> 0).toString(16).padStart(8, "0");
+		return `tk-${normalized.length}-${hex}`;
 	}
 	function withHttpStatusError(message, httpStatus) {
 		const error = new Error(message);
@@ -3322,6 +3448,7 @@
 				if (!oldToken) {
 					throw new Error("未找到旧账号 console_token，请先登录旧账号后再更换");
 				}
+				const oldTokenSignature = buildTokenSignature(oldToken);
 				const conversationId = this.readConversationIdByAppId(appId);
 				let activeChainId = "";
 				Sidebar.updateState({
@@ -3364,13 +3491,15 @@
 				}
 				const chainBinding = await ChatHistoryService.bindConversation({
 					appId,
-					conversationId
+					conversationId,
+					tokenSignature: oldTokenSignature
 				});
 				activeChainId = chainBinding.chainId;
 				const storeResult = await ChatHistoryService.saveConversationMessages({
 					appId,
 					conversationId,
 					chainId: activeChainId,
+					tokenSignature: oldTokenSignature,
 					messages: oldConversation.messages
 				});
 				ChatHistoryService.markChainSynced(activeChainId, Date.now());
@@ -3430,14 +3559,17 @@
 					conversationName,
 					runCtx
 				});
+				const newTokenSignature = buildTokenSignature(registerResult.token);
 				const newConversationId = typeof chatResult?.conversationId === "string" ? chatResult.conversationId.trim() : "";
 				if (newConversationId) {
 					this.upsertConversationIdInfo(appId, newConversationId, runCtx);
+					ChatHistoryService.setConversationTokenSignature(appId, newConversationId, newTokenSignature);
 					ChatHistoryService.bindConversation({
 						appId,
 						conversationId: newConversationId,
 						previousConversationId: conversationId,
-						preferredChainId: activeChainId
+						preferredChainId: activeChainId,
+						tokenSignature: newTokenSignature
 					}).then((newBinding) => {
 						activeChainId = newBinding.chainId;
 						ChatHistoryService.setActiveChainId(appId, activeChainId);
@@ -3488,10 +3620,12 @@
 				};
 			}
 			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+			const currentTokenSignature = buildTokenSignature(localStorage.getItem("console_token") || "");
 			if (currentConversationId) {
 				await ChatHistoryService.bindConversation({
 					appId: resolvedAppId,
-					conversationId: currentConversationId
+					conversationId: currentConversationId,
+					tokenSignature: currentTokenSignature
 				});
 			}
 			const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
@@ -3538,6 +3672,7 @@
 			if (!token) {
 				throw new Error("未找到 console_token，请先登录后再同步");
 			}
+			const tokenSignature = buildTokenSignature(token);
 			await this.syncAppMetaToLocalHistory({
 				appId: resolvedAppId,
 				token,
@@ -3553,13 +3688,23 @@
 				if (currentConversationId) {
 					const binding = await ChatHistoryService.bindConversation({
 						appId: resolvedAppId,
-						conversationId: currentConversationId
+						conversationId: currentConversationId,
+						tokenSignature
 					});
 					resolvedChainId = binding.chainId;
 				}
 			}
 			if (!resolvedChainId) {
 				throw new Error("未找到可同步的会话链");
+			}
+			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+			if (currentConversationId) {
+				await ChatHistoryService.bindConversation({
+					appId: resolvedAppId,
+					conversationId: currentConversationId,
+					preferredChainId: resolvedChainId,
+					tokenSignature
+				});
 			}
 			const chain = await ChatHistoryService.getChain(resolvedChainId);
 			if (!chain) {
@@ -3569,12 +3714,31 @@
 			if (conversationIds.length === 0) {
 				throw new Error("当前会话链无 conversation_id，无法同步");
 			}
+			const allowedConversationIds = [];
+			const skippedNoPermissionConversationIds = [];
+			for (const conversationId of conversationIds) {
+				const bindingToken = ChatHistoryService.getConversationTokenSignature(resolvedAppId, conversationId);
+				if (!bindingToken || bindingToken !== tokenSignature) {
+					skippedNoPermissionConversationIds.push(conversationId);
+					continue;
+				}
+				allowedConversationIds.push(conversationId);
+			}
+			logInfo(runCtx, "SYNC", "会话同步过滤结果（按 token 绑定）", {
+				chainId: resolvedChainId,
+				totalConversationCount: conversationIds.length,
+				allowedConversationCount: allowedConversationIds.length,
+				skippedNoPermissionCount: skippedNoPermissionConversationIds.length
+			});
+			if (allowedConversationIds.length === 0) {
+				throw new Error("当前链路会话均不属于当前账号 token，已跳过无权限同步");
+			}
 			let totalFetched = 0;
 			let totalSaved = 0;
 			let hasIncomplete = false;
 			let successCount = 0;
 			const failedConversationIds = [];
-			for (const conversationId of conversationIds) {
+			for (const conversationId of allowedConversationIds) {
 				try {
 					const result = await this.fetchConversationMessages({
 						appId: resolvedAppId,
@@ -3593,6 +3757,7 @@
 						appId: resolvedAppId,
 						conversationId,
 						chainId: resolvedChainId,
+						tokenSignature,
 						messages: result.messages
 					});
 					totalSaved += storeResult.savedCount;
@@ -3613,7 +3778,9 @@
 			return {
 				appId: resolvedAppId,
 				chainId: resolvedChainId,
-				conversationIds,
+				conversationIds: allowedConversationIds,
+				skippedNoPermissionConversationIds,
+				skippedNoPermissionCount: skippedNoPermissionConversationIds.length,
 				successCount,
 				failedCount: failedConversationIds.length,
 				failedConversationIds,
@@ -4729,6 +4896,10 @@
         max-height: 320px;
         line-height: 1.5;
         resize: vertical;
+    }
+    .aifengyue-switch-textarea {
+        min-height: 150px !important;
+        max-height: 420px !important;
     }
     .aifengyue-input-group input:focus,
     .aifengyue-input-group select:focus,

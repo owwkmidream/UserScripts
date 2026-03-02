@@ -109,6 +109,20 @@ function randomConversationSuffix(length = 3) {
     return output;
 }
 
+function buildTokenSignature(token) {
+    const normalized = typeof token === 'string' ? token.trim() : '';
+    if (!normalized) return '';
+
+    // 用短哈希标识 token 归属，避免把明文 token 写入本地会话索引。
+    let hash = 2166136261;
+    for (let i = 0; i < normalized.length; i++) {
+        hash ^= normalized.charCodeAt(i);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    const hex = (hash >>> 0).toString(16).padStart(8, '0');
+    return `tk-${normalized.length}-${hex}`;
+}
+
 function withHttpStatusError(message, httpStatus) {
     const error = new Error(message);
     if (typeof httpStatus === 'number' && Number.isFinite(httpStatus)) {
@@ -1488,6 +1502,7 @@ export const AutoRegister = {
             if (!oldToken) {
                 throw new Error('未找到旧账号 console_token，请先登录旧账号后再更换');
             }
+            const oldTokenSignature = buildTokenSignature(oldToken);
 
             const conversationId = this.readConversationIdByAppId(appId);
             let activeChainId = '';
@@ -1543,12 +1558,14 @@ export const AutoRegister = {
             const chainBinding = await ChatHistoryService.bindConversation({
                 appId,
                 conversationId,
+                tokenSignature: oldTokenSignature,
             });
             activeChainId = chainBinding.chainId;
             const storeResult = await ChatHistoryService.saveConversationMessages({
                 appId,
                 conversationId,
                 chainId: activeChainId,
+                tokenSignature: oldTokenSignature,
                 messages: oldConversation.messages,
             });
             ChatHistoryService.markChainSynced(activeChainId, Date.now());
@@ -1616,17 +1633,20 @@ export const AutoRegister = {
                 conversationName,
                 runCtx,
             });
+            const newTokenSignature = buildTokenSignature(registerResult.token);
 
             const newConversationId = typeof chatResult?.conversationId === 'string'
                 ? chatResult.conversationId.trim()
                 : '';
             if (newConversationId) {
                 this.upsertConversationIdInfo(appId, newConversationId, runCtx);
+                ChatHistoryService.setConversationTokenSignature(appId, newConversationId, newTokenSignature);
                 ChatHistoryService.bindConversation({
                     appId,
                     conversationId: newConversationId,
                     previousConversationId: conversationId,
                     preferredChainId: activeChainId,
+                    tokenSignature: newTokenSignature,
                 }).then((newBinding) => {
                     activeChainId = newBinding.chainId;
                     ChatHistoryService.setActiveChainId(appId, activeChainId);
@@ -1684,10 +1704,12 @@ export const AutoRegister = {
         }
 
         const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+        const currentTokenSignature = buildTokenSignature(localStorage.getItem('console_token') || '');
         if (currentConversationId) {
             await ChatHistoryService.bindConversation({
                 appId: resolvedAppId,
                 conversationId: currentConversationId,
+                tokenSignature: currentTokenSignature,
             });
         }
 
@@ -1744,6 +1766,7 @@ export const AutoRegister = {
         if (!token) {
             throw new Error('未找到 console_token，请先登录后再同步');
         }
+        const tokenSignature = buildTokenSignature(token);
 
         await this.syncAppMetaToLocalHistory({
             appId: resolvedAppId,
@@ -1763,6 +1786,7 @@ export const AutoRegister = {
                 const binding = await ChatHistoryService.bindConversation({
                     appId: resolvedAppId,
                     conversationId: currentConversationId,
+                    tokenSignature,
                 });
                 resolvedChainId = binding.chainId;
             }
@@ -1770,6 +1794,16 @@ export const AutoRegister = {
 
         if (!resolvedChainId) {
             throw new Error('未找到可同步的会话链');
+        }
+
+        const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+        if (currentConversationId) {
+            await ChatHistoryService.bindConversation({
+                appId: resolvedAppId,
+                conversationId: currentConversationId,
+                preferredChainId: resolvedChainId,
+                tokenSignature,
+            });
         }
 
         const chain = await ChatHistoryService.getChain(resolvedChainId);
@@ -1784,13 +1818,33 @@ export const AutoRegister = {
             throw new Error('当前会话链无 conversation_id，无法同步');
         }
 
+        const allowedConversationIds = [];
+        const skippedNoPermissionConversationIds = [];
+        for (const conversationId of conversationIds) {
+            const bindingToken = ChatHistoryService.getConversationTokenSignature(resolvedAppId, conversationId);
+            if (!bindingToken || bindingToken !== tokenSignature) {
+                skippedNoPermissionConversationIds.push(conversationId);
+                continue;
+            }
+            allowedConversationIds.push(conversationId);
+        }
+        logInfo(runCtx, 'SYNC', '会话同步过滤结果（按 token 绑定）', {
+            chainId: resolvedChainId,
+            totalConversationCount: conversationIds.length,
+            allowedConversationCount: allowedConversationIds.length,
+            skippedNoPermissionCount: skippedNoPermissionConversationIds.length,
+        });
+        if (allowedConversationIds.length === 0) {
+            throw new Error('当前链路会话均不属于当前账号 token，已跳过无权限同步');
+        }
+
         let totalFetched = 0;
         let totalSaved = 0;
         let hasIncomplete = false;
         let successCount = 0;
         const failedConversationIds = [];
 
-        for (const conversationId of conversationIds) {
+        for (const conversationId of allowedConversationIds) {
             try {
                 const result = await this.fetchConversationMessages({
                     appId: resolvedAppId,
@@ -1810,6 +1864,7 @@ export const AutoRegister = {
                     appId: resolvedAppId,
                     conversationId,
                     chainId: resolvedChainId,
+                    tokenSignature,
                     messages: result.messages,
                 });
                 totalSaved += storeResult.savedCount;
@@ -1833,7 +1888,9 @@ export const AutoRegister = {
         return {
             appId: resolvedAppId,
             chainId: resolvedChainId,
-            conversationIds,
+            conversationIds: allowedConversationIds,
+            skippedNoPermissionConversationIds,
+            skippedNoPermissionCount: skippedNoPermissionConversationIds.length,
             successCount,
             failedCount: failedConversationIds.length,
             failedConversationIds,

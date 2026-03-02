@@ -190,12 +190,18 @@ function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
 function renderMessageBody(text, emptyPlaceholder = '(空)') {
     const normalized = asDisplayContent(text);
     if (!normalized) {
-        return `<pre class="af-plain">${escapeHtml(emptyPlaceholder)}</pre>`;
+        return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
     }
     if (looksLikeHtml(normalized)) {
         return `<div class="markdown-body false" style="font-size:14px;">${normalized}</div>`;
     }
-    return `<pre class="af-plain">${escapeHtml(normalized)}</pre>`;
+    const plainText = normalized
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\n');
+    return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
 }
 
 function hasMeaningfulText(value) {
@@ -245,6 +251,33 @@ export const ChatHistoryService = {
         index.conversationToChain[makeConversationKey(normalizedAppId, normalizedConversationId)] = normalizedChainId;
         writeIndex(index);
         return normalizedChainId;
+    },
+
+    getConversationTokenSignature(appId, conversationId) {
+        const normalizedAppId = normalizeId(appId);
+        const normalizedConversationId = normalizeId(conversationId);
+        if (!normalizedAppId || !normalizedConversationId) return '';
+
+        const index = readIndex();
+        const key = makeConversationKey(normalizedAppId, normalizedConversationId);
+        return normalizeId(index.conversationTokenByKey[key]);
+    },
+
+    setConversationTokenSignature(appId, conversationId, tokenSignature) {
+        const normalizedAppId = normalizeId(appId);
+        const normalizedConversationId = normalizeId(conversationId);
+        if (!normalizedAppId || !normalizedConversationId) return '';
+
+        const normalizedTokenSignature = normalizeId(tokenSignature);
+        const index = readIndex();
+        const key = makeConversationKey(normalizedAppId, normalizedConversationId);
+        if (normalizedTokenSignature) {
+            index.conversationTokenByKey[key] = normalizedTokenSignature;
+        } else {
+            delete index.conversationTokenByKey[key];
+        }
+        writeIndex(index);
+        return normalizedTokenSignature;
     },
 
     getActiveChainId(appId) {
@@ -331,11 +364,18 @@ export const ChatHistoryService = {
             });
     },
 
-    async bindConversation({ appId, conversationId, previousConversationId = '', preferredChainId = '' }) {
+    async bindConversation({
+        appId,
+        conversationId,
+        previousConversationId = '',
+        preferredChainId = '',
+        tokenSignature = '',
+    }) {
         const normalizedAppId = normalizeId(appId);
         const normalizedConversationId = normalizeId(conversationId);
         const normalizedPreviousConversationId = normalizeId(previousConversationId);
         const normalizedPreferredChainId = normalizeId(preferredChainId);
+        const normalizedTokenSignature = normalizeId(tokenSignature);
 
         if (!normalizedAppId || !normalizedConversationId) {
             throw new Error('appId 或 conversationId 为空，无法绑定链路');
@@ -345,6 +385,9 @@ export const ChatHistoryService = {
         if (directChainId) {
             const directChain = await this.getChain(directChainId);
             if (directChain && directChain.appId === normalizedAppId) {
+                if (normalizedTokenSignature) {
+                    this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
+                }
                 this.setActiveChainId(normalizedAppId, directChainId);
                 return {
                     chainId: directChainId,
@@ -410,6 +453,21 @@ export const ChatHistoryService = {
         if (normalizedPreviousConversationId) {
             this.setConversationChainId(normalizedAppId, normalizedPreviousConversationId, chainId);
         }
+        if (normalizedTokenSignature) {
+            this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
+
+            // 仅在旧会话尚未写入 token 标记时继承，避免新账号覆盖旧账号绑定关系。
+            if (normalizedPreviousConversationId) {
+                const previousToken = this.getConversationTokenSignature(normalizedAppId, normalizedPreviousConversationId);
+                if (!previousToken) {
+                    this.setConversationTokenSignature(
+                        normalizedAppId,
+                        normalizedPreviousConversationId,
+                        normalizedTokenSignature
+                    );
+                }
+            }
+        }
         this.setActiveChainId(normalizedAppId, chainId);
 
         return {
@@ -419,9 +477,16 @@ export const ChatHistoryService = {
         };
     },
 
-    async saveConversationMessages({ appId, conversationId, chainId = '', messages = [] }) {
+    async saveConversationMessages({
+        appId,
+        conversationId,
+        chainId = '',
+        tokenSignature = '',
+        messages = [],
+    }) {
         const normalizedAppId = normalizeId(appId);
         const normalizedConversationId = normalizeId(conversationId);
+        const normalizedTokenSignature = normalizeId(tokenSignature);
         if (!normalizedAppId || !normalizedConversationId) {
             throw new Error('appId 或 conversationId 为空，无法保存消息');
         }
@@ -430,6 +495,7 @@ export const ChatHistoryService = {
             appId: normalizedAppId,
             conversationId: normalizedConversationId,
             preferredChainId: chainId,
+            tokenSignature: normalizedTokenSignature,
         });
         const normalizedChainId = binding.chainId;
         const now = Date.now();
@@ -467,6 +533,9 @@ export const ChatHistoryService = {
                 conversationIds: uniqueStringArray([...(chain.conversationIds || []), normalizedConversationId]),
                 updatedAt: Date.now(),
             }));
+        }
+        if (normalizedTokenSignature) {
+            this.setConversationTokenSignature(normalizedAppId, normalizedConversationId, normalizedTokenSignature);
         }
 
         return {
@@ -554,7 +623,7 @@ export const ChatHistoryService = {
                 return `
                     <div class="group flex mb-2 last:mb-0 af-row-user">
                         <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 bg-gray-100/90 rounded-xl text-sm af-user-bubble">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
                                 ${renderedQuery}
                             </div>
                             <div class="af-bubble-meta af-user-meta">
@@ -565,16 +634,14 @@ export const ChatHistoryService = {
                             ${dedupHint}
                         </div>
                     </div>
-                    <div class="flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
-                        <div class="chat-answer-container group grow w-0 mr-2 md:mr-4 af-answer-container">
-                            <div class="group relative ml-0">
-                                <div class="relative inline-block px-4 py-3 w-full bg-gray-100/90 rounded-xl text-sm text-gray-900 af-answer-bubble">
-                                    ${renderedAnswer}
-                                </div>
-                                <div class="af-bubble-meta af-answer-meta">
-                                    <span>${createdAtText}</span>
-                                    <span>${messageIdText}</span>
-                                </div>
+                    <div class="group flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
+                        <div class="chat-answer-container group relative mr-2 md:mr-0 af-bubble-wrap af-answer-wrap">
+                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
+                                ${renderedAnswer}
+                            </div>
+                            <div class="af-bubble-meta af-answer-meta">
+                                <span>${createdAtText}</span>
+                                <span>${messageIdText}</span>
                             </div>
                         </div>
                     </div>
@@ -595,8 +662,7 @@ export const ChatHistoryService = {
             --af-card: #ffffff;
             --af-border: #d7dde8;
             --af-muted: #6b7280;
-            --af-user: #d8fdd2;
-            --af-assistant: #ffffff;
+            --af-bubble: #ffffff;
         }
         * {
             box-sizing: border-box;
@@ -646,33 +712,37 @@ export const ChatHistoryService = {
             gap: 8px;
         }
         .af-row-user {
+            display: flex;
             justify-content: flex-end;
         }
         .af-row-answer {
+            display: flex;
             justify-content: flex-start;
         }
         .af-bubble-wrap {
-            max-width: 86%;
+            max-width: min(86%, 900px);
             width: fit-content;
+            min-width: min(66%, 360px);
         }
-        .af-answer-container {
-            max-width: 86%;
-            width: auto !important;
-            flex-grow: 0 !important;
+        .af-user-wrap {
+            margin-right: 6%;
+        }
+        .af-answer-wrap {
+            margin-left: 6%;
+        }
+        .af-message-bubble {
+            background: var(--af-bubble) !important;
+            border: 1px solid rgba(148, 163, 184, 0.32) !important;
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+            overflow-x: auto;
+            width: 100%;
         }
         .af-user-bubble {
-            background: var(--af-user) !important;
-            border: 1px solid rgba(52, 211, 153, 0.26);
-            border-radius: 14px;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-            overflow-x: auto;
+            margin-left: auto;
         }
         .af-answer-bubble {
-            background: var(--af-assistant) !important;
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 14px;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-            overflow-x: auto;
+            margin-right: auto;
         }
         .af-bubble-meta {
             display: flex;

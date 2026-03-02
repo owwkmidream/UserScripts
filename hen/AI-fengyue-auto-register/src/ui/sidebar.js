@@ -43,6 +43,7 @@ export const Sidebar = {
         if (this.element && document.body.contains(this.element) && document.getElementById('aifengyue-sidebar-toggle')) {
             return;
         }
+        this.activeTab = this.getDefaultTab();
         this.layoutMode = this.getLayoutMode();
         this.theme = this.getTheme();
         this.createSidebar();
@@ -134,13 +135,6 @@ export const Sidebar = {
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-start-oneclick">
                             🚀 一键注册
                         </button>
-                        <div class="aifengyue-input-group">
-                            <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
-                        </div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
-                            🔀 更换账号
-                        </button>
                     </div>
 
                     <div class="aifengyue-hint" id="aifengyue-register-hint">
@@ -173,6 +167,16 @@ export const Sidebar = {
                 </div>
 
                 <div class="aifengyue-panel" data-panel="conversation">
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">更换账号</div>
+                        <div class="aifengyue-input-group">
+                            <label>更换账号附加文本</label>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
+                        </div>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
+                            🔀 更换账号
+                        </button>
+                    </div>
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">本地会话链</div>
                         <div class="aifengyue-input-group">
@@ -238,6 +242,15 @@ export const Sidebar = {
                             <select id="aifengyue-layout-mode">
                                 <option value="inline">插入右侧（占空间）</option>
                                 <option value="floating">悬浮右侧（不占空间）</option>
+                            </select>
+                        </div>
+                        <div class="aifengyue-input-group">
+                            <label>默认打开 Tab</label>
+                            <select id="aifengyue-default-tab">
+                                <option value="register">注册</option>
+                                <option value="tools">工具</option>
+                                <option value="conversation">会话</option>
+                                <option value="settings">设置</option>
                             </select>
                         </div>
                     </div>
@@ -338,6 +351,12 @@ export const Sidebar = {
             const mode = e.target.value;
             this.setLayoutMode(mode);
             getToast()?.info(`侧边栏已切换为${mode === 'inline' ? '插入模式' : '悬浮模式'}`);
+        });
+
+        this.element.querySelector('#aifengyue-default-tab').addEventListener('change', (e) => {
+            const tab = typeof e?.target?.value === 'string' ? e.target.value : 'register';
+            this.setDefaultTab(tab);
+            getToast()?.success(`默认 Tab 已设置为「${this.tabLabel(this.getDefaultTab())}」`);
         });
 
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
@@ -447,6 +466,10 @@ export const Sidebar = {
         if (layoutModeInput) {
             layoutModeInput.value = this.layoutMode;
         }
+        const defaultTabInput = this.element.querySelector('#aifengyue-default-tab');
+        if (defaultTabInput) {
+            defaultTabInput.value = this.getDefaultTab();
+        }
 
         this.updateUsageDisplay();
         this.render();
@@ -484,10 +507,12 @@ export const Sidebar = {
         const refreshBtn = this.element?.querySelector('#aifengyue-conversation-refresh');
         const syncBtn = this.element?.querySelector('#aifengyue-conversation-sync');
         const openPreviewBtn = this.element?.querySelector('#aifengyue-conversation-open-preview');
+        const switchBtn = this.element?.querySelector('#aifengyue-switch-account');
         if (chainSelect) chainSelect.disabled = !!busy;
         if (refreshBtn) refreshBtn.disabled = !!busy;
         if (syncBtn) syncBtn.disabled = !!busy;
         if (openPreviewBtn) openPreviewBtn.disabled = !!busy;
+        if (switchBtn) switchBtn.disabled = !!busy;
     },
 
     renderConversationSelectOptions() {
@@ -547,6 +572,27 @@ export const Sidebar = {
             appId: this.conversation.appId,
             chainId: this.conversation.activeChainId,
         });
+        viewer.onload = () => {
+            try {
+                const doc = viewer.contentDocument;
+                if (!doc) return;
+                const scrollToBottom = () => {
+                    const scrolling = doc.scrollingElement || doc.documentElement || doc.body;
+                    if (scrolling) {
+                        scrolling.scrollTop = scrolling.scrollHeight;
+                    }
+                    const container = doc.querySelector('.chat-container');
+                    if (container && container.parentElement) {
+                        container.parentElement.scrollTop = container.parentElement.scrollHeight;
+                    }
+                };
+                scrollToBottom();
+                setTimeout(scrollToBottom, 60);
+                setTimeout(scrollToBottom, 220);
+            } catch (error) {
+                console.warn('[AI风月注册助手][CONV] 预览滚动到底部失败', error);
+            }
+        };
         viewer.srcdoc = html;
     },
 
@@ -629,6 +675,9 @@ export const Sidebar = {
             if (summary.failedCount > 0) {
                 getToast()?.warning(`有 ${summary.failedCount} 个会话同步失败`);
             }
+            if (Number(summary.skippedNoPermissionCount || 0) > 0) {
+                getToast()?.info(`已跳过 ${summary.skippedNoPermissionCount} 个无权限旧会话`);
+            }
 
             await this.refreshConversationPanel({ showToast: false, keepSelection: true });
         } catch (error) {
@@ -642,6 +691,30 @@ export const Sidebar = {
     getLayoutMode() {
         const mode = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, 'inline');
         return mode === 'floating' ? 'floating' : 'inline';
+    },
+
+    tabLabel(tab) {
+        switch (tab) {
+            case 'register': return '注册';
+            case 'tools': return '工具';
+            case 'conversation': return '会话';
+            case 'settings': return '设置';
+            default: return '注册';
+        }
+    },
+
+    getDefaultTab() {
+        const tab = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_TAB, 'register');
+        return VALID_TABS.includes(tab) ? tab : 'register';
+    },
+
+    setDefaultTab(tab) {
+        const normalized = VALID_TABS.includes(tab) ? tab : 'register';
+        gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_DEFAULT_TAB, normalized);
+        const input = this.element?.querySelector?.('#aifengyue-default-tab');
+        if (input) {
+            input.value = normalized;
+        }
     },
 
     setLayoutMode(mode) {

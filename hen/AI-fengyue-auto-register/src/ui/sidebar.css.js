@@ -458,6 +458,10 @@ const SIDEBAR_STYLES = `
         line-height: 1.5;
         resize: vertical;
     }
+    .aifengyue-switch-textarea {
+        min-height: 150px !important;
+        max-height: 420px !important;
+    }
     .aifengyue-input-group input:focus,
     .aifengyue-input-group select:focus,
     .aifengyue-input-group textarea:focus {
