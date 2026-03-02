@@ -22,6 +22,8 @@ export function gmRequest(options) {
     return new Promise((resolve, reject) => {
         gmXmlHttpRequest({
             ...options,
+            // Default to anonymous to avoid leaking browser cookies across domains.
+            anonymous: options.anonymous ?? true,
             onload: (response) => resolve(response),
             onerror: (error) => reject(new Error(error?.error || 'GM 请求失败')),
             ontimeout: () => reject(new Error('GM 请求超时')),
@@ -38,7 +40,7 @@ export async function gmRequestJson(options) {
         headers: options.headers || {},
         data: options.body ? JSON.stringify(options.body) : undefined,
         timeout: options.timeout ?? 30000,
-        anonymous: options.anonymous ?? false,
+        anonymous: options.anonymous ?? true,
     });
 
     const raw = response.responseText || '';

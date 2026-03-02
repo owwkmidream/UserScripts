@@ -95,6 +95,7 @@
 		return new Promise((resolve, reject) => {
 			gmXmlHttpRequest({
 				...options,
+				anonymous: options.anonymous ?? true,
 				onload: (response) => resolve(response),
 				onerror: (error) => reject(new Error(error?.error || "GM 请求失败")),
 				ontimeout: () => reject(new Error("GM 请求超时")),
@@ -110,7 +111,7 @@
 			headers: options.headers || {},
 			data: options.body ? JSON.stringify(options.body) : undefined,
 			timeout: options.timeout ?? 3e4,
-			anonymous: options.anonymous ?? false
+			anonymous: options.anonymous ?? true
 		});
 		const raw = response.responseText || "";
 		let json = null;
@@ -170,6 +171,7 @@
 				gmXmlHttpRequest({
 					method: options.method || "GET",
 					url,
+					anonymous: true,
 					headers: {
 						"X-API-Key": this.getApiKey(),
 						"Content-Type": "application/json",

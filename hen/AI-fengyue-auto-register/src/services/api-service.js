@@ -48,6 +48,7 @@ export const ApiService = {
             gmXmlHttpRequest({
                 method: options.method || 'GET',
                 url,
+                anonymous: true,
                 headers: {
                     'X-API-Key': this.getApiKey(),
                     'Content-Type': 'application/json',
