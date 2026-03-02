@@ -22,10 +22,14 @@
     * **无限流 (Infinite Scroll)**：拦截翻页点击，Fetch 下一页 HTML 追加到当前网格，并插入“Page X”分界线。
 
 * **场景 B：详情页 / 画廊页 (The Content)**
-    * **嵌入式画廊**：在正文顶部插入一个 Grid 画廊，保留正文文字。
+    * **媒体保护 (Media Preserve)**：在清理前，先扫描正文中的非图片内容（`video`, `audio`, `iframe`非广告、正文文字、下载面板等），提取到一个独立的 `#media-wrap` 容器，放置在画廊之前。
+    * **嵌入式画廊**：在 `#media-wrap` 之后插入 Grid 画廊。画廊整体用一个带粉色 `border` 的容器包裹。应当有适当设计，看上去精致舒适。
+    * **连续展示 (No Dividers)**：所有分页图片合并后**连续**展示，**不插入**分页分界线。
+    * **序号角标 (Sequence Badge)**：每张图片卡片左上角显示序号（从 1 开始），半透明黑底白字，monospace 字体。
+    * **图片裁剪适应 (Card Crop)**：卡片容器设置 `aspect-ratio: 3/4`，图片使用 `width: 100%; height: 100%; object-fit: cover` 填充裁剪。
     * **有序并发抓取 (Ordered Concurrency)**：
         * **关键约束**：若存在多页，使用 `Promise.all` 并发抓取，但必须使用 `Map<PageNumber, List>` 或索引数组进行合并。**严禁**直接 push 到数组，防止网络延迟导致的图片乱序。
-    * **安全清理 (Safe Purge)**：仅在画廊渲染成功后，隐藏原图及其紧邻的包裹标签 (`<a>`, `<p>`, `<br>`)，**绝对禁止**误删正文文本容器。
+    * **安全清理 (Safe Purge)**：仅在画廊渲染成功后，隐藏原图及其紧邻的包裹标签 (`<a>`, `<p>`, `<br>`)，**绝对禁止**误删正文文本容器或已提取的媒体内容。
 
 #### 2. 源地址智能清洗 (Source Intelligence) - *[恢复自 v4.0]*
 提取图片链接时，**不要**轻信 `src`。必须按以下优先级尝试获取高清原图：
@@ -40,7 +44,7 @@
 * **UI 规范**：黑色半透明背景，包含关闭按钮、左右翻页箭头、底部页码指示器 (current/total)。
 * **PC 端交互**：
     * **滚轮缩放 (Wheel Zoom)**：监听 `wheel` 事件，以鼠标指针为中心进行 `transform: scale()` 缩放。
-    * **拖拽平移 (Drag Pan)**：当 `scale > 1` 时，按住左键可拖拽图片查看细节。
+    * **拖拽平移 (Drag Pan)**：按住左键可拖拽图片查看细节。阻止原生图片拖拽。
     * **双击复位**：在 100% 和 200% 之间切换。
     * **键盘支持**：`ArrowLeft/Right` 翻页，`Esc` 关闭。
 * **移动端交互**：
@@ -56,8 +60,8 @@
 
 ### 通用工程标准
 1.  **Style Isolation**：所有注入 CSS 必须带 `!important` 且有特定前缀（如 `#my-gallery-container`），防止污染全局。
-2.  **User Preferences**：在画廊顶部添加 `input[type=range]` 滑块，允许用户实时调节 Grid 列宽，并保存至 `localStorage`。
-3.  **强力去广**：建立黑名单（如 `iframe`, `.ads`, `ins`），发现即隐藏 (display: none)。
+2.  **User Preferences**：画廊工具栏在画廊的**右上角**，使用 `position: sticky`，`top` 值留出少量距离（如 `4px`）以方便用户操作但不过多压缩视图空间。包含 `input[type=range]` 滑块，允许用户实时调节 Grid 列宽，保存至 `localStorage`。必须强制祖先元素 `overflow: visible !important` 以确保 sticky 生效。
+3.  **强力去广**：建立黑名单（如 `iframe`, `.ads`, `ins`），发现即隐藏 (display: none)，并使用 `MutationObserver` 持续监控。
 
 ### 代码结构模板
 
