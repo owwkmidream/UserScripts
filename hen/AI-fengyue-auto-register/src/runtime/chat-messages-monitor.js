@@ -1,8 +1,25 @@
+import { CONFIG } from '../constants.js';
+import { gmGetValue } from '../gm.js';
 import { Toast } from '../ui/toast.js';
 import { ChatStreamCapsule } from '../ui/chat-stream-capsule.js';
 
 const CHAT_MESSAGES_PATH = '/chat-messages';
 const LOG_PREFIX = '[AI风月注册助手][CHAT_MONITOR]';
+const DEFAULT_TIMEOUT_SECONDS = 0;
+const MAX_TIMEOUT_SECONDS = 300;
+
+function normalizeTimeoutSeconds(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    const normalized = Math.floor(parsed);
+    if (normalized <= 0) return 0;
+    return Math.min(normalized, MAX_TIMEOUT_SECONDS);
+}
+
+function getChatMessagesTimeoutSeconds() {
+    const saved = gmGetValue(CONFIG.STORAGE_KEYS.CHAT_MESSAGES_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS);
+    return normalizeTimeoutSeconds(saved);
+}
 
 function logInfo(message, meta) {
     if (meta === undefined) {
@@ -75,6 +92,84 @@ function isChatMessagesUrl(url) {
     } catch {
         return url.includes(CHAT_MESSAGES_PATH);
     }
+}
+
+function isAbortSignalLike(signal) {
+    return !!signal
+        && typeof signal === 'object'
+        && typeof signal.aborted === 'boolean'
+        && typeof signal.addEventListener === 'function'
+        && typeof signal.removeEventListener === 'function';
+}
+
+function getFetchSignal(first, second) {
+    if (isAbortSignalLike(second?.signal)) {
+        return second.signal;
+    }
+    if (first && typeof first === 'object' && isAbortSignalLike(first.signal)) {
+        return first.signal;
+    }
+    return null;
+}
+
+function buildFetchArgsWithSignal(first, second, signal) {
+    if (!signal) return [first, second];
+    if (first instanceof Request) {
+        if (second && typeof second === 'object') {
+            return [first, { ...second, signal }];
+        }
+        return [new Request(first, { signal })];
+    }
+    return [first, { ...(second || {}), signal }];
+}
+
+function createTimeoutAbortContext({ first, second, timeoutMs }) {
+    if (!Number.isFinite(Number(timeoutMs)) || Number(timeoutMs) <= 0) {
+        return {
+            args: [first, second],
+            cleanup: () => {},
+            isTimeoutTriggered: () => false,
+        };
+    }
+
+    const baseSignal = getFetchSignal(first, second);
+    const controller = new AbortController();
+    let timeoutTriggered = false;
+    let timeoutTimer = null;
+    let onBaseAbort = null;
+
+    if (isAbortSignalLike(baseSignal)) {
+        if (baseSignal.aborted) {
+            controller.abort(baseSignal.reason || 'upstream-aborted');
+        } else {
+            onBaseAbort = () => {
+                controller.abort(baseSignal.reason || 'upstream-aborted');
+            };
+            baseSignal.addEventListener('abort', onBaseAbort, { once: true });
+        }
+    }
+
+    timeoutTimer = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort('chat-messages-timeout');
+    }, Number(timeoutMs));
+
+    const cleanup = () => {
+        if (timeoutTimer) {
+            clearTimeout(timeoutTimer);
+            timeoutTimer = null;
+        }
+        if (onBaseAbort && isAbortSignalLike(baseSignal)) {
+            baseSignal.removeEventListener('abort', onBaseAbort);
+            onBaseAbort = null;
+        }
+    };
+
+    return {
+        args: buildFetchArgsWithSignal(first, second, controller.signal),
+        cleanup,
+        isTimeoutTriggered: () => timeoutTriggered,
+    };
 }
 
 function shouldTrack(url, method) {
@@ -263,6 +358,7 @@ export const ChatMessagesMonitor = {
             context: usingUnsafeWindow ? 'unsafeWindow' : 'window',
             fetchHooked: !!this.originalFetch,
             xhrHooked: !!this.xhrOpen && !!this.xhrSend,
+            timeoutSeconds: getChatMessagesTimeoutSeconds(),
             lastSseEvent: null,
             lastSseError: null,
             updatedAt: new Date().toISOString(),
@@ -286,39 +382,92 @@ export const ChatMessagesMonitor = {
         logInfo('fetch hook 已安装');
         targetWindow.fetch = (...args) => {
             const first = args[0];
-            const second = args[1] || {};
+            const secondRaw = args[1];
+            const second = secondRaw || {};
             const url = toAbsoluteUrl(first, baseOrigin);
             const method = normalizeMethod(second.method || (first && typeof first === 'object' ? first.method : 'GET'));
             const startedAt = Date.now();
             const tracked = shouldTrack(url, method);
+            if (!tracked) {
+                return this.originalFetch.apply(targetWindow, args);
+            }
+
+            const timeoutSeconds = getChatMessagesTimeoutSeconds();
+            const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0;
             const requestState = {
                 sseError: null,
+                timeoutSeconds,
+                timeoutReported: false,
             };
+            const abortContext = createTimeoutAbortContext({
+                first,
+                second: secondRaw,
+                timeoutMs,
+            });
+            const requestArgs = abortContext.args;
 
-            const promise = this.originalFetch.apply(targetWindow, args);
-            if (!tracked) {
-                return promise;
-            }
+            const promise = this.originalFetch.apply(targetWindow, requestArgs);
             ChatStreamCapsule.onRequestStart();
-            logInfo('命中 fetch /chat-messages 请求', { method, url });
+            appendMonitorState(this.targetWindow, {
+                timeoutSeconds,
+            });
+            logInfo('命中 fetch /chat-messages 请求', {
+                method,
+                url,
+                timeoutSeconds,
+            });
+
+            let cleanedUp = false;
+            const cleanupAbortContext = () => {
+                if (cleanedUp) return;
+                cleanedUp = true;
+                abortContext.cleanup();
+            };
 
             promise.then((response) => {
                 let finalized = false;
                 const done = () => {
                     if (finalized) return;
                     finalized = true;
+                    cleanupAbortContext();
+                    const timedOut = abortContext.isTimeoutTriggered();
+                    if (timedOut && !requestState.timeoutReported) {
+                        requestState.timeoutReported = true;
+                        const timeoutMessage = `超过 ${timeoutSeconds} 秒未完成`;
+                        logWarn('fetch /chat-messages 超时，已主动中止', {
+                            method,
+                            url,
+                            timeoutSeconds,
+                        });
+                        appendMonitorState(this.targetWindow, {
+                            lastTimeout: {
+                                channel: 'fetch',
+                                method,
+                                url,
+                                timeoutSeconds,
+                                at: Date.now(),
+                            },
+                        });
+                        ChatStreamCapsule.onSseError({
+                            status: 408,
+                            code: 'timeout',
+                            message: timeoutMessage,
+                        });
+                    }
                     const finalStatus = Number(
                         requestState.sseError?.status
+                        || (timedOut ? 408 : 0)
                         || response?.status
                         || 0
                     );
-                    const finalOk = !!response?.ok && !requestState.sseError;
+                    const finalOk = !!response?.ok && !requestState.sseError && !timedOut;
                     const elapsedText = formatElapsedMs(startedAt);
                     logInfo('fetch /chat-messages 请求完成', {
                         method,
                         url,
                         status: finalStatus,
                         sseErrorCode: requestState.sseError?.code || '',
+                        timedOut,
                     });
                     showResultToast({
                         status: finalStatus,
@@ -403,17 +552,44 @@ export const ChatMessagesMonitor = {
                     done();
                 }
             }).catch(() => {
+                cleanupAbortContext();
                 const elapsedText = formatElapsedMs(startedAt);
-                logWarn('fetch /chat-messages 请求失败', { method, url });
+                const timedOut = abortContext.isTimeoutTriggered();
+                const status = timedOut ? 408 : 0;
+                if (timedOut && !requestState.timeoutReported) {
+                    requestState.timeoutReported = true;
+                    const timeoutMessage = `超过 ${timeoutSeconds} 秒未完成`;
+                    logWarn('fetch /chat-messages 超时，已主动中止', {
+                        method,
+                        url,
+                        timeoutSeconds,
+                    });
+                    appendMonitorState(this.targetWindow, {
+                        lastTimeout: {
+                            channel: 'fetch',
+                            method,
+                            url,
+                            timeoutSeconds,
+                            at: Date.now(),
+                        },
+                    });
+                    ChatStreamCapsule.onSseError({
+                        status: 408,
+                        code: 'timeout',
+                        message: timeoutMessage,
+                    });
+                } else {
+                    logWarn('fetch /chat-messages 请求失败', { method, url });
+                }
                 showResultToast({
-                    status: 0,
+                    status,
                     ok: false,
                     elapsedText,
                     channel: 'fetch',
                     sseError: requestState.sseError,
                 });
                 ChatStreamCapsule.onRequestDone({
-                    status: 0,
+                    status,
                     ok: false,
                     elapsedText,
                 });
@@ -440,6 +616,9 @@ export const ChatMessagesMonitor = {
                 url: absoluteUrl,
                 startedAt: 0,
                 tracked: shouldTrack(absoluteUrl, method),
+                timeoutSeconds: 0,
+                timeoutTimer: null,
+                timeoutTriggered: false,
             };
             return ChatMessagesMonitor.xhrOpen.call(this, method, url, ...rest);
         };
@@ -448,22 +627,67 @@ export const ChatMessagesMonitor = {
             const meta = this.__afChatMonitorMeta;
             if (meta && meta.tracked) {
                 meta.startedAt = Date.now();
+                meta.timeoutSeconds = getChatMessagesTimeoutSeconds();
+                meta.timeoutTriggered = false;
                 ChatStreamCapsule.onRequestStart();
+                appendMonitorState(ChatMessagesMonitor.targetWindow, {
+                    timeoutSeconds: meta.timeoutSeconds,
+                });
                 logInfo('命中 xhr /chat-messages 请求', {
                     method: meta.method,
                     url: meta.url,
+                    timeoutSeconds: meta.timeoutSeconds,
                 });
                 let reported = false;
+                if (meta.timeoutSeconds > 0) {
+                    meta.timeoutTimer = setTimeout(() => {
+                        meta.timeoutTriggered = true;
+                        logWarn('xhr /chat-messages 超时，已主动中止', {
+                            method: meta.method,
+                            url: meta.url,
+                            timeoutSeconds: meta.timeoutSeconds,
+                        });
+                        appendMonitorState(ChatMessagesMonitor.targetWindow, {
+                            lastTimeout: {
+                                channel: 'xhr',
+                                method: meta.method,
+                                url: meta.url,
+                                timeoutSeconds: meta.timeoutSeconds,
+                                at: Date.now(),
+                            },
+                        });
+                        ChatStreamCapsule.onSseError({
+                            status: 408,
+                            code: 'timeout',
+                            message: `超过 ${meta.timeoutSeconds} 秒未完成`,
+                        });
+                        try {
+                            this.abort();
+                        } catch (abortError) {
+                            logWarn('xhr /chat-messages 超时后 abort 失败', {
+                                method: meta.method,
+                                url: meta.url,
+                                message: abortError?.message || String(abortError),
+                            });
+                        }
+                    }, meta.timeoutSeconds * 1000);
+                }
                 const onLoadEnd = () => {
                     if (reported) return;
                     reported = true;
+                    if (meta.timeoutTimer) {
+                        clearTimeout(meta.timeoutTimer);
+                        meta.timeoutTimer = null;
+                    }
                     const elapsedText = formatElapsedMs(meta.startedAt);
-                    const status = Number(this.status || 0);
-                    const ok = status >= 200 && status < 300;
+                    const timedOut = !!meta.timeoutTriggered;
+                    const status = timedOut ? 408 : Number(this.status || 0);
+                    const ok = !timedOut && status >= 200 && status < 300;
                     logInfo('xhr /chat-messages 请求完成', {
                         method: meta.method,
                         url: meta.url,
                         status,
+                        timedOut,
                     });
                     showResultToast({
                         status,

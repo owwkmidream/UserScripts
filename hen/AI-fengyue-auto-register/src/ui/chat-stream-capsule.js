@@ -127,13 +127,13 @@ export const ChatStreamCapsule = {
     onRequestStart() {
         this.inFlight += 1;
         const suffix = this.inFlight > 1 ? ` (${this.inFlight})` : '';
-        this.applyView('sending', `SSE waiting${suffix}`);
+        this.applyView('waiting', `SSE 等待中${suffix}`);
     },
 
     onRequestDone({ ok = false, status = 0, elapsedText = '-' } = {}) {
         this.inFlight = Math.max(0, this.inFlight - 1);
         if (this.inFlight > 0) {
-            this.applyView('sending', `SSE waiting (${this.inFlight})`);
+            this.applyView('waiting', `SSE 等待中 (${this.inFlight})`);
             return;
         }
         const statusText = formatStatus(status);

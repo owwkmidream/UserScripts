@@ -330,6 +330,20 @@ export const Sidebar = {
                             <input type="checkbox" id="aifengyue-auto-reload-toggle">
                             <span>启用自动刷新（window.location.reload）</span>
                         </label>
+                        <div class="aifengyue-input-group">
+                            <label>/chat-messages 超时秒数</label>
+                            <input
+                                type="number"
+                                id="aifengyue-chat-timeout-seconds"
+                                min="0"
+                                max="300"
+                                step="1"
+                                placeholder="0 表示关闭主动失败"
+                            >
+                            <div class="aifengyue-hint">
+                                等待中/发送中超过该秒数将主动中止请求并判定失败（0 关闭）。
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -458,6 +472,15 @@ export const Sidebar = {
             const enabled = !!e?.target?.checked;
             this.setAutoReloadEnabled(enabled);
             getToast()?.info(`自动刷新已${enabled ? '开启' : '关闭'}`);
+        });
+
+        this.element.querySelector('#aifengyue-chat-timeout-seconds').addEventListener('change', (e) => {
+            const seconds = this.setChatMessagesTimeoutSeconds(e?.target?.value);
+            if (seconds > 0) {
+                getToast()?.info(`/chat-messages 超时已设置为 ${seconds} 秒`);
+            } else {
+                getToast()?.info('/chat-messages 超时主动失败已关闭');
+            }
         });
 
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
@@ -617,6 +640,10 @@ export const Sidebar = {
         const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
         if (autoReloadToggle) {
             autoReloadToggle.checked = this.getAutoReloadEnabled();
+        }
+        const chatTimeoutInput = this.element.querySelector('#aifengyue-chat-timeout-seconds');
+        if (chatTimeoutInput) {
+            chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
         }
 
         this.updateUsageDisplay();
@@ -1281,6 +1308,29 @@ export const Sidebar = {
         return !(saved === false || saved === 'false' || saved === 0 || saved === '0');
     },
 
+    normalizeChatMessagesTimeoutSeconds(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return 0;
+        const normalized = Math.floor(parsed);
+        if (normalized <= 0) return 0;
+        return Math.min(normalized, 300);
+    },
+
+    getChatMessagesTimeoutSeconds() {
+        const saved = gmGetValue(CONFIG.STORAGE_KEYS.CHAT_MESSAGES_TIMEOUT_SECONDS, 0);
+        return this.normalizeChatMessagesTimeoutSeconds(saved);
+    },
+
+    setChatMessagesTimeoutSeconds(value) {
+        const normalized = this.normalizeChatMessagesTimeoutSeconds(value);
+        gmSetValue(CONFIG.STORAGE_KEYS.CHAT_MESSAGES_TIMEOUT_SECONDS, normalized);
+        const input = this.element?.querySelector?.('#aifengyue-chat-timeout-seconds');
+        if (input) {
+            input.value = String(normalized);
+        }
+        return normalized;
+    },
+
     setAutoReloadEnabled(enabled) {
         const normalized = !!enabled;
         gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);
@@ -1435,6 +1485,7 @@ export const Sidebar = {
         const code = this.element.querySelector('#aifengyue-code');
         const debugToggle = this.element.querySelector('#aifengyue-debug-toggle');
         const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
+        const chatTimeoutInput = this.element.querySelector('#aifengyue-chat-timeout-seconds');
 
         if (email) email.textContent = this.state.email || '未生成';
         if (username) username.textContent = this.state.username || '未生成';
@@ -1442,6 +1493,7 @@ export const Sidebar = {
         if (code) code.textContent = this.state.verificationCode || '等待中...';
         if (debugToggle) debugToggle.checked = isDebugEnabled();
         if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
+        if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
 
         this.updateToolPanel();
     },
