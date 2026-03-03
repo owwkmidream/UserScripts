@@ -10,6 +10,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      mail.chatgpt.org.uk
 // @license      MIT
 // @run-at       document-end
@@ -31,6 +32,7 @@
 			API_USAGE_COUNT: "api_usage_count",
 			API_USAGE_RESET_DATE: "api_usage_reset_date",
 			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled",
+			AUTO_RELOAD_ENABLED: "aifengyue_auto_reload_enabled",
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
 			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
 			SIDEBAR_THEME: "aifengyue_sidebar_theme",
@@ -109,11 +111,12 @@
 	}
 	async function gmRequestJson(options) {
 		const method = options.method || "GET";
+		const hasRawBody = typeof options.rawBody === "string";
 		const response = await gmRequest({
 			method,
 			url: options.url,
 			headers: options.headers || {},
-			data: options.body ? JSON.stringify(options.body) : undefined,
+			data: hasRawBody ? options.rawBody : options.body === undefined ? undefined : JSON.stringify(options.body),
 			timeout: options.timeout ?? 3e4,
 			anonymous: options.anonymous ?? true
 		});
@@ -1174,6 +1177,8 @@
 				const renderedAnswer = renderMessageBody(answerText, "(空回复)");
 				const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
 				const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || "-"));
+				const queryContentId = `af-query-content-${index + 1}`;
+				const answerContentId = `af-answer-content-${index + 1}`;
 				if (answerText) {
 					answerHistory.push(answerText);
 				}
@@ -1181,7 +1186,7 @@
 				return `
                     <div class="group flex mb-2 last:mb-0 af-row-user">
                         <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
+                            <div id="${queryContentId}" class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
                                 ${renderedQuery}
                             </div>
                             <div class="af-bubble-meta af-user-meta">
@@ -1189,17 +1194,23 @@
                                 <span>${createdAtText}</span>
                                 <span>${messageIdText}</span>
                             </div>
+                            <div class="af-bubble-actions af-user-actions">
+                                <button class="af-copy-btn" type="button" data-af-copy-target="#${queryContentId}">复制 Query</button>
+                            </div>
                             ${dedupHint}
                         </div>
                     </div>
                     <div class="group flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
                         <div class="chat-answer-container group relative mr-2 md:mr-0 af-bubble-wrap af-answer-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
+                            <div id="${answerContentId}" class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
                                 ${renderedAnswer}
                             </div>
                             <div class="af-bubble-meta af-answer-meta">
                                 <span>${createdAtText}</span>
                                 <span>${messageIdText}</span>
+                            </div>
+                            <div class="af-bubble-actions af-answer-actions">
+                                <button class="af-copy-btn" type="button" data-af-copy-target="#${answerContentId}">复制 Answer</button>
                             </div>
                         </div>
                     </div>
@@ -1316,6 +1327,36 @@
         .af-answer-meta {
             justify-content: flex-start;
         }
+        .af-bubble-actions {
+            display: flex;
+            margin-top: 4px;
+        }
+        .af-user-actions {
+            justify-content: flex-end;
+        }
+        .af-answer-actions {
+            justify-content: flex-start;
+        }
+        .af-copy-btn {
+            border: 1px solid var(--af-border);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.92);
+            color: #4b5563;
+            font-size: 11px;
+            line-height: 1;
+            height: 24px;
+            padding: 0 9px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+        .af-copy-btn:hover {
+            border-color: #60a5fa;
+            color: #1d4ed8;
+            background: #eff6ff;
+        }
+        .af-copy-btn:active {
+            transform: scale(0.97);
+        }
         .af-dedup-hint {
             margin-top: 2px;
             font-size: 11px;
@@ -1369,6 +1410,66 @@
 </html>`;
 		}
 	};
+
+//#endregion
+//#region src/utils/logger.js
+	const PREFIX = "AI风月注册助手";
+	function output(level, text, meta) {
+		if (level === "ERROR") {
+			if (meta === undefined) console.error(text);
+			else console.error(text, meta);
+			return;
+		}
+		if (level === "WARN") {
+			if (meta === undefined) console.warn(text);
+			else console.warn(text, meta);
+			return;
+		}
+		if (level === "DEBUG") {
+			if (meta === undefined) console.debug(text);
+			else console.debug(text, meta);
+			return;
+		}
+		if (meta === undefined) console.log(text);
+		else console.log(text, meta);
+	}
+	function baseLog(level, runCtx, step, message, meta) {
+		const runId = runCtx?.runId || "NO-RUN";
+		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
+		output(level, tag, meta);
+	}
+	function createRunContext(prefix = "AR") {
+		const stamp = Date.now().toString(36);
+		const rand = Math.random().toString(36).slice(2, 6);
+		return {
+			runId: `${prefix}-${stamp}-${rand}`,
+			startedAt: Date.now()
+		};
+	}
+	function isDebugEnabled() {
+		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
+	}
+	function setDebugEnabled(enabled) {
+		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
+	}
+	function toggleDebugEnabled() {
+		const next = !isDebugEnabled();
+		setDebugEnabled(next);
+		return next;
+	}
+	function logInfo$1(runCtx, step, message, meta) {
+		baseLog("INFO", runCtx, step, message, meta);
+	}
+	function logWarn$1(runCtx, step, message, meta) {
+		baseLog("WARN", runCtx, step, message, meta);
+	}
+	function logError(runCtx, step, message, meta) {
+		baseLog("ERROR", runCtx, step, message, meta);
+	}
+	function logDebug(runCtx, step, message, meta) {
+		if (!isDebugEnabled()) return;
+		baseLog("DEBUG", runCtx, step, message, meta);
+	}
 
 //#endregion
 //#region src/ui/sidebar.js
@@ -1540,10 +1641,20 @@
 
                 <div class="aifengyue-panel" data-panel="conversation">
                     <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">流程状态</div>
+                        <div class="aifengyue-status-card">
+                            <div class="aifengyue-status-indicator">
+                                <div class="aifengyue-status-dot idle" id="aifengyue-conv-flow-status-dot"></div>
+                                <span class="aifengyue-status-text" id="aifengyue-conv-flow-status-text">空闲</span>
+                            </div>
+                            <div class="aifengyue-status-message" id="aifengyue-conv-flow-status-message">等待操作...</div>
+                        </div>
+                    </div>
+                    <div class="aifengyue-section">
                         <div class="aifengyue-section-title">更换账号</div>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动以前缀触发词开头）"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -1673,6 +1784,18 @@
                             </select>
                         </div>
                     </div>
+
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">运行设置</div>
+                        <label class="aifengyue-check-row">
+                            <input type="checkbox" id="aifengyue-debug-toggle">
+                            <span>启用调试日志（DEBUG）</span>
+                        </label>
+                        <label class="aifengyue-check-row">
+                            <input type="checkbox" id="aifengyue-auto-reload-toggle">
+                            <span>启用自动刷新（window.location.reload）</span>
+                        </label>
+                    </div>
                 </div>
             </div>
 
@@ -1776,6 +1899,16 @@
 				}
 				getToast()?.success(`侧边栏默认已设置为「${shouldOpen ? "打开" : "关闭"}」`);
 			});
+			this.element.querySelector("#aifengyue-debug-toggle").addEventListener("change", (e) => {
+				const enabled = !!e?.target?.checked;
+				setDebugEnabled(enabled);
+				getToast()?.info(`调试日志已${enabled ? "开启" : "关闭"}`);
+			});
+			this.element.querySelector("#aifengyue-auto-reload-toggle").addEventListener("change", (e) => {
+				const enabled = !!e?.target?.checked;
+				this.setAutoReloadEnabled(enabled);
+				getToast()?.info(`自动刷新已${enabled ? "开启" : "关闭"}`);
+			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
 			});
@@ -1812,10 +1945,9 @@
 							break;
 					}
 					if (value) {
-						navigator.clipboard.writeText(value).then(() => {
-							getToast()?.success("已复制到剪贴板");
-						}).catch(() => {
-							getToast()?.error("复制失败");
+						this.copyTextToClipboard(value, {
+							successMessage: "已复制到剪贴板",
+							errorMessage: "复制失败"
 						});
 					}
 				});
@@ -1919,6 +2051,14 @@
 			if (defaultOpenInput) {
 				defaultOpenInput.value = this.getDefaultOpen() ? "open" : "closed";
 			}
+			const debugToggle = this.element.querySelector("#aifengyue-debug-toggle");
+			if (debugToggle) {
+				debugToggle.checked = isDebugEnabled();
+			}
+			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
+			if (autoReloadToggle) {
+				autoReloadToggle.checked = this.getAutoReloadEnabled();
+			}
 			this.updateUsageDisplay();
 			this.render();
 		},
@@ -1939,6 +2079,77 @@
 					this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
 				});
 			}
+		},
+		async copyTextToClipboard(text, { successMessage = "已复制到剪贴板", errorMessage = "复制失败" } = {}) {
+			const value = typeof text === "string" ? text : String(text ?? "");
+			if (!value) return false;
+			const fallbackCopy = () => {
+				const textarea = document.createElement("textarea");
+				textarea.value = value;
+				textarea.setAttribute("readonly", "readonly");
+				textarea.style.position = "fixed";
+				textarea.style.top = "-1000px";
+				textarea.style.opacity = "0";
+				document.body.appendChild(textarea);
+				textarea.focus();
+				textarea.select();
+				textarea.setSelectionRange(0, textarea.value.length);
+				let copied = false;
+				try {
+					copied = document.execCommand("copy");
+				} finally {
+					textarea.remove();
+				}
+				return copied;
+			};
+			try {
+				if (navigator.clipboard?.writeText) {
+					await navigator.clipboard.writeText(value);
+				} else if (!fallbackCopy()) {
+					throw new Error("fallback-copy-failed");
+				}
+				getToast()?.success(successMessage);
+				return true;
+			} catch {
+				try {
+					const copied = fallbackCopy();
+					if (!copied) {
+						throw new Error("fallback-copy-failed");
+					}
+					getToast()?.success(successMessage);
+					return true;
+				} catch {
+					getToast()?.error(errorMessage);
+					return false;
+				}
+			}
+		},
+		bindConversationPreviewCopyButtons(doc) {
+			if (!doc) return;
+			const buttons = doc.querySelectorAll(".af-copy-btn[data-af-copy-target]");
+			buttons.forEach((button) => {
+				button.addEventListener("click", async () => {
+					const selector = button.getAttribute("data-af-copy-target") || "";
+					if (!selector) return;
+					const target = doc.querySelector(selector);
+					const text = typeof target?.textContent === "string" ? target.textContent.replace(/\u00a0/g, " ").trim() : "";
+					if (!text) {
+						getToast()?.warning("当前消息为空，无法复制");
+						return;
+					}
+					const copied = await this.copyTextToClipboard(text, {
+						successMessage: "消息已复制到剪贴板",
+						errorMessage: "消息复制失败"
+					});
+					if (copied) {
+						const prev = button.textContent;
+						button.textContent = "已复制";
+						setTimeout(() => {
+							button.textContent = prev || "复制";
+						}, 900);
+					}
+				});
+			});
 		},
 		setConversationStatus(message) {
 			const statusEl = this.element?.querySelector("#aifengyue-conversation-status");
@@ -2108,6 +2319,7 @@
 				try {
 					const doc = viewer.contentDocument;
 					if (!doc) return;
+					this.bindConversationPreviewCopyButtons(doc);
 					const scrollToBottom = () => {
 						const scrolling = doc.scrollingElement || doc.documentElement || doc.body;
 						if (scrolling) {
@@ -2422,6 +2634,18 @@
 				input.value = normalized ? "open" : "closed";
 			}
 		},
+		getAutoReloadEnabled() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, true);
+			return !(saved === false || saved === "false" || saved === 0 || saved === "0");
+		},
+		setAutoReloadEnabled(enabled) {
+			const normalized = !!enabled;
+			gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);
+			const input = this.element?.querySelector?.("#aifengyue-auto-reload-toggle");
+			if (input) {
+				input.checked = normalized;
+			}
+		},
 		setLayoutMode(mode) {
 			this.layoutMode = mode === "floating" ? "floating" : "inline";
 			gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, this.layoutMode);
@@ -2545,22 +2769,27 @@
 				}
 			};
 			const status = statusMap[this.state.status] || statusMap.idle;
-			const dot = this.element.querySelector("#aifengyue-status-dot");
-			if (dot) {
+			this.element.querySelectorAll("#aifengyue-status-dot, #aifengyue-conv-flow-status-dot").forEach((dot) => {
 				dot.className = `aifengyue-status-dot ${status.color}`;
-			}
-			const statusText = this.element.querySelector("#aifengyue-status-text");
-			const statusMessage = this.element.querySelector("#aifengyue-status-message");
+			});
+			this.element.querySelectorAll("#aifengyue-status-text, #aifengyue-conv-flow-status-text").forEach((el) => {
+				el.textContent = status.text;
+			});
+			this.element.querySelectorAll("#aifengyue-status-message, #aifengyue-conv-flow-status-message").forEach((el) => {
+				el.textContent = this.state.statusMessage;
+			});
 			const email = this.element.querySelector("#aifengyue-email");
 			const username = this.element.querySelector("#aifengyue-username");
 			const password = this.element.querySelector("#aifengyue-password");
 			const code = this.element.querySelector("#aifengyue-code");
-			if (statusText) statusText.textContent = status.text;
-			if (statusMessage) statusMessage.textContent = this.state.statusMessage;
+			const debugToggle = this.element.querySelector("#aifengyue-debug-toggle");
+			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
 			if (email) email.textContent = this.state.email || "未生成";
 			if (username) username.textContent = this.state.username || "未生成";
 			if (password) password.textContent = this.state.password || "未生成";
 			if (code) code.textContent = this.state.verificationCode || "等待中...";
+			if (debugToggle) debugToggle.checked = isDebugEnabled();
+			if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
 			this.updateToolPanel();
 		},
 		updateToolPanel() {
@@ -2817,66 +3046,6 @@
 	}
 
 //#endregion
-//#region src/utils/logger.js
-	const PREFIX = "AI风月注册助手";
-	function output(level, text, meta) {
-		if (level === "ERROR") {
-			if (meta === undefined) console.error(text);
-			else console.error(text, meta);
-			return;
-		}
-		if (level === "WARN") {
-			if (meta === undefined) console.warn(text);
-			else console.warn(text, meta);
-			return;
-		}
-		if (level === "DEBUG") {
-			if (meta === undefined) console.debug(text);
-			else console.debug(text, meta);
-			return;
-		}
-		if (meta === undefined) console.log(text);
-		else console.log(text, meta);
-	}
-	function baseLog(level, runCtx, step, message, meta) {
-		const runId = runCtx?.runId || "NO-RUN";
-		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
-		output(level, tag, meta);
-	}
-	function createRunContext(prefix = "AR") {
-		const stamp = Date.now().toString(36);
-		const rand = Math.random().toString(36).slice(2, 6);
-		return {
-			runId: `${prefix}-${stamp}-${rand}`,
-			startedAt: Date.now()
-		};
-	}
-	function isDebugEnabled() {
-		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
-	}
-	function setDebugEnabled(enabled) {
-		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
-	}
-	function toggleDebugEnabled() {
-		const next = !isDebugEnabled();
-		setDebugEnabled(next);
-		return next;
-	}
-	function logInfo(runCtx, step, message, meta) {
-		baseLog("INFO", runCtx, step, message, meta);
-	}
-	function logWarn(runCtx, step, message, meta) {
-		baseLog("WARN", runCtx, step, message, meta);
-	}
-	function logError(runCtx, step, message, meta) {
-		baseLog("ERROR", runCtx, step, message, meta);
-	}
-	function logDebug(runCtx, step, message, meta) {
-		if (!isDebugEnabled()) return;
-		baseLog("DEBUG", runCtx, step, message, meta);
-	}
-
-//#endregion
 //#region src/features/auto-register.js
 	const X_LANGUAGE$1 = "zh-Hans";
 	const SITE_ENDPOINTS = {
@@ -2893,6 +3062,7 @@
 		CHAT_MESSAGES: "/console/api/installed-apps"
 	};
 	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 = 3;
+	const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = "%%test";
 	function readErrorMessage(payload, fallback) {
 		if (!payload || typeof payload !== "object") return fallback;
 		const raw = payload.error ?? payload.message ?? payload.msg ?? payload.detail ?? payload.errmsg;
@@ -2949,6 +3119,27 @@
 		}
 		return false;
 	}
+	function normalizeSwitchTriggerWord(value) {
+		const source = typeof value === "string" ? value.trim() : "";
+		if (!source) return "";
+		const matched = source.match(/%%[^\s%]+(?:%%)?/);
+		return matched?.[0] ? matched[0].trim() : "";
+	}
+	function cloneJsonSafe(value) {
+		try {
+			return JSON.parse(JSON.stringify(value));
+		} catch {
+			return null;
+		}
+	}
+	function stringifyJsonWithUnicodeEscapes(value) {
+		const json = JSON.stringify(value);
+		if (typeof json !== "string") return "";
+		return json.replace(/[^\x20-\x7E]/g, (char) => {
+			const code = char.charCodeAt(0);
+			return `\\u${code.toString(16).padStart(4, "0")}`;
+		});
+	}
 	function randomConversationSuffix(length = 3) {
 		const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 		let output = "";
@@ -2985,6 +3176,30 @@
 			}
 			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1;
 		},
+		isAutoReloadEnabled() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, true);
+			return !(saved === false || saved === "false" || saved === 0 || saved === "0");
+		},
+		reloadPageIfEnabled({ delayMs = 0, runCtx, step = "RELOAD", reason = "" } = {}) {
+			if (!this.isAutoReloadEnabled()) {
+				logInfo$1(runCtx, step, "自动刷新开关已关闭，跳过 window.location.reload", { reason: reason || null });
+				Toast.info("自动刷新已关闭，请手动刷新页面", 3200);
+				return false;
+			}
+			const normalizedDelay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : 0;
+			if (normalizedDelay > 0) {
+				setTimeout(() => {
+					window.location.reload();
+				}, normalizedDelay);
+			} else {
+				window.location.reload();
+			}
+			logInfo$1(runCtx, step, "已触发 window.location.reload", {
+				reason: reason || null,
+				delayMs: normalizedDelay
+			});
+			return true;
+		},
 		isObjectiveRetryError(error) {
 			const status = Number(error?.httpStatus || 0);
 			if (status === 408 || status === 429 || status >= 500) {
@@ -3008,7 +3223,7 @@
 						throw error;
 					}
 					const waitMs = baseDelayMs * attempt;
-					logWarn(runCtx, step, `${actionName} 发生客观错误，${waitMs}ms 后重试 (${attempt + 1}/${attempts})`, {
+					logWarn$1(runCtx, step, `${actionName} 发生客观错误，${waitMs}ms 后重试 (${attempt + 1}/${attempts})`, {
 						message: error?.message || String(error),
 						httpStatus: Number(error?.httpStatus || 0) || null
 					});
@@ -3067,16 +3282,20 @@
 			const method = options.method || "GET";
 			const url = `${window.location.origin}${path}`;
 			const timeoutMs = options.timeout ?? 3e4;
+			const hasRawBody = typeof options.rawBody === "string";
+			const serializedBody = hasRawBody ? options.rawBody : options.body === undefined ? undefined : options.unicodeEscapeBody === true ? stringifyJsonWithUnicodeEscapes(options.body) : JSON.stringify(options.body);
 			const headers = {
 				"Content-Type": "application/json",
 				"X-Language": X_LANGUAGE$1,
 				...options.headers || {}
 			};
-			logInfo(runCtx, step, `${method} ${path} 请求开始`);
+			logInfo$1(runCtx, step, `${method} ${path} 请求开始`);
 			logDebug(runCtx, step, "请求详情", {
 				url,
 				headers,
 				body: options.body ?? null,
+				bodyMode: hasRawBody ? "raw-body" : options.unicodeEscapeBody ? "json-with-unicode-escape" : "json",
+				serializedBodyLength: typeof serializedBody === "string" ? serializedBody.length : 0,
 				requestMode: "page-fetch-first"
 			});
 			let httpStatus = 0;
@@ -3089,7 +3308,7 @@
 					const response = await fetch(url, {
 						method,
 						headers,
-						body: options.body === undefined ? undefined : JSON.stringify(options.body),
+						body: serializedBody,
 						credentials: "include",
 						signal: controller.signal,
 						cache: "no-store"
@@ -3108,12 +3327,12 @@
 			try {
 				await runPageFetch();
 			} catch (fetchError) {
-				logWarn(runCtx, step, "页面 fetch 请求失败，回退 GM 请求", { message: fetchError?.message || String(fetchError) });
+				logWarn$1(runCtx, step, "页面 fetch 请求失败，回退 GM 请求", { message: fetchError?.message || String(fetchError) });
 				const fallbackResponse = await gmRequestJson({
 					method,
 					url,
 					headers,
-					body: options.body,
+					...hasRawBody || options.unicodeEscapeBody && serializedBody !== undefined ? { rawBody: serializedBody || "" } : { body: options.body },
 					timeout: timeoutMs,
 					anonymous: true
 				});
@@ -3121,7 +3340,7 @@
 				raw = fallbackResponse.raw || "";
 				payload = fallbackResponse.json;
 			}
-			logInfo(runCtx, step, `${method} ${path} 响应`, {
+			logInfo$1(runCtx, step, `${method} ${path} 响应`, {
 				httpStatus,
 				statusField: payload?.status,
 				result: payload?.result,
@@ -3162,7 +3381,7 @@
 				}
 			}, runCtx, "SEND_CODE");
 			if (typeof payload?.code === "number" && payload.code !== 0 && payload.code !== 200) {
-				logWarn(runCtx, "SEND_CODE", "发送验证码接口返回非 0 code，继续执行", payload);
+				logWarn$1(runCtx, "SEND_CODE", "发送验证码接口返回非 0 code，继续执行", payload);
 			}
 			return payload;
 		},
@@ -3172,7 +3391,7 @@
 			if (!regToken) {
 				throw new Error("未获取到 reg_token");
 			}
-			logInfo(runCtx, "GET_REG_TOKEN", "reg_token 获取成功");
+			logInfo$1(runCtx, "GET_REG_TOKEN", "reg_token 获取成功");
 			logDebug(runCtx, "GET_REG_TOKEN", "reg_token 完整值", { regToken });
 			return regToken;
 		},
@@ -3195,7 +3414,7 @@
 			if (!token) {
 				throw new Error("注册成功但未返回 token（支持 data 或 data.token）");
 			}
-			logInfo(runCtx, "REGISTER", "注册接口返回 token");
+			logInfo$1(runCtx, "REGISTER", "注册接口返回 token");
 			logDebug(runCtx, "REGISTER", "token 完整值", { token });
 			return token;
 		},
@@ -3205,7 +3424,7 @@
 				headers: { Authorization: `Bearer ${token}` },
 				body: { gender: 1 }
 			}, runCtx, "SET_GENDER");
-			logInfo(runCtx, "SET_GENDER", "首次引导-性别设置完成");
+			logInfo$1(runCtx, "SET_GENDER", "首次引导-性别设置完成");
 		},
 		async submitFavoriteTags(token, runCtx) {
 			await this.requestSiteApi(SITE_ENDPOINTS.FAVORITE_TAGS, {
@@ -3213,7 +3432,7 @@
 				headers: { Authorization: `Bearer ${token}` },
 				body: { tag_names: [] }
 			}, runCtx, "SET_FAVORITE_TAGS");
-			logInfo(runCtx, "SET_FAVORITE_TAGS", "首次引导-标签提交完成");
+			logInfo$1(runCtx, "SET_FAVORITE_TAGS", "首次引导-标签提交完成");
 		},
 		async setFirstVisitFlag(token, runCtx) {
 			await this.requestSiteApi(SITE_ENDPOINTS.ACCOUNT_EXTEND_SET, {
@@ -3224,7 +3443,7 @@
 					value: true
 				}
 			}, runCtx, "SET_FIRST_VISIT");
-			logInfo(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
+			logInfo$1(runCtx, "SET_FIRST_VISIT", "首次引导-is_first_visit 设置完成");
 		},
 		normalizeAccountExtendValue(value) {
 			if (typeof value === "boolean") return value;
@@ -3264,26 +3483,26 @@
 				const normalized = this.normalizeAccountExtendValue(resolvedValue);
 				const expected = this.normalizeAccountExtendValue(expectedValue);
 				if (resolvedValue === null) {
-					logWarn(runCtx, step, `${key} 在 profile.extend 中不存在`, {
+					logWarn$1(runCtx, step, `${key} 在 profile.extend 中不存在`, {
 						key,
 						expected: expectedValue
 					});
 					return;
 				}
 				if (normalized === expected) {
-					logInfo(runCtx, step, `${key} 校验通过`, {
+					logInfo$1(runCtx, step, `${key} 校验通过`, {
 						key,
 						value: resolvedValue
 					});
 				} else {
-					logWarn(runCtx, step, `${key} 校验值与预期不一致`, {
+					logWarn$1(runCtx, step, `${key} 校验值与预期不一致`, {
 						key,
 						expected: expectedValue,
 						actual: resolvedValue
 					});
 				}
 			} catch (error) {
-				logWarn(runCtx, step, `${key} 校验失败（不影响主流程）`, {
+				logWarn$1(runCtx, step, `${key} 校验失败（不影响主流程）`, {
 					key,
 					message: error?.message || String(error)
 				});
@@ -3298,7 +3517,7 @@
 					value: true
 				}
 			}, runCtx, "SET_HIDE_REFRESH_CONFIRM");
-			logInfo(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成（已执行 extend_set）");
+			logInfo$1(runCtx, "SET_HIDE_REFRESH_CONFIRM", "首次引导-hide_refresh_confirm 设置完成（已执行 extend_set）");
 		},
 		async skipFirstGuideOnce(token, runCtx) {
 			await this.setAccountGender(token, runCtx);
@@ -3321,7 +3540,7 @@
 				isFirstVisit: isFirstVisit === true
 			};
 			const ok = checks.hideRefreshConfirm && checks.isFirstVisit;
-			logInfo(runCtx, step, ok ? "profile 校验通过" : "profile 校验未通过", {
+			logInfo$1(runCtx, step, ok ? "profile 校验通过" : "profile 校验未通过", {
 				hide_refresh_confirm: extend.hide_refresh_confirm ?? null,
 				is_first_visit: extend.is_first_visit ?? null,
 				checks
@@ -3333,9 +3552,9 @@
 			};
 		},
 		async skipFirstGuide(token, runCtx) {
-			logInfo(runCtx, "SKIP_GUIDE", "开始跳过首次引导（快速模式：不请求 /profile 校验）");
+			logInfo$1(runCtx, "SKIP_GUIDE", "开始跳过首次引导（快速模式：不请求 /profile 校验）");
 			await this.skipFirstGuideOnce(token, runCtx);
-			logInfo(runCtx, "SKIP_GUIDE", "首次引导跳过请求已提交（快速模式）");
+			logInfo$1(runCtx, "SKIP_GUIDE", "首次引导跳过请求已提交（快速模式）");
 		},
 		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3343,7 +3562,7 @@
 					status: "fetching",
 					statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
 				});
-				logInfo(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
+				logInfo$1(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
 				const emails = await ApiService.getEmails(email);
 				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 				logDebug(runCtx, "POLL_CODE", "邮件列表详情", {
@@ -3359,13 +3578,13 @@
 					const subject = mail.subject || "";
 					const code = extractVerificationCode(content) || extractVerificationCode(subject);
 					if (code) {
-						logInfo(runCtx, "POLL_CODE", `提取到验证码（第 ${attempt} 次轮询）`);
+						logInfo$1(runCtx, "POLL_CODE", `提取到验证码（第 ${attempt} 次轮询）`);
 						logDebug(runCtx, "POLL_CODE", "验证码完整值", { code });
 						return code;
 					}
 				}
 				if (attempt < maxAttempts) {
-					logWarn(runCtx, "POLL_CODE", `本轮未获取到验证码，${intervalMs}ms 后重试`);
+					logWarn$1(runCtx, "POLL_CODE", `本轮未获取到验证码，${intervalMs}ms 后重试`);
 					await delay(intervalMs);
 				}
 			}
@@ -3375,7 +3594,7 @@
 		async startLegacyRegisterAssist() {
 			const runCtx = createRunContext("LEGACY");
 			let currentStep = "初始化";
-			logInfo(runCtx, "START", "注册页模式：填表辅助 + 用户手动过验证码");
+			logInfo$1(runCtx, "START", "注册页模式：填表辅助 + 用户手动过验证码");
 			try {
 				if (!this.isRegisterPage()) {
 					throw new Error("当前不在注册页，请使用一键注册（接口）");
@@ -3390,7 +3609,7 @@
 				const email = await ApiService.generateEmail();
 				const username = generateUsername();
 				const password = generatePassword();
-				logInfo(runCtx, "GENERATE", "生成注册信息完成", {
+				logInfo$1(runCtx, "GENERATE", "生成注册信息完成", {
 					email,
 					username,
 					password
@@ -3415,7 +3634,7 @@
 						verificationCode: ""
 					});
 					Toast.info("已填表并尝试发送验证码，请你完成人机验证后提交注册", 5e3);
-					logInfo(runCtx, "SEND_CODE", "已触发页面发送验证码按钮", { text: sendResult.text });
+					logInfo$1(runCtx, "SEND_CODE", "已触发页面发送验证码按钮", { text: sendResult.text });
 				} else {
 					Sidebar.updateState({
 						status: "waiting",
@@ -3423,7 +3642,7 @@
 						verificationCode: ""
 					});
 					Toast.warning("已填表，但未找到发送验证码按钮，请手动操作", 5e3);
-					logWarn(runCtx, "SEND_CODE", "未找到发送验证码按钮");
+					logWarn$1(runCtx, "SEND_CODE", "未找到发送验证码按钮");
 				}
 			} catch (error) {
 				const message = `${currentStep}失败: ${error.message}`;
@@ -3456,7 +3675,7 @@
 			const email = await ApiService.generateEmail();
 			const username = generateUsername();
 			const password = generatePassword();
-			logInfo(runCtx, "GENERATE", `${flowName} 生成注册信息完成`, {
+			logInfo$1(runCtx, "GENERATE", `${flowName} 生成注册信息完成`, {
 				email,
 				username,
 				password
@@ -3500,9 +3719,9 @@
 			const { codeInput } = this.getFormElements();
 			if (codeInput) {
 				this.simulateInput(codeInput, code);
-				logInfo(runCtx, "FORM", `${flowName} 验证码已自动填充到输入框`);
+				logInfo$1(runCtx, "FORM", `${flowName} 验证码已自动填充到输入框`);
 			} else {
-				logWarn(runCtx, "FORM", `${flowName} 未找到验证码输入框，跳过自动填充`);
+				logWarn$1(runCtx, "FORM", `${flowName} 未找到验证码输入框，跳过自动填充`);
 			}
 			currentStep = "获取注册令牌";
 			Sidebar.updateState({
@@ -3523,7 +3742,7 @@
 				regToken
 			}, runCtx);
 			localStorage.setItem("console_token", token);
-			logInfo(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
+			logInfo$1(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
 			logDebug(runCtx, "AUTH", `${flowName} localStorage 写入 token 完整值`, { token });
 			if (showStepToasts) {
 				Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
@@ -3639,16 +3858,16 @@
 					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 						mapping = { ...parsed };
 					} else {
-						logWarn(runCtx, "SWITCH_CHAT", "conversationIdInfo 不是对象，已重建");
+						logWarn$1(runCtx, "SWITCH_CHAT", "conversationIdInfo 不是对象，已重建");
 					}
 				} catch {
-					logWarn(runCtx, "SWITCH_CHAT", "conversationIdInfo 解析失败，已重建");
+					logWarn$1(runCtx, "SWITCH_CHAT", "conversationIdInfo 解析失败，已重建");
 				}
 			}
 			const previousConversationId = typeof mapping[normalizedAppId] === "string" ? mapping[normalizedAppId].trim() : "";
 			mapping[normalizedAppId] = normalizedConversationId;
 			localStorage.setItem("conversationIdInfo", JSON.stringify(mapping));
-			logInfo(runCtx, "SWITCH_CHAT", "已写入 localStorage.conversationIdInfo", {
+			logInfo$1(runCtx, "SWITCH_CHAT", "已写入 localStorage.conversationIdInfo", {
 				appId: normalizedAppId,
 				conversationId: normalizedConversationId,
 				previousConversationId: previousConversationId || null
@@ -3660,7 +3879,7 @@
 			for (const item of sorted) {
 				const answer = item?.answer;
 				if (isAnswerEmpty(answer)) {
-					logWarn(runCtx, step, "检测到空 answer，继续向后查找", {
+					logWarn$1(runCtx, step, "检测到空 answer，继续向后查找", {
 						createdAt: item?.created_at ?? null,
 						answerType: typeof answer,
 						answerPreview: typeof answer === "string" ? answer.slice(0, 60) : answer
@@ -3674,6 +3893,91 @@
 				};
 			}
 			throw new Error("messages 中所有 answer 均为空，已停止更换账号流程");
+		},
+		resolveSwitchTriggerWordFromWorldBook(worldBook) {
+			if (!Array.isArray(worldBook)) return "";
+			for (const entry of worldBook) {
+				const key = typeof entry?.key === "string" ? entry.key : "";
+				const triggerWord = normalizeSwitchTriggerWord(key);
+				if (triggerWord) {
+					return triggerWord;
+				}
+			}
+			return "";
+		},
+		prepareWorldBookConfigForSwitch({ baseConfig, answer, runCtx, explicitTriggerWord = "" }) {
+			const normalizedAnswer = decodeEscapedText$1(typeof answer === "string" ? answer : String(answer ?? "")).trim();
+			if (!normalizedAnswer) {
+				throw new Error("旧会话 answer 为空，无法写入 world_book");
+			}
+			const clonedConfig = cloneJsonSafe(baseConfig);
+			if (!clonedConfig || typeof clonedConfig !== "object" || Array.isArray(clonedConfig)) {
+				throw new Error("user_app_model_config 结构异常，无法写入 world_book");
+			}
+			const existingWorldBook = Array.isArray(clonedConfig.world_book) ? [...clonedConfig.world_book] : [];
+			const triggerWord = normalizeSwitchTriggerWord(explicitTriggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook);
+			const matchedIndex = existingWorldBook.findIndex((entry) => {
+				if (!entry || typeof entry !== "object") return false;
+				const key = typeof entry?.key === "string" ? entry.key : "";
+				return normalizeSwitchTriggerWord(key) === triggerWord;
+			});
+			const entryBase = matchedIndex >= 0 && existingWorldBook[matchedIndex] && typeof existingWorldBook[matchedIndex] === "object" ? { ...existingWorldBook[matchedIndex] } : {};
+			const entryKey = normalizeSwitchTriggerWord(entryBase.key) ? String(entryBase.key).trim() : `_or_${triggerWord}`;
+			const worldBookEntry = {
+				...entryBase,
+				key: entryKey,
+				value: normalizedAnswer,
+				group: typeof entryBase.group === "string" ? entryBase.group : "",
+				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 7,
+				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 2
+			};
+			const nextWorldBook = [...existingWorldBook];
+			if (matchedIndex >= 0) {
+				nextWorldBook[matchedIndex] = worldBookEntry;
+			} else {
+				nextWorldBook.unshift(worldBookEntry);
+			}
+			clonedConfig.world_book = nextWorldBook;
+			logInfo$1(runCtx, "SWITCH_WORLD_BOOK", matchedIndex >= 0 ? "已替换 world_book 触发词条目" : "已新增 world_book 触发词条目", {
+				triggerWord,
+				worldBookCount: nextWorldBook.length,
+				entryKey: worldBookEntry.key,
+				answerLength: normalizedAnswer.length
+			});
+			logDebug(runCtx, "SWITCH_WORLD_BOOK", "world_book 写入后的配置", { worldBook: nextWorldBook });
+			return {
+				config: clonedConfig,
+				triggerWord,
+				worldBookEntry,
+				replaced: matchedIndex >= 0
+			};
+		},
+		buildSwitchQuery({ triggerWord, appendText }) {
+			const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
+			const normalizedAppendText = typeof appendText === "string" ? appendText.trim() : "";
+			if (!normalizedAppendText) {
+				return normalizedTrigger;
+			}
+			if (normalizedAppendText.startsWith(normalizedTrigger)) {
+				return normalizedAppendText;
+			}
+			return `${normalizedTrigger}${normalizedAppendText}`;
+		},
+		extractWorldBookFromModelConfigPayload(payload) {
+			const candidates = [];
+			const data = payload?.data;
+			if (data && typeof data === "object" && !Array.isArray(data)) {
+				candidates.push(data);
+			}
+			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+				candidates.push(payload);
+			}
+			for (const item of candidates) {
+				if (Array.isArray(item.world_book)) {
+					return item.world_book;
+				}
+			}
+			return null;
 		},
 		async fetchConversationMessages({ appId, conversationId, token, runCtx, step = "SWITCH_FETCH_MESSAGES", limit = 100, type = "recent", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
 			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=${encodeURIComponent(limit)}&type=${encodeURIComponent(type)}`;
@@ -3775,7 +4079,7 @@
 				});
 				return details;
 			} catch (error) {
-				logWarn(runCtx, step, "同步应用元数据到本地失败（不影响主流程）", { message: error?.message || String(error) });
+				logWarn$1(runCtx, step, "同步应用元数据到本地失败（不影响主流程）", { message: error?.message || String(error) });
 				return null;
 			}
 		},
@@ -3805,24 +4109,53 @@
 			if (config === null || config === undefined) {
 				throw new Error("user_app_model_config 返回为空");
 			}
-			logInfo(runCtx, "SWITCH_GET_MODEL_CONFIG", "已读取旧账号 user_app_model_config", {
+			logInfo$1(runCtx, "SWITCH_GET_MODEL_CONFIG", "已读取旧账号 user_app_model_config", {
 				appId,
 				configType: Array.isArray(config) ? "array" : typeof config
 			});
 			logDebug(runCtx, "SWITCH_GET_MODEL_CONFIG", "user_app_model_config 详情", config);
 			return config;
 		},
-		async saveUserAppModelConfig({ appId, token, config, runCtx }) {
+		async saveUserAppModelConfig({ appId, token, config, runCtx, ensureWorldBookNotEmpty = false, maxWorldBookPostAttempts = 1, unicodeEscapeBody = false }) {
 			const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
-			await this.requestSiteApi(path, {
-				method: "POST",
-				headers: { Authorization: `Bearer ${token}` },
-				body: config
-			}, runCtx, "SWITCH_POST_MODEL_CONFIG");
-			logInfo(runCtx, "SWITCH_POST_MODEL_CONFIG", "新账号 user_app_model_config 已同步", {
-				appId,
-				configType: Array.isArray(config) ? "array" : typeof config
-			});
+			const attempts = this.resolveRetryAttempts(maxWorldBookPostAttempts);
+			let lastPayload = null;
+			for (let attempt = 1; attempt <= attempts; attempt++) {
+				lastPayload = await this.requestSiteApi(path, {
+					method: "POST",
+					headers: { Authorization: `Bearer ${token}` },
+					body: config,
+					unicodeEscapeBody
+				}, runCtx, "SWITCH_POST_MODEL_CONFIG");
+				const responseWorldBook = this.extractWorldBookFromModelConfigPayload(lastPayload);
+				const hasValidWorldBook = Array.isArray(responseWorldBook) && responseWorldBook.length > 0;
+				if (ensureWorldBookNotEmpty && !hasValidWorldBook) {
+					const hasNext = attempt < attempts;
+					logWarn$1(runCtx, "SWITCH_POST_MODEL_CONFIG", "POST 返回 world_book 无效（为空或缺失），准备重试", {
+						appId,
+						attempt,
+						attempts,
+						worldBookType: Array.isArray(responseWorldBook) ? "array" : typeof responseWorldBook,
+						worldBookCount: Array.isArray(responseWorldBook) ? responseWorldBook.length : null
+					});
+					if (hasNext) {
+						await delay(220 * attempt);
+						continue;
+					}
+					throw new Error("保存模型配置失败：返回 world_book 为空或缺失，已重试仍未恢复");
+				}
+				logInfo$1(runCtx, "SWITCH_POST_MODEL_CONFIG", "新账号 user_app_model_config 已同步", {
+					appId,
+					configType: Array.isArray(config) ? "array" : typeof config,
+					attempt,
+					attempts,
+					ensureWorldBookNotEmpty,
+					worldBookCount: Array.isArray(responseWorldBook) ? responseWorldBook.length : null,
+					unicodeEscapeBody
+				});
+				return lastPayload;
+			}
+			return lastPayload;
 		},
 		async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
 			const path = `${SITE_ENDPOINTS.CHAT_MESSAGES}/${appId}/chat-messages`;
@@ -3834,7 +4167,7 @@
 				inputs: {},
 				query
 			};
-			logInfo(runCtx, "SWITCH_CHAT", "开始请求 chat-messages", {
+			logInfo$1(runCtx, "SWITCH_CHAT", "开始请求 chat-messages", {
 				path,
 				conversationName,
 				queryLength: query.length
@@ -3852,14 +4185,14 @@
 					maxAttempts: 1
 				});
 				baselineConversationIds = baselineConversations.map((item) => typeof item?.id === "string" ? item.id.trim() : "").filter(Boolean);
-				logInfo(runCtx, "SWITCH_LIST_CONVERSATIONS_BASELINE", "已读取会话基线", { baselineCount: baselineConversationIds.length });
+				logInfo$1(runCtx, "SWITCH_LIST_CONVERSATIONS_BASELINE", "已读取会话基线", { baselineCount: baselineConversationIds.length });
 			} catch (error) {
 				baselineConversationIds = [];
-				logWarn(runCtx, "SWITCH_LIST_CONVERSATIONS_BASELINE", "读取会话基线失败，将继续执行并依赖轮询兜底", { message: error?.message || String(error) });
+				logWarn$1(runCtx, "SWITCH_LIST_CONVERSATIONS_BASELINE", "读取会话基线失败，将继续执行并依赖轮询兜底", { message: error?.message || String(error) });
 			}
 			const responseMeta = await this.runWithObjectiveRetries((attempt, attempts) => {
 				if (attempt > 1) {
-					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 重试中 (${attempt}/${attempts})`);
+					logInfo$1(runCtx, "SWITCH_CHAT", `chat-messages 重试中 (${attempt}/${attempts})`);
 				}
 				let externalAbort = null;
 				const ssePromise = this.sendChatMessagesOnce({
@@ -3894,7 +4227,7 @@
 					ssePromise.then((meta) => {
 						if (settled) return;
 						const cid = typeof meta?.conversationId === "string" ? meta.conversationId.trim() : "";
-						logInfo(runCtx, "SWITCH_CHAT", "SSE 通道返回", {
+						logInfo$1(runCtx, "SWITCH_CHAT", "SSE 通道返回", {
 							trigger: meta?.trigger || null,
 							status: Number(meta?.status || 0) || null,
 							readyState: Number(meta?.readyState || 0) || null,
@@ -3933,7 +4266,7 @@
 								source: meta?.source || "sse-no-conversation-id"
 							});
 						}).catch((pollError) => {
-							logWarn(runCtx, "SWITCH_CHAT", "SSE 后轮询补救失败，按 SSE 结果继续", { message: pollError?.message || String(pollError) });
+							logWarn$1(runCtx, "SWITCH_CHAT", "SSE 后轮询补救失败，按 SSE 结果继续", { message: pollError?.message || String(pollError) });
 							complete({
 								...meta,
 								source: meta?.source || "sse-no-conversation-id"
@@ -3941,7 +4274,7 @@
 						});
 					}).catch((sseError) => {
 						if (settled) return;
-						logWarn(runCtx, "SWITCH_CHAT", "SSE 通道失败，等待轮询通道兜底", { message: sseError?.message || String(sseError) });
+						logWarn$1(runCtx, "SWITCH_CHAT", "SSE 通道失败，等待轮询通道兜底", { message: sseError?.message || String(sseError) });
 						pollPromise.then((pollMeta) => {
 							if (settled) return;
 							const pollConversationId = typeof pollMeta?.conversationId === "string" ? pollMeta.conversationId.trim() : "";
@@ -3965,7 +4298,7 @@
 						if (settled) return;
 						const pollConversationId = typeof pollMeta?.conversationId === "string" ? pollMeta.conversationId.trim() : "";
 						if (!pollConversationId) return;
-						logInfo(runCtx, "SWITCH_CHAT", "轮询通道已获取 conversation_id", {
+						logInfo$1(runCtx, "SWITCH_CHAT", "轮询通道已获取 conversation_id", {
 							conversationId: pollConversationId,
 							source: pollMeta?.source || "polling",
 							attempt: Number(pollMeta?.attempt || 0) || 0
@@ -3984,7 +4317,7 @@
 							pollAttempt: Number(pollMeta?.attempt || 0) || 0
 						});
 					}).catch((pollError) => {
-						logWarn(runCtx, "SWITCH_CHAT", "轮询通道执行异常", { message: pollError?.message || String(pollError) });
+						logWarn$1(runCtx, "SWITCH_CHAT", "轮询通道执行异常", { message: pollError?.message || String(pollError) });
 					});
 				});
 			}, {
@@ -3999,7 +4332,7 @@
 			const statusText = hasStatus ? `HTTP ${status}` : "未知状态";
 			let conversationId = typeof responseMeta?.conversationId === "string" ? responseMeta.conversationId.trim() : "";
 			let source = typeof responseMeta?.source === "string" && responseMeta.source.trim() ? responseMeta.source.trim() : conversationId ? "sse-conversation-id" : "sse-first-chunk";
-			logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已收到响应（${statusText}）`, {
+			logInfo$1(runCtx, "SWITCH_CHAT", `chat-messages 已收到响应（${statusText}）`, {
 				...responseMeta,
 				conversationId: conversationId || null,
 				source
@@ -4032,9 +4365,9 @@
 					try {
 						abortedByScript = true;
 						requestController.abort(reason || "abort");
-						logInfo(runCtx, "SWITCH_CHAT", `已主动中止 chat-messages SSE: ${reason || "no-reason"}`);
+						logInfo$1(runCtx, "SWITCH_CHAT", `已主动中止 chat-messages SSE: ${reason || "no-reason"}`);
 					} catch (error) {
-						logWarn(runCtx, "SWITCH_CHAT", "主动中止 chat-messages SSE 失败", {
+						logWarn$1(runCtx, "SWITCH_CHAT", "主动中止 chat-messages SSE 失败", {
 							reason: reason || "no-reason",
 							message: error?.message || String(error)
 						});
@@ -4052,14 +4385,14 @@
 					const conversationId = this.parseConversationIdFromEventStream(rawText);
 					if (!conversationId) return "";
 					capturedConversationId = conversationId;
-					logInfo(runCtx, "SWITCH_CHAT", `已从 ${trigger} 解析 conversation_id`, { conversationId });
+					logInfo$1(runCtx, "SWITCH_CHAT", `已从 ${trigger} 解析 conversation_id`, { conversationId });
 					return capturedConversationId;
 				};
 				const finish = (trigger, responseMeta = {}) => {
 					if (settled) return;
 					settled = true;
 					clearTimers();
-					logInfo(runCtx, "SWITCH_CHAT", `chat-messages 已结束: ${trigger}`, {
+					logInfo$1(runCtx, "SWITCH_CHAT", `chat-messages 已结束: ${trigger}`, {
 						elapsedMs: elapsedMs(),
 						...responseMeta,
 						conversationId: capturedConversationId || responseMeta?.conversationId || null
@@ -4072,7 +4405,7 @@
 				};
 				hardTimeoutTimer = setTimeout(() => {
 					if (settled) return;
-					logWarn(runCtx, "SWITCH_CHAT", "chat-messages 8s 兜底超时，强制结束并刷新后续流程");
+					logWarn$1(runCtx, "SWITCH_CHAT", "chat-messages 8s 兜底超时，强制结束并刷新后续流程");
 					finish("failsafe-timeout", {
 						status: statusCode || 0,
 						readyState: 0,
@@ -4096,7 +4429,7 @@
 							signal: requestController.signal
 						});
 						statusCode = Number(response.status || 0);
-						logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch 已建立连接", {
+						logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages fetch 已建立连接", {
 							status: statusCode,
 							ok: response.ok,
 							elapsedMs: elapsedMs()
@@ -4130,7 +4463,7 @@
 							streamText += chunkText;
 							tryCaptureConversationId(streamText, "fetch-stream");
 							const hasSseData = /(?:^|\n)\s*data:\s*/m.test(streamText) || !!capturedConversationId;
-							logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch stream chunk", {
+							logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages fetch stream chunk", {
 								status: statusCode,
 								chunkLength: chunkText.length,
 								textLength: streamText.length,
@@ -4163,7 +4496,7 @@
 						if (settled) return;
 						clearTimers();
 						if (error?.name === "AbortError") {
-							logInfo(runCtx, "SWITCH_CHAT", "chat-messages fetch onabort", {
+							logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages fetch onabort", {
 								abortedByScript,
 								elapsedMs: elapsedMs(),
 								textLength: streamText.length,
@@ -4182,7 +4515,7 @@
 							reject(new Error("chat-messages 请求被中止"));
 							return;
 						}
-						logWarn(runCtx, "SWITCH_CHAT", "chat-messages fetch 失败", {
+						logWarn$1(runCtx, "SWITCH_CHAT", "chat-messages fetch 失败", {
 							status: statusCode || 0,
 							message: error?.message || String(error),
 							elapsedMs: elapsedMs()
@@ -4194,7 +4527,7 @@
 		},
 		async startOneClickRegister() {
 			const runCtx = createRunContext("REG");
-			logInfo(runCtx, "START", "开始一键注册流程", {
+			logInfo$1(runCtx, "START", "开始一键注册流程", {
 				href: window.location.href,
 				debugEnabled: isDebugEnabled()
 			});
@@ -4220,11 +4553,11 @@
 						token: oldToken,
 						runCtx
 					});
-					logInfo(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "一键注册已读取旧账号模型配置", { appId });
+					logInfo$1(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "一键注册已读取旧账号模型配置", { appId });
 				} else if (appId && !oldToken) {
-					logWarn(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "检测到应用详情页，但未找到旧账号 token，跳过旧配置读取");
+					logWarn$1(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "检测到应用详情页，但未找到旧账号 token，跳过旧配置读取");
 				} else {
-					logInfo(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "当前不是应用详情页，跳过旧配置读取");
+					logInfo$1(runCtx, "REG_SYNC_MODEL_CONFIG_OLD", "当前不是应用详情页，跳过旧配置读取");
 				}
 				const registerResult = await this.registerByApi(runCtx, {
 					flowName: "一键注册",
@@ -4251,12 +4584,19 @@
 					});
 					modelConfigSynced = true;
 				}
+				const autoReloadEnabled = this.isAutoReloadEnabled();
 				Sidebar.updateState({
 					status: "success",
-					statusMessage: registerResult.guideSkipped ? `一键注册成功，已写入 console_token${modelConfigSynced ? "，并同步模型配置" : ""}` : `一键注册成功，已写入 console_token（首次引导跳过失败）${modelConfigSynced ? "，模型配置已同步" : ""}`
+					statusMessage: registerResult.guideSkipped ? `一键注册成功，已写入 console_token${modelConfigSynced ? "，并同步模型配置" : ""}${autoReloadEnabled ? "，0.8 秒后刷新" : "，自动刷新已关闭"}` : `一键注册成功，已写入 console_token（首次引导跳过失败）${modelConfigSynced ? "，模型配置已同步" : ""}${autoReloadEnabled ? "，0.8 秒后刷新" : "，自动刷新已关闭"}`
 				});
-				Toast.success(registerResult.guideSkipped ? `一键注册完成${modelConfigSynced ? "（已同步模型配置）" : ""}` : `一键注册完成：首次引导跳过失败${modelConfigSynced ? "，模型配置已同步" : ""}`, 5e3);
-				logInfo(runCtx, "DONE", "一键注册流程完成");
+				Toast.success(registerResult.guideSkipped ? `一键注册完成${modelConfigSynced ? "（已同步模型配置）" : ""}${autoReloadEnabled ? "，即将刷新" : "，自动刷新已关闭"}` : `一键注册完成：首次引导跳过失败${modelConfigSynced ? "，模型配置已同步" : ""}${autoReloadEnabled ? "，即将刷新" : "，自动刷新已关闭"}`, 5e3);
+				logInfo$1(runCtx, "DONE", "一键注册流程完成", { autoReloadEnabled });
+				this.reloadPageIfEnabled({
+					delayMs: 800,
+					runCtx,
+					step: "DONE",
+					reason: "one-click-register-success"
+				});
 			} catch (error) {
 				const message = `一键注册失败: ${error.message}`;
 				Sidebar.updateState({
@@ -4276,7 +4616,7 @@
 			const switchBtn = document.getElementById("aifengyue-switch-account");
 			if (this.switchingAccount) {
 				Toast.warning("更换账号正在执行，请稍候");
-				logWarn(runCtx, "PRECHECK", "重复触发更换账号，已拦截");
+				logWarn$1(runCtx, "PRECHECK", "重复触发更换账号，已拦截");
 				return;
 			}
 			if (!appendText) {
@@ -4293,7 +4633,7 @@
 			if (switchBtn) {
 				switchBtn.disabled = true;
 			}
-			logInfo(runCtx, "START", "开始更换账号流程", {
+			logInfo$1(runCtx, "START", "开始更换账号流程", {
 				href: window.location.href,
 				appendTextLength: appendText.length,
 				debugEnabled: isDebugEnabled()
@@ -4362,7 +4702,7 @@
 					messages: oldConversation.messages
 				});
 				ChatHistoryService.markChainSynced(activeChainId, Date.now());
-				logInfo(runCtx, "SWITCH_FETCH_MESSAGES", "已提取旧会话最新消息", {
+				logInfo$1(runCtx, "SWITCH_FETCH_MESSAGES", "已提取旧会话最新消息", {
 					appId,
 					conversationId,
 					createdAt: latest.createdAt,
@@ -4395,17 +4735,35 @@
 				});
 				Sidebar.updateState({
 					status: "fetching",
-					statusMessage: "更换账号：正在同步模型配置到新账号..."
+					statusMessage: "更换账号：正在写入 world_book 并同步模型配置..."
 				});
-				Toast.info("更换账号：正在同步模型配置", 2200);
+				Toast.info("更换账号：正在写入 world_book 并同步模型配置", 2200);
+				const appendTriggerWord = normalizeSwitchTriggerWord(appendText);
+				const switchConfig = this.prepareWorldBookConfigForSwitch({
+					baseConfig: userModelConfig,
+					answer: decodedAnswer,
+					runCtx,
+					explicitTriggerWord: appendTriggerWord
+				});
 				await this.saveUserAppModelConfig({
 					appId,
 					token: registerResult.token,
-					config: userModelConfig,
-					runCtx
+					config: switchConfig.config,
+					runCtx,
+					ensureWorldBookNotEmpty: true,
+					maxWorldBookPostAttempts: 3,
+					unicodeEscapeBody: true
 				});
-				const query = `${decodedAnswer}\n\n${appendText}`;
+				const query = this.buildSwitchQuery({
+					triggerWord: switchConfig.triggerWord,
+					appendText
+				});
 				const conversationName = `新的对话-${randomConversationSuffix(3)}`;
+				logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages query 已改为触发词前缀模式", {
+					triggerWord: switchConfig.triggerWord,
+					appendTextLength: appendText.length,
+					queryLength: query.length
+				});
 				Sidebar.updateState({
 					status: "fetching",
 					statusMessage: "更换账号：新账号已就绪，正在发送 chat-messages..."
@@ -4433,23 +4791,27 @@
 						activeChainId = newBinding.chainId;
 						ChatHistoryService.setActiveChainId(appId, activeChainId);
 					}).catch((bindError) => {
-						logWarn(runCtx, "SWITCH_CHAT", "刷新前写入会话链失败（不影响立即刷新）", { message: bindError?.message || String(bindError) });
+						logWarn$1(runCtx, "SWITCH_CHAT", "刷新前写入会话链失败（不影响立即刷新）", { message: bindError?.message || String(bindError) });
 					});
 				}
 				const sourceText = chatResult?.source ? `，来源 ${chatResult.source}` : "";
 				const statusText = Number.isFinite(Number(chatResult?.status)) ? `HTTP ${Number(chatResult.status)}` : "未知状态";
+				const autoReloadEnabled = this.isAutoReloadEnabled();
 				Sidebar.updateState({
 					status: "success",
-					statusMessage: newConversationId ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}），0.8 秒后刷新` : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id，0.8 秒后刷新`
+					statusMessage: newConversationId ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}）${autoReloadEnabled ? "，0.8 秒后刷新" : "，自动刷新已关闭"}` : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id${autoReloadEnabled ? "，0.8 秒后刷新" : "，自动刷新已关闭"}`
 				});
 				if (newConversationId) {
-					Toast.success(`已获取新会话ID（${chatResult.source || "sse"}），即将刷新`, 2600);
+					Toast.success(`已获取新会话ID（${chatResult.source || "sse"}）${autoReloadEnabled ? "，即将刷新" : "，自动刷新已关闭"}`, 2600);
 				} else {
-					Toast.warning("未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步", 3600);
+					Toast.warning(autoReloadEnabled ? "未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步" : "未获取到新会话ID，自动刷新已关闭，可在“会话”Tab手动同步", 3600);
 				}
-				setTimeout(() => {
-					window.location.reload();
-				}, 120);
+				this.reloadPageIfEnabled({
+					delayMs: 120,
+					runCtx,
+					step: "SWITCH_DONE",
+					reason: "switch-account-success"
+				});
 			} catch (error) {
 				const message = `更换账号失败: ${error.message}`;
 				Sidebar.updateState({
@@ -4583,7 +4945,7 @@
 				}
 				allowedConversationIds.push(conversationId);
 			}
-			logInfo(runCtx, "SYNC", "会话同步过滤结果（按 token 绑定）", {
+			logInfo$1(runCtx, "SYNC", "会话同步过滤结果（按 token 绑定）", {
 				chainId: resolvedChainId,
 				totalConversationCount: conversationIds.length,
 				allowedConversationCount: allowedConversationIds.length,
@@ -4623,7 +4985,7 @@
 					successCount++;
 				} catch (error) {
 					failedConversationIds.push(conversationId);
-					logWarn(runCtx, "SYNC", "单个会话同步失败，继续同步其他会话", {
+					logWarn$1(runCtx, "SYNC", "单个会话同步失败，继续同步其他会话", {
 						conversationId,
 						message: error?.message || String(error)
 					});
@@ -4657,7 +5019,7 @@
 		},
 		async generateNewEmail() {
 			const runCtx = createRunContext("MAIL");
-			logInfo(runCtx, "START", "开始生成新邮箱");
+			logInfo$1(runCtx, "START", "开始生成新邮箱");
 			try {
 				Sidebar.updateState({
 					status: "generating",
@@ -4676,7 +5038,7 @@
 				const { emailInput } = this.getFormElements();
 				if (emailInput) this.simulateInput(emailInput, email);
 				Toast.success("新邮箱已生成并填充");
-				logInfo(runCtx, "DONE", "新邮箱生成成功", { email });
+				logInfo$1(runCtx, "DONE", "新邮箱生成成功", { email });
 			} catch (error) {
 				Sidebar.updateState({
 					status: "error",
@@ -4701,7 +5063,7 @@
 			const email = gmGetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, "");
 			if (!email) {
 				Toast.error("请先生成临时邮箱");
-				logWarn(runCtx, "PRECHECK", "未找到当前邮箱，无法获取验证码");
+				logWarn$1(runCtx, "PRECHECK", "未找到当前邮箱，无法获取验证码");
 				return;
 			}
 			const startTime = gmGetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, 0);
@@ -4711,7 +5073,7 @@
 					statusMessage: "正在获取验证码邮件..."
 				});
 				Toast.info("正在获取邮件...");
-				logInfo(runCtx, "START", "手动获取验证码开始", {
+				logInfo$1(runCtx, "START", "手动获取验证码开始", {
 					email,
 					startTime
 				});
@@ -4722,7 +5084,7 @@
 						statusMessage: "未找到验证码，请稍后重试"
 					});
 					Toast.warning("未找到验证码，请稍后再试");
-					logWarn(runCtx, "DONE", "手动获取验证码未命中");
+					logWarn$1(runCtx, "DONE", "手动获取验证码未命中");
 					return;
 				}
 				Sidebar.updateState({
@@ -4734,10 +5096,10 @@
 				if (codeInput) {
 					this.simulateInput(codeInput, code);
 					Toast.success(`验证码 ${code} 已填充！`, 5e3);
-					logInfo(runCtx, "DONE", "验证码已填充");
+					logInfo$1(runCtx, "DONE", "验证码已填充");
 				} else {
 					Toast.success(`验证码: ${code}，请手动输入`, 5e3);
-					logWarn(runCtx, "DONE", "找到验证码但未找到输入框");
+					logWarn$1(runCtx, "DONE", "找到验证码但未找到输入框");
 				}
 			} catch (error) {
 				Sidebar.updateState({
@@ -5177,6 +5539,612 @@
 	}
 
 //#endregion
+//#region src/ui/chat-stream-capsule.js
+	const CAPSULE_ID = "aifengyue-chat-status-capsule";
+	function formatStatus(status) {
+		const parsed = Number(status);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return `HTTP ${parsed}`;
+		}
+		return "未知状态";
+	}
+	const ChatStreamCapsule = {
+		styleInjected: false,
+		element: null,
+		textElement: null,
+		inFlight: 0,
+		injectStyle() {
+			if (this.styleInjected) return;
+			this.styleInjected = true;
+			gmAddStyle(`
+            #${CAPSULE_ID} {
+                position: fixed;
+                right: 20px;
+                bottom: 84px;
+                z-index: 2147483647;
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                border-radius: 999px;
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: 600;
+                line-height: 1;
+                pointer-events: none;
+                user-select: none;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+                transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+                opacity: 0.95;
+            }
+            #${CAPSULE_ID} .aifengyue-chat-status-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: currentColor;
+            }
+            #${CAPSULE_ID} .aifengyue-chat-status-text {
+                max-width: 360px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            #${CAPSULE_ID}.is-idle {
+                background: rgba(75, 85, 99, 0.92);
+                color: #d1d5db;
+            }
+            #${CAPSULE_ID}.is-sending {
+                background: rgba(37, 99, 235, 0.95);
+                color: #bfdbfe;
+                transform: translateY(-1px);
+            }
+            #${CAPSULE_ID}.is-waiting {
+                background: rgba(245, 158, 11, 0.95);
+                color: #fef3c7;
+            }
+            #${CAPSULE_ID}.is-sending .aifengyue-chat-status-dot {
+                animation: aifengyue-chat-capsule-pulse 1s ease-in-out infinite;
+            }
+            #${CAPSULE_ID}.is-waiting .aifengyue-chat-status-dot {
+                animation: aifengyue-chat-capsule-pulse 1.2s ease-in-out infinite;
+            }
+            #${CAPSULE_ID}.is-done {
+                background: rgba(5, 150, 105, 0.95);
+                color: #bbf7d0;
+            }
+            #${CAPSULE_ID}.is-error {
+                background: rgba(220, 38, 38, 0.95);
+                color: #fecaca;
+            }
+            @keyframes aifengyue-chat-capsule-pulse {
+                0% { transform: scale(1); opacity: 0.8; }
+                50% { transform: scale(1.35); opacity: 1; }
+                100% { transform: scale(1); opacity: 0.8; }
+            }
+        `);
+		},
+		ensureElements() {
+			this.injectStyle();
+			let element = document.getElementById(CAPSULE_ID);
+			if (!element) {
+				element = document.createElement("div");
+				element.id = CAPSULE_ID;
+				element.innerHTML = `
+                <span class="aifengyue-chat-status-dot"></span>
+                <span class="aifengyue-chat-status-text"></span>
+            `;
+				document.body.appendChild(element);
+			}
+			this.element = element;
+			this.textElement = element.querySelector(".aifengyue-chat-status-text");
+			if (!this.textElement) {
+				this.textElement = document.createElement("span");
+				this.textElement.className = "aifengyue-chat-status-text";
+				this.element.appendChild(this.textElement);
+			}
+			return true;
+		},
+		applyView(state, text) {
+			if (!this.ensureElements()) return;
+			this.element.classList.remove("is-idle", "is-sending", "is-waiting", "is-done", "is-error");
+			this.element.classList.add(`is-${state}`);
+			this.element.dataset.state = state;
+			this.textElement.textContent = text;
+		},
+		init() {
+			this.inFlight = 0;
+			this.applyView("idle", "SSE 待命");
+		},
+		onRequestStart() {
+			this.inFlight += 1;
+			const suffix = this.inFlight > 1 ? ` (${this.inFlight})` : "";
+			this.applyView("sending", `SSE 发送中${suffix}`);
+		},
+		onRequestDone({ ok = false, status = 0, elapsedText = "-" } = {}) {
+			this.inFlight = Math.max(0, this.inFlight - 1);
+			if (this.inFlight > 0) {
+				this.applyView("sending", `SSE 发送中 (${this.inFlight})`);
+				return;
+			}
+			const statusText = formatStatus(status);
+			const prefix = ok ? "SSE 已完成" : "SSE 失败";
+			this.applyView(ok ? "done" : "error", `${prefix} · ${statusText} · ${elapsedText}`);
+		},
+		onSseError({ status = 0, code = "", message = "" } = {}) {
+			const statusText = formatStatus(status);
+			const codeText = code ? ` ${code}` : "";
+			const messageText = message ? ` · ${message}` : "";
+			this.applyView("error", `SSE 错误${codeText} · ${statusText}${messageText}`);
+		},
+		onSseEvent(eventName = "") {
+			const event = String(eventName || "").trim();
+			if (!event) return;
+			if (event === "ping") {
+				this.applyView("waiting", "SSE 等待中");
+				return;
+			}
+			if (event === "message") {
+				this.applyView("sending", "SSE 输出中");
+				return;
+			}
+			if (event === "message_end") {
+				this.applyView("done", "SSE 已完成");
+			}
+		}
+	};
+
+//#endregion
+//#region src/runtime/chat-messages-monitor.js
+	const CHAT_MESSAGES_PATH = "/chat-messages";
+	const LOG_PREFIX = "[AI风月注册助手][CHAT_MONITOR]";
+	function logInfo(message, meta) {
+		if (meta === undefined) {
+			console.log(`${LOG_PREFIX} ${message}`);
+			return;
+		}
+		console.log(`${LOG_PREFIX} ${message}`, meta);
+	}
+	function logWarn(message, meta) {
+		if (meta === undefined) {
+			console.warn(`${LOG_PREFIX} ${message}`);
+			return;
+		}
+		console.warn(`${LOG_PREFIX} ${message}`, meta);
+	}
+	function getUnsafeWindow() {
+		const candidate = globalThis && globalThis.unsafeWindow;
+		if (!candidate) return null;
+		if (candidate === window) return null;
+		return candidate;
+	}
+	function getTargetWindow() {
+		return getUnsafeWindow() || window;
+	}
+	function publishMonitorState(targetWindow, state) {
+		try {
+			window.__AF_CHAT_MONITOR__ = state;
+		} catch {}
+		if (!targetWindow || targetWindow === window) return;
+		try {
+			targetWindow.__AF_CHAT_MONITOR__ = state;
+		} catch {}
+	}
+	function toAbsoluteUrl(input, baseOrigin = window.location.origin) {
+		if (input instanceof URL) {
+			return input.href;
+		}
+		if (typeof input === "string") {
+			try {
+				return new URL(input, baseOrigin).href;
+			} catch {
+				return "";
+			}
+		}
+		if (input && typeof input.url === "string") {
+			try {
+				return new URL(input.url, baseOrigin).href;
+			} catch {
+				return "";
+			}
+		}
+		return "";
+	}
+	function normalizeMethod(value) {
+		const method = typeof value === "string" ? value.trim().toUpperCase() : "";
+		return method || "GET";
+	}
+	function isChatMessagesUrl(url) {
+		if (!url) return false;
+		try {
+			const parsed = new URL(url, window.location.origin);
+			return parsed.pathname.includes(CHAT_MESSAGES_PATH);
+		} catch {
+			return url.includes(CHAT_MESSAGES_PATH);
+		}
+	}
+	function shouldTrack(url, method) {
+		if (!isChatMessagesUrl(url)) return false;
+		return normalizeMethod(method) === "POST";
+	}
+	function formatElapsedMs(startedAt) {
+		if (!Number.isFinite(Number(startedAt))) return "-";
+		const elapsed = Math.max(0, Date.now() - Number(startedAt));
+		return `${(elapsed / 1e3).toFixed(1)}s`;
+	}
+	function compactInlineText(value, maxLen = 100) {
+		if (typeof value !== "string") return "";
+		const normalized = value.replace(/\s+/g, " ").trim();
+		if (!normalized) return "";
+		if (normalized.length <= maxLen) return normalized;
+		return `${normalized.slice(0, maxLen - 1)}…`;
+	}
+	function showResultToast({ status = 0, ok = false, elapsedText = "-", channel = "fetch", sseError = null }) {
+		const statusText = Number.isFinite(Number(status)) && Number(status) > 0 ? `HTTP ${Number(status)}` : "未知状态";
+		const errorCode = sseError?.code ? `, ${sseError.code}` : "";
+		const errorHint = sseError?.message ? `, ${compactInlineText(sseError.message, 40)}` : "";
+		const text = `/chat-messages 已完成 (${statusText}, ${elapsedText}, ${channel}${errorCode}${errorHint})`;
+		if (ok) {
+			Toast.success(text, 2800);
+		} else if (Number(status) >= 400) {
+			Toast.error(text, 3600);
+		} else {
+			Toast.warning(text, 3200);
+		}
+	}
+	function appendMonitorState(targetWindow, patch) {
+		const prev = targetWindow && targetWindow.__AF_CHAT_MONITOR__ || window.__AF_CHAT_MONITOR__ || {};
+		const next = {
+			...prev,
+			...patch,
+			updatedAt: new Date().toISOString()
+		};
+		publishMonitorState(targetWindow, next);
+	}
+	function findSseSeparator(buffer) {
+		const idxCrLf = buffer.indexOf("\r\n\r\n");
+		const idxLf = buffer.indexOf("\n\n");
+		if (idxCrLf === -1 && idxLf === -1) return null;
+		if (idxCrLf === -1) return {
+			index: idxLf,
+			length: 2
+		};
+		if (idxLf === -1) return {
+			index: idxCrLf,
+			length: 4
+		};
+		if (idxLf < idxCrLf) return {
+			index: idxLf,
+			length: 2
+		};
+		return {
+			index: idxCrLf,
+			length: 4
+		};
+	}
+	function parseSseBlock(rawBlock) {
+		if (!rawBlock || !rawBlock.trim()) return null;
+		const lines = rawBlock.split(/\r?\n/);
+		let eventName = "message";
+		let hasEventLine = false;
+		const dataLines = [];
+		for (const line of lines) {
+			if (!line || line.startsWith(":")) continue;
+			const idx = line.indexOf(":");
+			const key = idx >= 0 ? line.slice(0, idx).trim() : line.trim();
+			let value = idx >= 0 ? line.slice(idx + 1) : "";
+			if (value.startsWith(" ")) value = value.slice(1);
+			if (key === "event" && value) {
+				eventName = value;
+				hasEventLine = true;
+				continue;
+			}
+			if (key === "data") {
+				dataLines.push(value);
+			}
+		}
+		const dataText = dataLines.join("\n").trim();
+		if (!dataText && !hasEventLine) return null;
+		let json = null;
+		if (dataText) {
+			try {
+				json = JSON.parse(dataText);
+			} catch {
+				json = null;
+			}
+		}
+		const payloadEvent = json && typeof json.event === "string" ? json.event : "";
+		return {
+			event: payloadEvent || eventName,
+			eventName,
+			dataText,
+			json
+		};
+	}
+	function toSseError(parsed) {
+		if (!parsed) return null;
+		const payload = parsed.json;
+		if (!payload || typeof payload !== "object") return null;
+		const evt = typeof payload.event === "string" ? payload.event : parsed.event;
+		if (evt !== "error") return null;
+		return {
+			event: "error",
+			code: typeof payload.code === "string" ? payload.code : "",
+			status: Number(payload.status || 0),
+			message: typeof payload.message === "string" ? payload.message : "",
+			conversationId: typeof payload.conversation_id === "string" ? payload.conversation_id : "",
+			messageId: typeof payload.message_id === "string" ? payload.message_id : "",
+			raw: payload
+		};
+	}
+	async function observeSseResponse(response, handlers = {}) {
+		const onEvent = typeof handlers.onEvent === "function" ? handlers.onEvent : null;
+		const emitBlock = (rawBlock) => {
+			const parsed = parseSseBlock(rawBlock);
+			if (!parsed || !onEvent) return;
+			onEvent(parsed);
+		};
+		const reader = response?.body?.getReader?.();
+		if (!reader) {
+			const text = await response?.text?.().catch(() => "");
+			if (!text) return;
+			const blocks = text.split(/\r?\n\r?\n/);
+			for (const block of blocks) {
+				emitBlock(block);
+			}
+			return;
+		}
+		const decoder = new TextDecoder();
+		let buffer = "";
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			while (true) {
+				const separator = findSseSeparator(buffer);
+				if (!separator) break;
+				const rawBlock = buffer.slice(0, separator.index);
+				buffer = buffer.slice(separator.index + separator.length);
+				emitBlock(rawBlock);
+			}
+		}
+		buffer += decoder.decode();
+		while (true) {
+			const separator = findSseSeparator(buffer);
+			if (!separator) break;
+			const rawBlock = buffer.slice(0, separator.index);
+			buffer = buffer.slice(separator.index + separator.length);
+			emitBlock(rawBlock);
+		}
+		if (buffer.trim()) {
+			emitBlock(buffer);
+		}
+	}
+	const ChatMessagesMonitor = {
+		started: false,
+		targetWindow: null,
+		originalFetch: null,
+		xhrOpen: null,
+		xhrSend: null,
+		start() {
+			if (this.started) return;
+			this.started = true;
+			this.targetWindow = getTargetWindow();
+			const usingUnsafeWindow = this.targetWindow !== window;
+			const baseOrigin = this.targetWindow?.location?.origin || window.location.origin;
+			logInfo("开始安装网络监听（/chat-messages）");
+			ChatStreamCapsule.init();
+			this.hookFetch(this.targetWindow, baseOrigin);
+			this.hookXhr(this.targetWindow, baseOrigin);
+			const state = {
+				started: true,
+				path: CHAT_MESSAGES_PATH,
+				context: usingUnsafeWindow ? "unsafeWindow" : "window",
+				fetchHooked: !!this.originalFetch,
+				xhrHooked: !!this.xhrOpen && !!this.xhrSend,
+				lastSseEvent: null,
+				lastSseError: null,
+				updatedAt: new Date().toISOString()
+			};
+			publishMonitorState(this.targetWindow, state);
+			logInfo("网络监听安装完成", {
+				context: state.context,
+				fetchHooked: !!this.originalFetch,
+				xhrHooked: !!this.xhrOpen && !!this.xhrSend
+			});
+		},
+		hookFetch(targetWindow, baseOrigin) {
+			if (!targetWindow || typeof targetWindow.fetch !== "function") {
+				logWarn("fetch 不可用，跳过 fetch hook");
+				return;
+			}
+			if (this.originalFetch) return;
+			this.originalFetch = targetWindow.fetch;
+			logInfo("fetch hook 已安装");
+			targetWindow.fetch = (...args) => {
+				const first = args[0];
+				const second = args[1] || {};
+				const url = toAbsoluteUrl(first, baseOrigin);
+				const method = normalizeMethod(second.method || (first && typeof first === "object" ? first.method : "GET"));
+				const startedAt = Date.now();
+				const tracked = shouldTrack(url, method);
+				const requestState = { sseError: null };
+				const promise = this.originalFetch.apply(targetWindow, args);
+				if (!tracked) {
+					return promise;
+				}
+				ChatStreamCapsule.onRequestStart();
+				logInfo("命中 fetch /chat-messages 请求", {
+					method,
+					url
+				});
+				promise.then((response) => {
+					let finalized = false;
+					const done = () => {
+						if (finalized) return;
+						finalized = true;
+						const finalStatus = Number(requestState.sseError?.status || response?.status || 0);
+						const finalOk = !!response?.ok && !requestState.sseError;
+						const elapsedText = formatElapsedMs(startedAt);
+						logInfo("fetch /chat-messages 请求完成", {
+							method,
+							url,
+							status: finalStatus,
+							sseErrorCode: requestState.sseError?.code || ""
+						});
+						showResultToast({
+							status: finalStatus,
+							ok: finalOk,
+							elapsedText,
+							channel: "fetch",
+							sseError: requestState.sseError
+						});
+						ChatStreamCapsule.onRequestDone({
+							status: finalStatus,
+							ok: finalOk,
+							elapsedText
+						});
+					};
+					try {
+						const cloned = response?.clone?.();
+						if (!cloned) {
+							done();
+							return;
+						}
+						observeSseResponse(cloned, { onEvent: (sseEvent) => {
+							ChatStreamCapsule.onSseEvent(sseEvent.event || sseEvent.eventName || "");
+							appendMonitorState(this.targetWindow, { lastSseEvent: {
+								event: sseEvent.event || "",
+								eventName: sseEvent.eventName || "",
+								at: Date.now()
+							} });
+							if (sseEvent.event && sseEvent.event !== "message") {
+								logInfo("捕获 SSE 事件", {
+									method,
+									url,
+									event: sseEvent.event
+								});
+							}
+							const sseError = toSseError(sseEvent);
+							if (!sseError || requestState.sseError) return;
+							requestState.sseError = sseError;
+							const briefMessage = compactInlineText(sseError.message, 88);
+							const codeText = sseError.code || "unknown_error";
+							logWarn("捕获 SSE error 事件", {
+								method,
+								url,
+								code: codeText,
+								status: sseError.status,
+								message: briefMessage,
+								conversationId: sseError.conversationId || "",
+								messageId: sseError.messageId || ""
+							});
+							appendMonitorState(this.targetWindow, { lastSseError: {
+								code: codeText,
+								status: sseError.status,
+								message: briefMessage,
+								conversationId: sseError.conversationId || "",
+								messageId: sseError.messageId || ""
+							} });
+							ChatStreamCapsule.onSseError({
+								status: sseError.status,
+								code: codeText,
+								message: briefMessage
+							});
+							Toast.error(`SSE 错误: ${codeText}${briefMessage ? ` · ${briefMessage}` : ""}`, 5200);
+						} }).catch((streamError) => {
+							logWarn("SSE 解析失败", {
+								method,
+								url,
+								message: streamError?.message || String(streamError)
+							});
+						}).finally(() => done());
+					} catch {
+						done();
+					}
+				}).catch(() => {
+					const elapsedText = formatElapsedMs(startedAt);
+					logWarn("fetch /chat-messages 请求失败", {
+						method,
+						url
+					});
+					showResultToast({
+						status: 0,
+						ok: false,
+						elapsedText,
+						channel: "fetch",
+						sseError: requestState.sseError
+					});
+					ChatStreamCapsule.onRequestDone({
+						status: 0,
+						ok: false,
+						elapsedText
+					});
+				});
+				return promise;
+			};
+		},
+		hookXhr(targetWindow, baseOrigin) {
+			if (!targetWindow || typeof targetWindow.XMLHttpRequest !== "function") {
+				logWarn("XMLHttpRequest 不可用，跳过 xhr hook");
+				return;
+			}
+			if (this.xhrOpen || this.xhrSend) return;
+			this.xhrOpen = targetWindow.XMLHttpRequest.prototype.open;
+			this.xhrSend = targetWindow.XMLHttpRequest.prototype.send;
+			logInfo("xhr hook 已安装");
+			targetWindow.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+				const absoluteUrl = toAbsoluteUrl(url, baseOrigin);
+				this.__afChatMonitorMeta = {
+					method: normalizeMethod(method),
+					url: absoluteUrl,
+					startedAt: 0,
+					tracked: shouldTrack(absoluteUrl, method)
+				};
+				return ChatMessagesMonitor.xhrOpen.call(this, method, url, ...rest);
+			};
+			targetWindow.XMLHttpRequest.prototype.send = function(...args) {
+				const meta = this.__afChatMonitorMeta;
+				if (meta && meta.tracked) {
+					meta.startedAt = Date.now();
+					ChatStreamCapsule.onRequestStart();
+					logInfo("命中 xhr /chat-messages 请求", {
+						method: meta.method,
+						url: meta.url
+					});
+					let reported = false;
+					const onLoadEnd = () => {
+						if (reported) return;
+						reported = true;
+						const elapsedText = formatElapsedMs(meta.startedAt);
+						const status = Number(this.status || 0);
+						const ok = status >= 200 && status < 300;
+						logInfo("xhr /chat-messages 请求完成", {
+							method: meta.method,
+							url: meta.url,
+							status
+						});
+						showResultToast({
+							status,
+							ok,
+							elapsedText,
+							channel: "xhr"
+						});
+						ChatStreamCapsule.onRequestDone({
+							status,
+							ok,
+							elapsedText
+						});
+					};
+					this.addEventListener("loadend", onLoadEnd, { once: true });
+				}
+				return ChatMessagesMonitor.xhrSend.call(this, ...args);
+			};
+		}
+	};
+
+//#endregion
 //#region src/runtime/spa-watcher.js
 	const SPAWatcher = {
 		isSignupPage() {
@@ -5276,6 +6244,7 @@
 		APP_STATE.refs.iframeExtractor = IframeExtractor;
 		APP_STATE.refs.modelPopupSorter = ModelPopupSorter;
 		Sidebar.init();
+		ChatMessagesMonitor.start();
 		SPAWatcher.startObserver();
 		registerMenuCommands();
 		setTimeout(() => {

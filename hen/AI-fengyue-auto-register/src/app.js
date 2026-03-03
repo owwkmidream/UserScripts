@@ -3,6 +3,7 @@ import { AutoRegister } from './features/auto-register.js';
 import { IframeExtractor } from './features/iframe-extractor.js';
 import { ModelPopupSorter } from './features/model-popup-sorter.js';
 import { registerMenuCommands } from './menu/menu-commands.js';
+import { ChatMessagesMonitor } from './runtime/chat-messages-monitor.js';
 import { SPAWatcher } from './runtime/spa-watcher.js';
 import { Sidebar } from './ui/sidebar.js';
 import { Toast } from './ui/toast.js';
@@ -15,6 +16,7 @@ function init() {
     APP_STATE.refs.modelPopupSorter = ModelPopupSorter;
 
     Sidebar.init();
+    ChatMessagesMonitor.start();
 
     SPAWatcher.startObserver();
     registerMenuCommands();

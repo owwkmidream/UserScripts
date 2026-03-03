@@ -10,6 +10,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      mail.chatgpt.org.uk
 // @license      MIT
 // @run-at       document-end
