@@ -34,11 +34,14 @@ export function gmRequest(options) {
 
 export async function gmRequestJson(options) {
     const method = options.method || 'GET';
+    const hasRawBody = typeof options.rawBody === 'string';
     const response = await gmRequest({
         method,
         url: options.url,
         headers: options.headers || {},
-        data: options.body ? JSON.stringify(options.body) : undefined,
+        data: hasRawBody
+            ? options.rawBody
+            : (options.body === undefined ? undefined : JSON.stringify(options.body)),
         timeout: options.timeout ?? 30000,
         anonymous: options.anonymous ?? true,
     });

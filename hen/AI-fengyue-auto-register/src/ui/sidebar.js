@@ -3,6 +3,7 @@ import { APP_STATE } from '../state.js';
 import { gmGetValue, gmSetValue } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
 import { ChatHistoryService } from '../services/chat-history-service.js';
+import { isDebugEnabled, setDebugEnabled } from '../utils/logger.js';
 
 const VALID_TABS = ['register', 'tools', 'conversation', 'settings'];
 
@@ -175,10 +176,20 @@ export const Sidebar = {
 
                 <div class="aifengyue-panel" data-panel="conversation">
                     <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">流程状态</div>
+                        <div class="aifengyue-status-card">
+                            <div class="aifengyue-status-indicator">
+                                <div class="aifengyue-status-dot idle" id="aifengyue-conv-flow-status-dot"></div>
+                                <span class="aifengyue-status-text" id="aifengyue-conv-flow-status-text">空闲</span>
+                            </div>
+                            <div class="aifengyue-status-message" id="aifengyue-conv-flow-status-message">等待操作...</div>
+                        </div>
+                    </div>
+                    <div class="aifengyue-section">
                         <div class="aifengyue-section-title">更换账号</div>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入拼接到 query 的附加文本"></textarea>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动以前缀触发词开头）"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -308,6 +319,18 @@ export const Sidebar = {
                             </select>
                         </div>
                     </div>
+
+                    <div class="aifengyue-section">
+                        <div class="aifengyue-section-title">运行设置</div>
+                        <label class="aifengyue-check-row">
+                            <input type="checkbox" id="aifengyue-debug-toggle">
+                            <span>启用调试日志（DEBUG）</span>
+                        </label>
+                        <label class="aifengyue-check-row">
+                            <input type="checkbox" id="aifengyue-auto-reload-toggle">
+                            <span>启用自动刷新（window.location.reload）</span>
+                        </label>
+                    </div>
                 </div>
             </div>
 
@@ -425,6 +448,18 @@ export const Sidebar = {
             getToast()?.success(`侧边栏默认已设置为「${shouldOpen ? '打开' : '关闭'}」`);
         });
 
+        this.element.querySelector('#aifengyue-debug-toggle').addEventListener('change', (e) => {
+            const enabled = !!e?.target?.checked;
+            setDebugEnabled(enabled);
+            getToast()?.info(`调试日志已${enabled ? '开启' : '关闭'}`);
+        });
+
+        this.element.querySelector('#aifengyue-auto-reload-toggle').addEventListener('change', (e) => {
+            const enabled = !!e?.target?.checked;
+            this.setAutoReloadEnabled(enabled);
+            getToast()?.info(`自动刷新已${enabled ? '开启' : '关闭'}`);
+        });
+
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
             getAutoRegister()?.start();
         });
@@ -458,10 +493,9 @@ export const Sidebar = {
                     case 'code': value = this.state.verificationCode; break;
                 }
                 if (value) {
-                    navigator.clipboard.writeText(value).then(() => {
-                        getToast()?.success('已复制到剪贴板');
-                    }).catch(() => {
-                        getToast()?.error('复制失败');
+                    this.copyTextToClipboard(value, {
+                        successMessage: '已复制到剪贴板',
+                        errorMessage: '复制失败',
                     });
                 }
             });
@@ -576,6 +610,14 @@ export const Sidebar = {
         if (defaultOpenInput) {
             defaultOpenInput.value = this.getDefaultOpen() ? 'open' : 'closed';
         }
+        const debugToggle = this.element.querySelector('#aifengyue-debug-toggle');
+        if (debugToggle) {
+            debugToggle.checked = isDebugEnabled();
+        }
+        const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
+        if (autoReloadToggle) {
+            autoReloadToggle.checked = this.getAutoReloadEnabled();
+        }
 
         this.updateUsageDisplay();
         this.render();
@@ -598,6 +640,86 @@ export const Sidebar = {
                 this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
             });
         }
+    },
+
+    async copyTextToClipboard(text, { successMessage = '已复制到剪贴板', errorMessage = '复制失败' } = {}) {
+        const value = typeof text === 'string' ? text : String(text ?? '');
+        if (!value) return false;
+
+        const fallbackCopy = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', 'readonly');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+
+            let copied = false;
+            try {
+                copied = document.execCommand('copy');
+            } finally {
+                textarea.remove();
+            }
+            return copied;
+        };
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+            } else if (!fallbackCopy()) {
+                throw new Error('fallback-copy-failed');
+            }
+            getToast()?.success(successMessage);
+            return true;
+        } catch {
+            try {
+                const copied = fallbackCopy();
+                if (!copied) {
+                    throw new Error('fallback-copy-failed');
+                }
+                getToast()?.success(successMessage);
+                return true;
+            } catch {
+                getToast()?.error(errorMessage);
+                return false;
+            }
+        }
+    },
+
+    bindConversationPreviewCopyButtons(doc) {
+        if (!doc) return;
+        const buttons = doc.querySelectorAll('.af-copy-btn[data-af-copy-target]');
+        buttons.forEach((button) => {
+            button.addEventListener('click', async () => {
+                const selector = button.getAttribute('data-af-copy-target') || '';
+                if (!selector) return;
+
+                const target = doc.querySelector(selector);
+                const text = typeof target?.textContent === 'string'
+                    ? target.textContent.replace(/\u00a0/g, ' ').trim()
+                    : '';
+                if (!text) {
+                    getToast()?.warning('当前消息为空，无法复制');
+                    return;
+                }
+
+                const copied = await this.copyTextToClipboard(text, {
+                    successMessage: '消息已复制到剪贴板',
+                    errorMessage: '消息复制失败',
+                });
+                if (copied) {
+                    const prev = button.textContent;
+                    button.textContent = '已复制';
+                    setTimeout(() => {
+                        button.textContent = prev || '复制';
+                    }, 900);
+                }
+            });
+        });
     },
 
     setConversationStatus(message) {
@@ -797,6 +919,7 @@ export const Sidebar = {
             try {
                 const doc = viewer.contentDocument;
                 if (!doc) return;
+                this.bindConversationPreviewCopyButtons(doc);
                 const scrollToBottom = () => {
                     const scrolling = doc.scrollingElement || doc.documentElement || doc.body;
                     if (scrolling) {
@@ -1153,6 +1276,20 @@ export const Sidebar = {
         }
     },
 
+    getAutoReloadEnabled() {
+        const saved = gmGetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, true);
+        return !(saved === false || saved === 'false' || saved === 0 || saved === '0');
+    },
+
+    setAutoReloadEnabled(enabled) {
+        const normalized = !!enabled;
+        gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);
+        const input = this.element?.querySelector?.('#aifengyue-auto-reload-toggle');
+        if (input) {
+            input.checked = normalized;
+        }
+    },
+
     setLayoutMode(mode) {
         this.layoutMode = mode === 'floating' ? 'floating' : 'inline';
         gmSetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, this.layoutMode);
@@ -1280,24 +1417,31 @@ export const Sidebar = {
 
         const status = statusMap[this.state.status] || statusMap.idle;
 
-        const dot = this.element.querySelector('#aifengyue-status-dot');
-        if (dot) {
+        this.element.querySelectorAll('#aifengyue-status-dot, #aifengyue-conv-flow-status-dot').forEach((dot) => {
             dot.className = `aifengyue-status-dot ${status.color}`;
-        }
+        });
 
-        const statusText = this.element.querySelector('#aifengyue-status-text');
-        const statusMessage = this.element.querySelector('#aifengyue-status-message');
+        this.element.querySelectorAll('#aifengyue-status-text, #aifengyue-conv-flow-status-text').forEach((el) => {
+            el.textContent = status.text;
+        });
+
+        this.element.querySelectorAll('#aifengyue-status-message, #aifengyue-conv-flow-status-message').forEach((el) => {
+            el.textContent = this.state.statusMessage;
+        });
+
         const email = this.element.querySelector('#aifengyue-email');
         const username = this.element.querySelector('#aifengyue-username');
         const password = this.element.querySelector('#aifengyue-password');
         const code = this.element.querySelector('#aifengyue-code');
+        const debugToggle = this.element.querySelector('#aifengyue-debug-toggle');
+        const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
 
-        if (statusText) statusText.textContent = status.text;
-        if (statusMessage) statusMessage.textContent = this.state.statusMessage;
         if (email) email.textContent = this.state.email || '未生成';
         if (username) username.textContent = this.state.username || '未生成';
         if (password) password.textContent = this.state.password || '未生成';
         if (code) code.textContent = this.state.verificationCode || '等待中...';
+        if (debugToggle) debugToggle.checked = isDebugEnabled();
+        if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
 
         this.updateToolPanel();
     },

@@ -10,6 +10,7 @@ export const CONFIG = {
         API_USAGE_COUNT: 'api_usage_count',
         API_USAGE_RESET_DATE: 'api_usage_reset_date',
         LOG_DEBUG_ENABLED: 'aifengyue_log_debug_enabled',
+        AUTO_RELOAD_ENABLED: 'aifengyue_auto_reload_enabled',
         MODEL_SORT_ENABLED: 'aifengyue_model_sort_enabled',
         SIDEBAR_LAYOUT_MODE: 'aifengyue_sidebar_layout_mode',
         SIDEBAR_THEME: 'aifengyue_sidebar_theme',

@@ -31,6 +31,7 @@ const SITE_ENDPOINTS = {
     CHAT_MESSAGES: '/console/api/installed-apps',
 };
 const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
+const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = '%%test';
 
 function readErrorMessage(payload, fallback) {
     if (!payload || typeof payload !== 'object') return fallback;
@@ -100,6 +101,31 @@ function isAnswerEmpty(raw) {
     return false;
 }
 
+function normalizeSwitchTriggerWord(value) {
+    const source = typeof value === 'string' ? value.trim() : '';
+    if (!source) return '';
+
+    const matched = source.match(/%%[^\s%]+(?:%%)?/);
+    return matched?.[0] ? matched[0].trim() : '';
+}
+
+function cloneJsonSafe(value) {
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch {
+        return null;
+    }
+}
+
+function stringifyJsonWithUnicodeEscapes(value) {
+    const json = JSON.stringify(value);
+    if (typeof json !== 'string') return '';
+    return json.replace(/[^\x20-\x7E]/g, (char) => {
+        const code = char.charCodeAt(0);
+        return `\\u${code.toString(16).padStart(4, '0')}`;
+    });
+}
+
 function randomConversationSuffix(length = 3) {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let output = '';
@@ -141,6 +167,35 @@ export const AutoRegister = {
             return parsed;
         }
         return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+    },
+
+    isAutoReloadEnabled() {
+        const saved = gmGetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, true);
+        return !(saved === false || saved === 'false' || saved === 0 || saved === '0');
+    },
+
+    reloadPageIfEnabled({ delayMs = 0, runCtx, step = 'RELOAD', reason = '' } = {}) {
+        if (!this.isAutoReloadEnabled()) {
+            logInfo(runCtx, step, '自动刷新开关已关闭，跳过 window.location.reload', {
+                reason: reason || null,
+            });
+            Toast.info('自动刷新已关闭，请手动刷新页面', 3200);
+            return false;
+        }
+
+        const normalizedDelay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : 0;
+        if (normalizedDelay > 0) {
+            setTimeout(() => {
+                window.location.reload();
+            }, normalizedDelay);
+        } else {
+            window.location.reload();
+        }
+        logInfo(runCtx, step, '已触发 window.location.reload', {
+            reason: reason || null,
+            delayMs: normalizedDelay,
+        });
+        return true;
     },
 
     isObjectiveRetryError(error) {
@@ -254,6 +309,14 @@ export const AutoRegister = {
         const method = options.method || 'GET';
         const url = `${window.location.origin}${path}`;
         const timeoutMs = options.timeout ?? 30000;
+        const hasRawBody = typeof options.rawBody === 'string';
+        const serializedBody = hasRawBody
+            ? options.rawBody
+            : (options.body === undefined
+                ? undefined
+                : (options.unicodeEscapeBody === true
+                    ? stringifyJsonWithUnicodeEscapes(options.body)
+                    : JSON.stringify(options.body)));
         const headers = {
             'Content-Type': 'application/json',
             'X-Language': X_LANGUAGE,
@@ -265,6 +328,10 @@ export const AutoRegister = {
             url,
             headers,
             body: options.body ?? null,
+            bodyMode: hasRawBody
+                ? 'raw-body'
+                : (options.unicodeEscapeBody ? 'json-with-unicode-escape' : 'json'),
+            serializedBodyLength: typeof serializedBody === 'string' ? serializedBody.length : 0,
             requestMode: 'page-fetch-first',
         });
 
@@ -279,7 +346,7 @@ export const AutoRegister = {
                 const response = await fetch(url, {
                     method,
                     headers,
-                    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+                    body: serializedBody,
                     credentials: 'include',
                     signal: controller.signal,
                     cache: 'no-store',
@@ -307,7 +374,9 @@ export const AutoRegister = {
                 method,
                 url,
                 headers,
-                body: options.body,
+                ...((hasRawBody || (options.unicodeEscapeBody && serializedBody !== undefined))
+                    ? { rawBody: serializedBody || '' }
+                    : { body: options.body }),
                 timeout: timeoutMs,
                 anonymous: true,
             });
@@ -959,6 +1028,129 @@ export const AutoRegister = {
         throw new Error('messages 中所有 answer 均为空，已停止更换账号流程');
     },
 
+    resolveSwitchTriggerWordFromWorldBook(worldBook) {
+        if (!Array.isArray(worldBook)) return '';
+
+        for (const entry of worldBook) {
+            const key = typeof entry?.key === 'string' ? entry.key : '';
+            const triggerWord = normalizeSwitchTriggerWord(key);
+            if (triggerWord) {
+                return triggerWord;
+            }
+        }
+        return '';
+    },
+
+    prepareWorldBookConfigForSwitch({
+        baseConfig,
+        answer,
+        runCtx,
+        explicitTriggerWord = '',
+    }) {
+        const normalizedAnswer = decodeEscapedText(
+            typeof answer === 'string' ? answer : String(answer ?? '')
+        ).trim();
+        if (!normalizedAnswer) {
+            throw new Error('旧会话 answer 为空，无法写入 world_book');
+        }
+
+        const clonedConfig = cloneJsonSafe(baseConfig);
+        if (!clonedConfig || typeof clonedConfig !== 'object' || Array.isArray(clonedConfig)) {
+            throw new Error('user_app_model_config 结构异常，无法写入 world_book');
+        }
+
+        const existingWorldBook = Array.isArray(clonedConfig.world_book)
+            ? [...clonedConfig.world_book]
+            : [];
+        const triggerWord = normalizeSwitchTriggerWord(explicitTriggerWord)
+            || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER
+            || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook);
+
+        const matchedIndex = existingWorldBook.findIndex((entry) => {
+            if (!entry || typeof entry !== 'object') return false;
+            const key = typeof entry?.key === 'string' ? entry.key : '';
+            return normalizeSwitchTriggerWord(key) === triggerWord;
+        });
+
+        const entryBase = matchedIndex >= 0 && existingWorldBook[matchedIndex] && typeof existingWorldBook[matchedIndex] === 'object'
+            ? { ...existingWorldBook[matchedIndex] }
+            : {};
+        const entryKey = normalizeSwitchTriggerWord(entryBase.key)
+            ? String(entryBase.key).trim()
+            : `_or_${triggerWord}`;
+        const worldBookEntry = {
+            ...entryBase,
+            key: entryKey,
+            value: normalizedAnswer,
+            group: typeof entryBase.group === 'string' ? entryBase.group : '',
+            key_region: Number.isFinite(Number(entryBase.key_region))
+                ? Number(entryBase.key_region)
+                : 7,
+            value_region: Number.isFinite(Number(entryBase.value_region))
+                ? Number(entryBase.value_region)
+                : 2,
+        };
+
+        const nextWorldBook = [...existingWorldBook];
+        if (matchedIndex >= 0) {
+            nextWorldBook[matchedIndex] = worldBookEntry;
+        } else {
+            nextWorldBook.unshift(worldBookEntry);
+        }
+        clonedConfig.world_book = nextWorldBook;
+
+        logInfo(
+            runCtx,
+            'SWITCH_WORLD_BOOK',
+            matchedIndex >= 0 ? '已替换 world_book 触发词条目' : '已新增 world_book 触发词条目',
+            {
+                triggerWord,
+                worldBookCount: nextWorldBook.length,
+                entryKey: worldBookEntry.key,
+                answerLength: normalizedAnswer.length,
+            }
+        );
+        logDebug(runCtx, 'SWITCH_WORLD_BOOK', 'world_book 写入后的配置', {
+            worldBook: nextWorldBook,
+        });
+
+        return {
+            config: clonedConfig,
+            triggerWord,
+            worldBookEntry,
+            replaced: matchedIndex >= 0,
+        };
+    },
+
+    buildSwitchQuery({ triggerWord, appendText }) {
+        const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
+        const normalizedAppendText = typeof appendText === 'string' ? appendText.trim() : '';
+        if (!normalizedAppendText) {
+            return normalizedTrigger;
+        }
+        if (normalizedAppendText.startsWith(normalizedTrigger)) {
+            return normalizedAppendText;
+        }
+        return `${normalizedTrigger}${normalizedAppendText}`;
+    },
+
+    extractWorldBookFromModelConfigPayload(payload) {
+        const candidates = [];
+        const data = payload?.data;
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+            candidates.push(data);
+        }
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+            candidates.push(payload);
+        }
+        for (const item of candidates) {
+            if (Array.isArray(item.world_book)) {
+                return item.world_book;
+            }
+        }
+        return null;
+    },
+
     async fetchConversationMessages({
         appId,
         conversationId,
@@ -1162,19 +1354,61 @@ export const AutoRegister = {
         return config;
     },
 
-    async saveUserAppModelConfig({ appId, token, config, runCtx }) {
+    async saveUserAppModelConfig({
+        appId,
+        token,
+        config,
+        runCtx,
+        ensureWorldBookNotEmpty = false,
+        maxWorldBookPostAttempts = 1,
+        unicodeEscapeBody = false,
+    }) {
         const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
-        await this.requestSiteApi(path, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-            },
-            body: config,
-        }, runCtx, 'SWITCH_POST_MODEL_CONFIG');
-        logInfo(runCtx, 'SWITCH_POST_MODEL_CONFIG', '新账号 user_app_model_config 已同步', {
-            appId,
-            configType: Array.isArray(config) ? 'array' : typeof config,
-        });
+        const attempts = this.resolveRetryAttempts(maxWorldBookPostAttempts);
+        let lastPayload = null;
+
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            lastPayload = await this.requestSiteApi(path, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+                body: config,
+                unicodeEscapeBody,
+            }, runCtx, 'SWITCH_POST_MODEL_CONFIG');
+
+            const responseWorldBook = this.extractWorldBookFromModelConfigPayload(lastPayload);
+            const hasValidWorldBook = Array.isArray(responseWorldBook) && responseWorldBook.length > 0;
+
+            if (ensureWorldBookNotEmpty && !hasValidWorldBook) {
+                const hasNext = attempt < attempts;
+                logWarn(runCtx, 'SWITCH_POST_MODEL_CONFIG', 'POST 返回 world_book 无效（为空或缺失），准备重试', {
+                    appId,
+                    attempt,
+                    attempts,
+                    worldBookType: Array.isArray(responseWorldBook) ? 'array' : typeof responseWorldBook,
+                    worldBookCount: Array.isArray(responseWorldBook) ? responseWorldBook.length : null,
+                });
+                if (hasNext) {
+                    await delay(220 * attempt);
+                    continue;
+                }
+                throw new Error('保存模型配置失败：返回 world_book 为空或缺失，已重试仍未恢复');
+            }
+
+            logInfo(runCtx, 'SWITCH_POST_MODEL_CONFIG', '新账号 user_app_model_config 已同步', {
+                appId,
+                configType: Array.isArray(config) ? 'array' : typeof config,
+                attempt,
+                attempts,
+                ensureWorldBookNotEmpty,
+                worldBookCount: Array.isArray(responseWorldBook) ? responseWorldBook.length : null,
+                unicodeEscapeBody,
+            });
+            return lastPayload;
+        }
+
+        return lastPayload;
     },
 
     async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
@@ -1671,16 +1905,25 @@ export const AutoRegister = {
                 modelConfigSynced = true;
             }
 
+            const autoReloadEnabled = this.isAutoReloadEnabled();
             Sidebar.updateState({
                 status: 'success',
                 statusMessage: registerResult.guideSkipped
-                    ? `一键注册成功，已写入 console_token${modelConfigSynced ? '，并同步模型配置' : ''}`
-                    : `一键注册成功，已写入 console_token（首次引导跳过失败）${modelConfigSynced ? '，模型配置已同步' : ''}`,
+                    ? `一键注册成功，已写入 console_token${modelConfigSynced ? '，并同步模型配置' : ''}${autoReloadEnabled ? '，0.8 秒后刷新' : '，自动刷新已关闭'}`
+                    : `一键注册成功，已写入 console_token（首次引导跳过失败）${modelConfigSynced ? '，模型配置已同步' : ''}${autoReloadEnabled ? '，0.8 秒后刷新' : '，自动刷新已关闭'}`,
             });
             Toast.success(registerResult.guideSkipped
-                ? `一键注册完成${modelConfigSynced ? '（已同步模型配置）' : ''}`
-                : `一键注册完成：首次引导跳过失败${modelConfigSynced ? '，模型配置已同步' : ''}`, 5000);
-            logInfo(runCtx, 'DONE', '一键注册流程完成');
+                ? `一键注册完成${modelConfigSynced ? '（已同步模型配置）' : ''}${autoReloadEnabled ? '，即将刷新' : '，自动刷新已关闭'}`
+                : `一键注册完成：首次引导跳过失败${modelConfigSynced ? '，模型配置已同步' : ''}${autoReloadEnabled ? '，即将刷新' : '，自动刷新已关闭'}`, 5000);
+            logInfo(runCtx, 'DONE', '一键注册流程完成', {
+                autoReloadEnabled,
+            });
+            this.reloadPageIfEnabled({
+                delayMs: 800,
+                runCtx,
+                step: 'DONE',
+                reason: 'one-click-register-success',
+            });
         } catch (error) {
             const message = `一键注册失败: ${error.message}`;
             Sidebar.updateState({ status: 'error', statusMessage: message });
@@ -1838,18 +2081,36 @@ export const AutoRegister = {
 
             Sidebar.updateState({
                 status: 'fetching',
-                statusMessage: '更换账号：正在同步模型配置到新账号...',
+                statusMessage: '更换账号：正在写入 world_book 并同步模型配置...',
             });
-            Toast.info('更换账号：正在同步模型配置', 2200);
+            Toast.info('更换账号：正在写入 world_book 并同步模型配置', 2200);
+            const appendTriggerWord = normalizeSwitchTriggerWord(appendText);
+            const switchConfig = this.prepareWorldBookConfigForSwitch({
+                baseConfig: userModelConfig,
+                answer: decodedAnswer,
+                runCtx,
+                explicitTriggerWord: appendTriggerWord,
+            });
             await this.saveUserAppModelConfig({
                 appId,
                 token: registerResult.token,
-                config: userModelConfig,
+                config: switchConfig.config,
                 runCtx,
+                ensureWorldBookNotEmpty: true,
+                maxWorldBookPostAttempts: 3,
+                unicodeEscapeBody: true,
             });
 
-            const query = `${decodedAnswer}\n\n${appendText}`;
+            const query = this.buildSwitchQuery({
+                triggerWord: switchConfig.triggerWord,
+                appendText,
+            });
             const conversationName = `新的对话-${randomConversationSuffix(3)}`;
+            logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages query 已改为触发词前缀模式', {
+                triggerWord: switchConfig.triggerWord,
+                appendTextLength: appendText.length,
+                queryLength: query.length,
+            });
             Sidebar.updateState({
                 status: 'fetching',
                 statusMessage: '更换账号：新账号已就绪，正在发送 chat-messages...',
@@ -1891,21 +2152,33 @@ export const AutoRegister = {
             const statusText = Number.isFinite(Number(chatResult?.status))
                 ? `HTTP ${Number(chatResult.status)}`
                 : '未知状态';
+            const autoReloadEnabled = this.isAutoReloadEnabled();
             Sidebar.updateState({
                 status: 'success',
                 statusMessage: newConversationId
-                    ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}），0.8 秒后刷新`
-                    : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id，0.8 秒后刷新`,
+                    ? `更换账号成功：已获取 conversation_id（${statusText}${sourceText}）${autoReloadEnabled ? '，0.8 秒后刷新' : '，自动刷新已关闭'}`
+                    : `更换账号已发送 chat-messages（${statusText}），未拿到 conversation_id${autoReloadEnabled ? '，0.8 秒后刷新' : '，自动刷新已关闭'}`,
             });
             if (newConversationId) {
-                Toast.success(`已获取新会话ID（${chatResult.source || 'sse'}），即将刷新`, 2600);
+                Toast.success(
+                    `已获取新会话ID（${chatResult.source || 'sse'}）${autoReloadEnabled ? '，即将刷新' : '，自动刷新已关闭'}`,
+                    2600
+                );
             } else {
-                Toast.warning('未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步', 3600);
+                Toast.warning(
+                    autoReloadEnabled
+                        ? '未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步'
+                        : '未获取到新会话ID，自动刷新已关闭，可在“会话”Tab手动同步',
+                    3600
+                );
             }
 
-            setTimeout(() => {
-                window.location.reload();
-            }, 120);
+            this.reloadPageIfEnabled({
+                delayMs: 120,
+                runCtx,
+                step: 'SWITCH_DONE',
+                reason: 'switch-account-success',
+            });
         } catch (error) {
             const message = `更换账号失败: ${error.message}`;
             Sidebar.updateState({ status: 'error', statusMessage: message });

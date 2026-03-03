@@ -930,6 +930,8 @@ export const ChatHistoryService = {
                 const renderedAnswer = renderMessageBody(answerText, '(空回复)');
                 const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
                 const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || '-'));
+                const queryContentId = `af-query-content-${index + 1}`;
+                const answerContentId = `af-answer-content-${index + 1}`;
                 if (answerText) {
                     answerHistory.push(answerText);
                 }
@@ -940,7 +942,7 @@ export const ChatHistoryService = {
                 return `
                     <div class="group flex mb-2 last:mb-0 af-row-user">
                         <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
+                            <div id="${queryContentId}" class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
                                 ${renderedQuery}
                             </div>
                             <div class="af-bubble-meta af-user-meta">
@@ -948,17 +950,23 @@ export const ChatHistoryService = {
                                 <span>${createdAtText}</span>
                                 <span>${messageIdText}</span>
                             </div>
+                            <div class="af-bubble-actions af-user-actions">
+                                <button class="af-copy-btn" type="button" data-af-copy-target="#${queryContentId}">复制 Query</button>
+                            </div>
                             ${dedupHint}
                         </div>
                     </div>
                     <div class="group flex mb-2 last:mb-0 af-row-answer" id="ai-chat-answer">
                         <div class="chat-answer-container group relative mr-2 md:mr-0 af-bubble-wrap af-answer-wrap">
-                            <div class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
+                            <div id="${answerContentId}" class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-answer-bubble">
                                 ${renderedAnswer}
                             </div>
                             <div class="af-bubble-meta af-answer-meta">
                                 <span>${createdAtText}</span>
                                 <span>${messageIdText}</span>
+                            </div>
+                            <div class="af-bubble-actions af-answer-actions">
+                                <button class="af-copy-btn" type="button" data-af-copy-target="#${answerContentId}">复制 Answer</button>
                             </div>
                         </div>
                     </div>
@@ -1076,6 +1084,36 @@ export const ChatHistoryService = {
         }
         .af-answer-meta {
             justify-content: flex-start;
+        }
+        .af-bubble-actions {
+            display: flex;
+            margin-top: 4px;
+        }
+        .af-user-actions {
+            justify-content: flex-end;
+        }
+        .af-answer-actions {
+            justify-content: flex-start;
+        }
+        .af-copy-btn {
+            border: 1px solid var(--af-border);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.92);
+            color: #4b5563;
+            font-size: 11px;
+            line-height: 1;
+            height: 24px;
+            padding: 0 9px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+        .af-copy-btn:hover {
+            border-color: #60a5fa;
+            color: #1d4ed8;
+            background: #eff6ff;
+        }
+        .af-copy-btn:active {
+            transform: scale(0.97);
         }
         .af-dedup-hint {
             margin-top: 2px;
