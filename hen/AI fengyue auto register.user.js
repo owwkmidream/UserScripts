@@ -5,6 +5,7 @@
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
+// @match        https://acquainte.xyz/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -4462,26 +4463,24 @@
 							}
 							streamText += chunkText;
 							tryCaptureConversationId(streamText, "fetch-stream");
-							const hasSseData = /(?:^|\n)\s*data:\s*/m.test(streamText) || !!capturedConversationId;
 							logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages fetch stream chunk", {
 								status: statusCode,
 								chunkLength: chunkText.length,
 								textLength: streamText.length,
-								hasSseData,
 								elapsedMs: elapsedMs(),
 								conversationId: capturedConversationId || null
 							});
-							if (!hasSseData) {
+							if (!capturedConversationId) {
 								continue;
 							}
-							finish("fetch-stream-first-chunk", {
+							finish("fetch-stream-conversation-id", {
 								status: statusCode,
 								readyState: 3,
 								textLength: streamText.length,
 								elapsedMs: elapsedMs(),
 								conversationId: capturedConversationId
 							});
-							abortRequest(capturedConversationId ? "conversation-id-captured-fetch-stream" : "first-stream-chunk-fetch-stream");
+							abortRequest("conversation-id-captured-fetch-stream");
 							return;
 						}
 						tryCaptureConversationId(streamText, "fetch-stream-end");
@@ -5660,12 +5659,12 @@
 		onRequestStart() {
 			this.inFlight += 1;
 			const suffix = this.inFlight > 1 ? ` (${this.inFlight})` : "";
-			this.applyView("sending", `SSE 发送中${suffix}`);
+			this.applyView("sending", `SSE waiting${suffix}`);
 		},
 		onRequestDone({ ok = false, status = 0, elapsedText = "-" } = {}) {
 			this.inFlight = Math.max(0, this.inFlight - 1);
 			if (this.inFlight > 0) {
-				this.applyView("sending", `SSE 发送中 (${this.inFlight})`);
+				this.applyView("sending", `SSE waiting (${this.inFlight})`);
 				return;
 			}
 			const statusText = formatStatus(status);

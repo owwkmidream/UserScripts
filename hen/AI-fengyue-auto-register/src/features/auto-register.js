@@ -1770,28 +1770,26 @@ export const AutoRegister = {
                         }
                         streamText += chunkText;
                         tryCaptureConversationId(streamText, 'fetch-stream');
-                        const hasSseData = /(?:^|\n)\s*data:\s*/m.test(streamText) || !!capturedConversationId;
                         logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages fetch stream chunk', {
                             status: statusCode,
                             chunkLength: chunkText.length,
                             textLength: streamText.length,
-                            hasSseData,
                             elapsedMs: elapsedMs(),
                             conversationId: capturedConversationId || null,
                         });
 
-                        if (!hasSseData) {
+                        if (!capturedConversationId) {
                             continue;
                         }
 
-                        finish('fetch-stream-first-chunk', {
+                        finish('fetch-stream-conversation-id', {
                             status: statusCode,
                             readyState: 3,
                             textLength: streamText.length,
                             elapsedMs: elapsedMs(),
                             conversationId: capturedConversationId,
                         });
-                        abortRequest(capturedConversationId ? 'conversation-id-captured-fetch-stream' : 'first-stream-chunk-fetch-stream');
+                        abortRequest('conversation-id-captured-fetch-stream');
                         return;
                     }
 

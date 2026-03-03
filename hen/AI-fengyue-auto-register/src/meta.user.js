@@ -5,6 +5,7 @@
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
+// @match        https://acquainte.xyz/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
