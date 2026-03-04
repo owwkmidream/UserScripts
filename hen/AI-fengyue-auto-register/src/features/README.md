@@ -1,5 +1,14 @@
 # features
 
+## 说明
+
+- `auto-register.js` 现在是对外兼容入口，内部实现已拆分到 `src/features/auto-register/` 子目录。
+- 如需调试/维护自动注册逻辑，请优先查看：
+  - `runtime-methods.js`
+  - `site-api-methods.js`
+  - `chat-messages-methods.js`
+  - `flow-methods.js`
+
 ## 📥 CDN 下载导航
 
 根据您的网络环境选择合适的 CDN 源：

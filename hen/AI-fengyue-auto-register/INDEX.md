@@ -32,6 +32,7 @@
 | `scripts/` | 构建后辅助脚本（打开 userscript） | 被 `package.json` 的 `postbuild` 调用 |
 | `src/` | 核心源码目录 | 被 `rolldown.config.mjs` 作为打包输入 |
 | `src/features/` | 业务功能模块（注册、提取、排序） | 由 `src/app.js` 和 `src/ui/sidebar.js` 驱动 |
+| `src/features/auto-register/` | 自动注册子模块目录（按职责拆分的流程/接口/会话/工具层） | 被 `src/features/auto-register.js` 聚合并对外导出 |
 | `src/services/` | 数据与接口服务层（API、会话链存储） | 被 `features` 与 `ui` 依赖 |
 | `src/runtime/` | 运行时监听（SPA 路由与聊天请求监控） | 由 `src/app.js` 启动 |
 | `src/ui/` | 侧边栏、toast、状态胶囊与样式注入 | 由 `src/app.js`、`runtime`、`features` 调用 |
@@ -53,7 +54,15 @@
 | `src/constants.js` | 全局配置常量与存储键 | 被全项目多数模块依赖 |
 | `src/state.js` | 全局运行时状态容器 `APP_STATE` | 被 `app`、`ui`、`runtime`、`services` 读写 |
 | `src/gm.js` | GM API 封装与 GM 请求 Promise 化 | 被 `services`、`menu`、`ui`、`features` 依赖 |
-| `src/features/auto-register.js` | 自动注册主流程与接口编排 | 依赖 `services/api-service`、`ui`、`utils` |
+| `src/features/auto-register.js` | 自动注册兼容门面（聚合子模块并导出 `AutoRegister`） | 被 `app`、`menu`、`runtime`、`ui` 依赖 |
+| `src/features/auto-register/shared.js` | 自动注册共享常量与纯工具函数 | 被 `auto-register/*-methods.js` 复用 |
+| `src/features/auto-register/runtime-methods.js` | 自动注册通用运行时能力（重试、自动刷新） | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/form-methods.js` | 注册页表单能力（页面识别、输入、按钮触发） | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/site-api-methods.js` | 站点接口调用与首次引导处理 | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/conversation-methods.js` | 会话链路读取/同步/预览入口封装 | 依赖 `chat-history-service`，聚合进 `auto-register` |
+| `src/features/auto-register/model-config-methods.js` | world_book 与模型配置读写逻辑 | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/chat-messages-methods.js` | `/chat-messages` 请求与 SSE 解析流程 | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/flow-methods.js` | 注册与换号高层流程编排 | 聚合进 `src/features/auto-register.js` |
 | `src/features/iframe-extractor.js` | 详情页 HTML 提取与导出 | 依赖 `gmRequestJson` 与 `Toast` |
 | `src/features/model-popup-sorter.js` | 模型弹窗按价格排序 | 依赖 `IframeExtractor`、`gm`、`constants` |
 | `src/services/api-service.js` | GPTMail API 调用与配额统计 | 依赖 `gm`、`constants`、`APP_STATE` |
@@ -112,3 +121,4 @@
 ## 7. 索引更新记录（可选）
 
 - `2026-03-04`：创建初版 `INDEX.md`，建立目录与关键文件索引，并补充维护规则。
+- `2026-03-04`：`auto-register.js` 拆分为 `src/features/auto-register/` 子模块，入口改为兼容聚合门面。
