@@ -8,6 +8,10 @@ import { generateUsername, generatePassword, delay } from '../../utils/random.js
 import { extractVerificationCode } from '../../utils/code-extractor.js';
 import { simulateInput } from '../../utils/dom.js';
 import {
+    isRetryableNetworkError,
+    resolveRetryAttempts as resolveRetryAttemptsUtil,
+} from '../../utils/retry-policy.js';
+import {
     createRunContext,
     isDebugEnabled,
     logDebug,
@@ -34,11 +38,7 @@ import {
 
 export const RuntimeMethods = {
     resolveRetryAttempts(maxAttempts) {
-        const parsed = Number(maxAttempts);
-        if (Number.isInteger(parsed) && parsed >= 1) {
-            return parsed;
-        }
-        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+        return resolveRetryAttemptsUtil(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS);
     },
 
 
@@ -74,24 +74,7 @@ export const RuntimeMethods = {
 
 
     isObjectiveRetryError(error) {
-        const status = Number(error?.httpStatus || 0);
-        if (status === 408 || status === 429 || status >= 500) {
-            return true;
-        }
-
-        const message = String(error?.message || '').toLowerCase();
-        if (!message) return false;
-
-        return (
-            message.includes('timeout') ||
-            message.includes('超时') ||
-            message.includes('network') ||
-            message.includes('网络') ||
-            message.includes('gm 请求失败') ||
-            message.includes('failed') ||
-            message.includes('中止') ||
-            message.includes('abort')
-        );
+        return isRetryableNetworkError(error, { includeHttpStatus: true });
     },
 
 

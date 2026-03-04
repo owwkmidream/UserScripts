@@ -1,31 +1,13 @@
 import { gmAddStyle, gmRequestJson } from '../gm.js';
 import { Toast } from '../ui/toast.js';
+import { decodeEscapedText } from '../utils/text-normalize.js';
+import {
+    isRetryableNetworkError,
+    resolveRetryAttempts as resolveRetryAttemptsUtil,
+} from '../utils/retry-policy.js';
 
 const X_LANGUAGE = 'zh-Hans';
 const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
-
-function decodeEscapedText(raw) {
-    if (typeof raw !== 'string') return '';
-
-    let value = raw;
-    for (let i = 0; i < 3; i++) {
-        if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-            break;
-        }
-        try {
-            const next = JSON.parse(`"${value
-                .replace(/"/g, '\\"')
-                .replace(/\r/g, '\\r')
-                .replace(/\n/g, '\\n')
-                .replace(/\t/g, '\\t')}"`);
-            if (next === value) break;
-            value = next;
-        } catch {
-            break;
-        }
-    }
-    return value;
-}
 
 function sanitizeFilename(value) {
     const normalized = String(value || '')
@@ -114,30 +96,11 @@ export const IframeExtractor = {
     },
 
     resolveRetryAttempts(maxAttempts) {
-        const parsed = Number(maxAttempts);
-        if (Number.isInteger(parsed) && parsed >= 1) {
-            return parsed;
-        }
-        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+        return resolveRetryAttemptsUtil(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS);
     },
 
     isObjectiveRetryError(error) {
-        const status = Number(error?.httpStatus || 0);
-        if (status === 408 || status === 429 || status >= 500) {
-            return true;
-        }
-
-        const message = String(error?.message || '').toLowerCase();
-        if (!message) return false;
-        return (
-            message.includes('timeout') ||
-            message.includes('超时') ||
-            message.includes('network') ||
-            message.includes('网络') ||
-            message.includes('failed') ||
-            message.includes('中止') ||
-            message.includes('abort')
-        );
+        return isRetryableNetworkError(error, { includeHttpStatus: true });
     },
 
     async requestAppDetail({ appId, token, maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS }) {
@@ -288,4 +251,3 @@ export const IframeExtractor = {
         }
     },
 };
-

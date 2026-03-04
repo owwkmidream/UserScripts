@@ -1,45 +1,14 @@
 import { ChatHistoryStore } from './chat-history-store.js';
+import {
+    decodeEscapedText,
+    hasMeaningfulText as hasMeaningfulTextValue,
+    normalizeTimestamp,
+} from '../utils/text-normalize.js';
 
 const INDEX_KEY = 'aifengyue_chat_index_v1';
 
 function normalizeId(value) {
     return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeTimestamp(value) {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-    }
-    if (typeof value === 'string' && value.trim()) {
-        const asNumber = Number(value);
-        if (Number.isFinite(asNumber)) return asNumber;
-        const parsed = Date.parse(value);
-        if (Number.isFinite(parsed)) return parsed;
-    }
-    return 0;
-}
-
-function decodeEscapedText(raw) {
-    if (typeof raw !== 'string') return '';
-
-    let value = raw;
-    for (let i = 0; i < 3; i++) {
-        if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-            break;
-        }
-        try {
-            const next = JSON.parse(`"${value
-                .replace(/"/g, '\\"')
-                .replace(/\r/g, '\\r')
-                .replace(/\n/g, '\\n')
-                .replace(/\t/g, '\\t')}"`);
-            if (next === value) break;
-            value = next;
-        } catch {
-            break;
-        }
-    }
-    return value;
 }
 
 function makeConversationKey(appId, conversationId) {
@@ -248,12 +217,7 @@ function cloneJsonCompatible(value, fallback = null) {
 }
 
 function hasMeaningfulText(value) {
-    const normalized = asDisplayContent(value).trim().toLowerCase();
-    if (!normalized) return false;
-    if (normalized === 'null' || normalized === 'undefined' || normalized === '""' || normalized === "''") {
-        return false;
-    }
-    return true;
+    return hasMeaningfulTextValue(asDisplayContent(value));
 }
 
 function toChainRecord(base, extras = {}) {

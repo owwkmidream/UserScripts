@@ -1,6 +1,10 @@
 import { CONFIG } from '../constants.js';
 import { gmGetValue, gmSetValue, gmXmlHttpRequest } from '../gm.js';
 import { APP_STATE } from '../state.js';
+import {
+    isRetryableNetworkError,
+    resolveRetryAttempts as resolveRetryAttemptsUtil,
+} from '../utils/retry-policy.js';
 
 const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
 
@@ -40,25 +44,11 @@ export const ApiService = {
     },
 
     resolveRetryAttempts(maxAttempts) {
-        const parsed = Number(maxAttempts);
-        if (Number.isInteger(parsed) && parsed >= 1) {
-            return parsed;
-        }
-        return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+        return resolveRetryAttemptsUtil(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS);
     },
 
     isObjectiveRetryError(error) {
-        const message = String(error?.message || '').toLowerCase();
-        if (!message) return false;
-        return (
-            message.includes('timeout') ||
-            message.includes('超时') ||
-            message.includes('network') ||
-            message.includes('网络') ||
-            message.includes('failed') ||
-            message.includes('中止') ||
-            message.includes('abort')
-        );
+        return isRetryableNetworkError(error, { includeHttpStatus: false });
     },
 
     async request(endpoint, options = {}) {

@@ -1,3 +1,8 @@
+import {
+    decodeEscapedText as decodeEscapedTextUtil,
+    normalizeTimestamp as normalizeTimestampUtil,
+} from '../../utils/text-normalize.js';
+
 export const X_LANGUAGE = 'zh-Hans';
 export const SITE_ENDPOINTS = {
     SEND_CODE: '/console/api/register/email',
@@ -25,43 +30,11 @@ export function readErrorMessage(payload, fallback) {
 }
 
 export function normalizeTimestamp(value) {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-    }
-    if (typeof value === 'string' && value.trim()) {
-        const parsedNumber = Number(value);
-        if (Number.isFinite(parsedNumber)) {
-            return parsedNumber;
-        }
-        const parsedDate = Date.parse(value);
-        if (Number.isFinite(parsedDate)) {
-            return parsedDate;
-        }
-    }
-    return 0;
+    return normalizeTimestampUtil(value);
 }
 
 export function decodeEscapedText(raw) {
-    if (typeof raw !== 'string') return '';
-
-    let value = raw;
-    for (let i = 0; i < 3; i++) {
-        if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-            break;
-        }
-        try {
-            const next = JSON.parse(`"${value
-                .replace(/"/g, '\\"')
-                .replace(/\r/g, '\\r')
-                .replace(/\n/g, '\\n')
-                .replace(/\t/g, '\\t')}"`);
-            if (next === value) break;
-            value = next;
-        } catch {
-            break;
-        }
-    }
-    return value;
+    return decodeEscapedTextUtil(raw);
 }
 
 export function isAnswerEmpty(raw) {
