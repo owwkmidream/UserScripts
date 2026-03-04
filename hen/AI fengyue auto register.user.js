@@ -5605,6 +5605,7 @@
 		waitingTimer: null,
 		waitingStartedAt: 0,
 		waitingElapsedActive: false,
+		waitingAccumulatedMs: 0,
 		injectStyle() {
 			if (this.styleInjected) return;
 			this.styleInjected = true;
@@ -5636,6 +5637,7 @@
                 height: 8px;
                 border-radius: 50%;
                 background: currentColor;
+                box-sizing: border-box;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-text {
                 max-width: 360px;
@@ -5658,9 +5660,12 @@
             }
             #${CAPSULE_ID}.is-sending .aifengyue-chat-status-dot {
                 animation: aifengyue-chat-capsule-pulse 1s ease-in-out infinite;
+                border: 0;
             }
             #${CAPSULE_ID}.is-waiting .aifengyue-chat-status-dot {
                 animation: aifengyue-chat-capsule-pulse 1.2s ease-in-out infinite;
+                background: transparent;
+                border: 2px solid currentColor;
             }
             #${CAPSULE_ID}.is-done {
                 background: rgba(5, 150, 105, 0.95);
@@ -5711,21 +5716,39 @@
 				this.waitingTimer = null;
 			}
 		},
-		getWaitingElapsedText() {
+		formatElapsedMs(elapsedMs = 0) {
+			const ms = Number.isFinite(Number(elapsedMs)) ? Math.max(0, Number(elapsedMs)) : 0;
+			return `${(ms / 1e3).toFixed(1)}s`;
+		},
+		getCurrentWaitingElapsedMs() {
 			if (!Number.isFinite(Number(this.waitingStartedAt)) || Number(this.waitingStartedAt) <= 0) {
-				return "0.0s";
+				return 0;
 			}
-			const elapsed = Math.max(0, Date.now() - Number(this.waitingStartedAt));
-			return `${(elapsed / 1e3).toFixed(1)}s`;
+			return Math.max(0, Date.now() - Number(this.waitingStartedAt));
+		},
+		getWaitingElapsedText() {
+			return this.formatElapsedMs(this.getCurrentWaitingElapsedMs());
+		},
+		getWaitingTotalElapsedText() {
+			const accumulated = Number.isFinite(Number(this.waitingAccumulatedMs)) ? Math.max(0, Number(this.waitingAccumulatedMs)) : 0;
+			const current = this.waitingElapsedActive ? this.getCurrentWaitingElapsedMs() : 0;
+			return this.formatElapsedMs(accumulated + current);
 		},
 		buildInFlightSuffix() {
 			return this.inFlight > 1 ? ` (${this.inFlight})` : "";
 		},
 		applyWaitingView() {
-			const elapsedText = this.waitingElapsedActive ? ` ${this.getWaitingElapsedText()}` : "";
-			this.applyView("waiting", `SSE 等待中${elapsedText}${this.buildInFlightSuffix()}`);
+			const elapsedText = this.waitingElapsedActive ? this.getWaitingElapsedText() : "0.0s";
+			const totalText = this.getWaitingTotalElapsedText();
+			this.applyView("waiting", `SSE 等待中 ${elapsedText} · 累计 ${totalText}${this.buildInFlightSuffix()}`);
 		},
-		startWaitingElapsed() {
+		startWaitingElapsed({ refreshElapsed = false, resetAccumulated = false } = {}) {
+			if (resetAccumulated) {
+				this.waitingAccumulatedMs = 0;
+			}
+			if (this.waitingElapsedActive && refreshElapsed) {
+				this.waitingAccumulatedMs += this.getCurrentWaitingElapsedMs();
+			}
 			this.waitingStartedAt = Date.now();
 			this.waitingElapsedActive = true;
 			this.clearWaitingTimer();
@@ -5735,19 +5758,28 @@
 				this.applyWaitingView();
 			}, WAITING_TICK_MS);
 		},
-		stopWaitingElapsed() {
+		stopWaitingElapsed({ resetAccumulated = false } = {}) {
+			if (this.waitingElapsedActive) {
+				this.waitingAccumulatedMs += this.getCurrentWaitingElapsedMs();
+			}
 			this.waitingElapsedActive = false;
 			this.waitingStartedAt = 0;
 			this.clearWaitingTimer();
+			if (resetAccumulated) {
+				this.waitingAccumulatedMs = 0;
+			}
 		},
 		init() {
 			this.inFlight = 0;
-			this.stopWaitingElapsed();
+			this.stopWaitingElapsed({ resetAccumulated: true });
 			this.applyView("idle", "SSE 待命");
 		},
 		onRequestStart() {
 			this.inFlight += 1;
-			this.startWaitingElapsed();
+			this.startWaitingElapsed({
+				resetAccumulated: this.inFlight === 1,
+				refreshElapsed: this.waitingElapsedActive
+			});
 			this.applyWaitingView();
 		},
 		onRequestDone({ ok = false, status = 0, elapsedText = "-" } = {}) {
@@ -5756,11 +5788,11 @@
 				if (this.waitingElapsedActive) {
 					this.applyWaitingView();
 				} else {
-					this.applyView("waiting", `SSE 等待中 (${this.inFlight})`);
+					this.applyView("sending", `SSE 发送中${this.buildInFlightSuffix()}`);
 				}
 				return;
 			}
-			this.stopWaitingElapsed();
+			this.stopWaitingElapsed({ resetAccumulated: true });
 			const statusText = formatStatus(status);
 			const prefix = ok ? "SSE 已完成" : "SSE 失败";
 			this.applyView(ok ? "done" : "error", `${prefix} · ${statusText} · ${elapsedText}`);
@@ -5775,17 +5807,14 @@
 		onSseEvent(eventName = "") {
 			const event = String(eventName || "").trim();
 			if (!event) return;
-			if (event === "ping") {
-				if (this.waitingElapsedActive) {
-					this.applyWaitingView();
-				} else {
-					this.applyView("waiting", `SSE 等待中${this.buildInFlightSuffix()}`);
-				}
+			if (event === "ping" || event === "waiting") {
+				this.startWaitingElapsed({ refreshElapsed: this.waitingElapsedActive });
+				this.applyWaitingView();
 				return;
 			}
 			if (event === "message" || event === "msg") {
 				this.stopWaitingElapsed();
-				this.applyView("sending", "SSE 输出中");
+				this.applyView("sending", `SSE 发送中${this.buildInFlightSuffix()}`);
 				return;
 			}
 			if (event === "message_end") {
