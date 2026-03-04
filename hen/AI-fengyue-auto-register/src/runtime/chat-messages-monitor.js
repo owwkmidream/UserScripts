@@ -129,13 +129,21 @@ function createTimeoutAbortContext({ first, second, timeoutMs }) {
             args: [first, second],
             cleanup: () => {},
             isTimeoutTriggered: () => false,
+            getTimeoutReason: () => '',
+            setWaitingMode: () => {},
+            setOutputMode: () => {},
+            notifyEvent: () => {},
+            getTimeoutMode: () => 'disabled',
         };
     }
 
     const baseSignal = getFetchSignal(first, second);
     const controller = new AbortController();
     let timeoutTriggered = false;
-    let timeoutTimer = null;
+    let timeoutReason = '';
+    let timeoutMode = 'waiting';
+    let waitingTimer = null;
+    let inactivityTimer = null;
     let onBaseAbort = null;
 
     if (isAbortSignalLike(baseSignal)) {
@@ -149,26 +157,81 @@ function createTimeoutAbortContext({ first, second, timeoutMs }) {
         }
     }
 
-    timeoutTimer = setTimeout(() => {
+    const clearWaitingTimer = () => {
+        if (!waitingTimer) return;
+        clearTimeout(waitingTimer);
+        waitingTimer = null;
+    };
+
+    const clearInactivityTimer = () => {
+        if (!inactivityTimer) return;
+        clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+    };
+
+    const triggerTimeout = (reason) => {
+        if (timeoutTriggered) return;
         timeoutTriggered = true;
-        controller.abort('chat-messages-timeout');
-    }, Number(timeoutMs));
+        timeoutReason = reason || 'chat-messages-timeout';
+        controller.abort(timeoutReason);
+    };
+
+    const armWaitingTimer = () => {
+        if (timeoutMode !== 'waiting' || timeoutTriggered) return;
+        clearWaitingTimer();
+        waitingTimer = setTimeout(() => {
+            triggerTimeout('chat-messages-waiting-timeout');
+        }, Number(timeoutMs));
+    };
+
+    const armInactivityTimer = () => {
+        if (timeoutTriggered) return;
+        clearInactivityTimer();
+        inactivityTimer = setTimeout(() => {
+            triggerTimeout('chat-messages-inactive-timeout');
+        }, Number(timeoutMs));
+    };
+
+    const notifyEvent = () => {
+        armInactivityTimer();
+    };
+
+    const setWaitingMode = () => {
+        if (timeoutTriggered) return;
+        timeoutMode = 'waiting';
+        armWaitingTimer();
+        notifyEvent();
+    };
+
+    const setOutputMode = () => {
+        if (timeoutTriggered) return;
+        timeoutMode = 'output';
+        clearWaitingTimer();
+        notifyEvent();
+    };
 
     const cleanup = () => {
-        if (timeoutTimer) {
-            clearTimeout(timeoutTimer);
-            timeoutTimer = null;
-        }
+        clearWaitingTimer();
+        clearInactivityTimer();
         if (onBaseAbort && isAbortSignalLike(baseSignal)) {
             baseSignal.removeEventListener('abort', onBaseAbort);
             onBaseAbort = null;
         }
     };
 
+    // 初始进入 waiting；如果一直无事件也会被 inactivity 看门狗兜底超时。
+    armWaitingTimer();
+    armInactivityTimer();
+
     return {
         args: buildFetchArgsWithSignal(first, second, controller.signal),
         cleanup,
         isTimeoutTriggered: () => timeoutTriggered,
+        getTimeoutReason: () => timeoutReason,
+        setWaitingMode,
+        setOutputMode,
+        notifyEvent,
+        getTimeoutMode: () => timeoutMode,
     };
 }
 
@@ -183,12 +246,40 @@ function formatElapsedMs(startedAt) {
     return `${(elapsed / 1000).toFixed(1)}s`;
 }
 
+function formatClockTimestamp(epochMs = Date.now()) {
+    const date = new Date(epochMs);
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    const ms = String(date.getMilliseconds()).padStart(3, '0');
+    return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function compactInlineText(value, maxLen = 100) {
     if (typeof value !== 'string') return '';
     const normalized = value.replace(/\s+/g, ' ').trim();
     if (!normalized) return '';
     if (normalized.length <= maxLen) return normalized;
     return `${normalized.slice(0, maxLen - 1)}…`;
+}
+
+function buildTimeoutInfo({ timeoutSeconds = 0, reason = '' } = {}) {
+    if (reason === 'chat-messages-waiting-timeout') {
+        return {
+            code: 'waiting_timeout',
+            message: `等待中超过 ${timeoutSeconds} 秒`,
+        };
+    }
+    if (reason === 'chat-messages-inactive-timeout') {
+        return {
+            code: 'inactive_timeout',
+            message: `超过 ${timeoutSeconds} 秒未收到事件`,
+        };
+    }
+    return {
+        code: 'timeout',
+        message: `超过 ${timeoutSeconds} 秒未完成`,
+    };
 }
 
 function showResultToast({ status = 0, ok = false, elapsedText = '-', channel = 'fetch', sseError = null }) {
@@ -396,8 +487,8 @@ export const ChatMessagesMonitor = {
             const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0;
             const requestState = {
                 sseError: null,
-                timeoutSeconds,
                 timeoutReported: false,
+                firstMessageToastAt: 0,
             };
             const abortContext = createTimeoutAbortContext({
                 first,
@@ -410,6 +501,7 @@ export const ChatMessagesMonitor = {
             ChatStreamCapsule.onRequestStart();
             appendMonitorState(this.targetWindow, {
                 timeoutSeconds,
+                timeoutMode: abortContext.getTimeoutMode(),
             });
             logInfo('命中 fetch /chat-messages 请求', {
                 method,
@@ -431,13 +523,18 @@ export const ChatMessagesMonitor = {
                     finalized = true;
                     cleanupAbortContext();
                     const timedOut = abortContext.isTimeoutTriggered();
+                    const timeoutReason = abortContext.getTimeoutReason();
                     if (timedOut && !requestState.timeoutReported) {
                         requestState.timeoutReported = true;
-                        const timeoutMessage = `超过 ${timeoutSeconds} 秒未完成`;
+                        const timeoutInfo = buildTimeoutInfo({
+                            timeoutSeconds,
+                            reason: timeoutReason,
+                        });
                         logWarn('fetch /chat-messages 超时，已主动中止', {
                             method,
                             url,
                             timeoutSeconds,
+                            timeoutReason,
                         });
                         appendMonitorState(this.targetWindow, {
                             lastTimeout: {
@@ -445,13 +542,14 @@ export const ChatMessagesMonitor = {
                                 method,
                                 url,
                                 timeoutSeconds,
+                                timeoutReason,
                                 at: Date.now(),
                             },
                         });
                         ChatStreamCapsule.onSseError({
                             status: 408,
-                            code: 'timeout',
-                            message: timeoutMessage,
+                            code: timeoutInfo.code,
+                            message: timeoutInfo.message,
                         });
                     }
                     const finalStatus = Number(
@@ -491,8 +589,39 @@ export const ChatMessagesMonitor = {
                     }
                     observeSseResponse(cloned, {
                         onEvent: (sseEvent) => {
-                            ChatStreamCapsule.onSseEvent(sseEvent.event || sseEvent.eventName || '');
+                            const eventName = sseEvent.event || sseEvent.eventName || '';
+                            ChatStreamCapsule.onSseEvent(eventName);
+                            if (eventName === 'message' || eventName === 'msg') {
+                                if (!requestState.firstMessageToastAt) {
+                                    const firstAt = Date.now();
+                                    requestState.firstMessageToastAt = firstAt;
+                                    const clockText = formatClockTimestamp(firstAt);
+                                    const elapsedText = formatElapsedMs(startedAt);
+                                    Toast.info(`首个 ${eventName} 事件: ${clockText} (+${elapsedText})`, 3600);
+                                    logInfo('已收到首个输出事件', {
+                                        method,
+                                        url,
+                                        event: eventName,
+                                        firstAt,
+                                        elapsedText,
+                                    });
+                                    appendMonitorState(this.targetWindow, {
+                                        firstMessageEvent: {
+                                            event: eventName,
+                                            at: firstAt,
+                                            clockText,
+                                            elapsedText,
+                                        },
+                                    });
+                                }
+                                abortContext.setOutputMode();
+                            } else if (eventName === 'ping' || eventName === 'waiting') {
+                                abortContext.setWaitingMode();
+                            } else {
+                                abortContext.notifyEvent();
+                            }
                             appendMonitorState(this.targetWindow, {
+                                timeoutMode: abortContext.getTimeoutMode(),
                                 lastSseEvent: {
                                     event: sseEvent.event || '',
                                     eventName: sseEvent.eventName || '',
@@ -555,14 +684,19 @@ export const ChatMessagesMonitor = {
                 cleanupAbortContext();
                 const elapsedText = formatElapsedMs(startedAt);
                 const timedOut = abortContext.isTimeoutTriggered();
+                const timeoutReason = abortContext.getTimeoutReason();
                 const status = timedOut ? 408 : 0;
                 if (timedOut && !requestState.timeoutReported) {
                     requestState.timeoutReported = true;
-                    const timeoutMessage = `超过 ${timeoutSeconds} 秒未完成`;
+                    const timeoutInfo = buildTimeoutInfo({
+                        timeoutSeconds,
+                        reason: timeoutReason,
+                    });
                     logWarn('fetch /chat-messages 超时，已主动中止', {
                         method,
                         url,
                         timeoutSeconds,
+                        timeoutReason,
                     });
                     appendMonitorState(this.targetWindow, {
                         lastTimeout: {
@@ -570,13 +704,14 @@ export const ChatMessagesMonitor = {
                             method,
                             url,
                             timeoutSeconds,
+                            timeoutReason,
                             at: Date.now(),
                         },
                     });
                     ChatStreamCapsule.onSseError({
                         status: 408,
-                        code: 'timeout',
-                        message: timeoutMessage,
+                        code: timeoutInfo.code,
+                        message: timeoutInfo.message,
                     });
                 } else {
                     logWarn('fetch /chat-messages 请求失败', { method, url });

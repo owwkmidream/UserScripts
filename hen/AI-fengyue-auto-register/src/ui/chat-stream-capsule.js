@@ -1,6 +1,7 @@
 import { gmAddStyle } from '../gm.js';
 
 const CAPSULE_ID = 'aifengyue-chat-status-capsule';
+const WAITING_TICK_MS = 100;
 
 function formatStatus(status) {
     const parsed = Number(status);
@@ -15,6 +16,9 @@ export const ChatStreamCapsule = {
     element: null,
     textElement: null,
     inFlight: 0,
+    waitingTimer: null,
+    waitingStartedAt: 0,
+    waitingElapsedActive: false,
 
     injectStyle() {
         if (this.styleInjected) return;
@@ -119,29 +123,77 @@ export const ChatStreamCapsule = {
         this.textElement.textContent = text;
     },
 
+    clearWaitingTimer() {
+        if (this.waitingTimer) {
+            clearInterval(this.waitingTimer);
+            this.waitingTimer = null;
+        }
+    },
+
+    getWaitingElapsedText() {
+        if (!Number.isFinite(Number(this.waitingStartedAt)) || Number(this.waitingStartedAt) <= 0) {
+            return '0.0s';
+        }
+        const elapsed = Math.max(0, Date.now() - Number(this.waitingStartedAt));
+        return `${(elapsed / 1000).toFixed(1)}s`;
+    },
+
+    buildInFlightSuffix() {
+        return this.inFlight > 1 ? ` (${this.inFlight})` : '';
+    },
+
+    applyWaitingView() {
+        const elapsedText = this.waitingElapsedActive ? ` ${this.getWaitingElapsedText()}` : '';
+        this.applyView('waiting', `SSE 等待中${elapsedText}${this.buildInFlightSuffix()}`);
+    },
+
+    startWaitingElapsed() {
+        this.waitingStartedAt = Date.now();
+        this.waitingElapsedActive = true;
+        this.clearWaitingTimer();
+        this.waitingTimer = setInterval(() => {
+            if (!this.waitingElapsedActive) return;
+            if (this.element?.dataset?.state !== 'waiting') return;
+            this.applyWaitingView();
+        }, WAITING_TICK_MS);
+    },
+
+    stopWaitingElapsed() {
+        this.waitingElapsedActive = false;
+        this.waitingStartedAt = 0;
+        this.clearWaitingTimer();
+    },
+
     init() {
         this.inFlight = 0;
+        this.stopWaitingElapsed();
         this.applyView('idle', 'SSE 待命');
     },
 
     onRequestStart() {
         this.inFlight += 1;
-        const suffix = this.inFlight > 1 ? ` (${this.inFlight})` : '';
-        this.applyView('waiting', `SSE 等待中${suffix}`);
+        this.startWaitingElapsed();
+        this.applyWaitingView();
     },
 
     onRequestDone({ ok = false, status = 0, elapsedText = '-' } = {}) {
         this.inFlight = Math.max(0, this.inFlight - 1);
         if (this.inFlight > 0) {
-            this.applyView('waiting', `SSE 等待中 (${this.inFlight})`);
+            if (this.waitingElapsedActive) {
+                this.applyWaitingView();
+            } else {
+                this.applyView('waiting', `SSE 等待中 (${this.inFlight})`);
+            }
             return;
         }
+        this.stopWaitingElapsed();
         const statusText = formatStatus(status);
         const prefix = ok ? 'SSE 已完成' : 'SSE 失败';
         this.applyView(ok ? 'done' : 'error', `${prefix} · ${statusText} · ${elapsedText}`);
     },
 
     onSseError({ status = 0, code = '', message = '' } = {}) {
+        this.stopWaitingElapsed();
         const statusText = formatStatus(status);
         const codeText = code ? ` ${code}` : '';
         const messageText = message ? ` · ${message}` : '';
@@ -152,14 +204,20 @@ export const ChatStreamCapsule = {
         const event = String(eventName || '').trim();
         if (!event) return;
         if (event === 'ping') {
-            this.applyView('waiting', 'SSE 等待中');
+            if (this.waitingElapsedActive) {
+                this.applyWaitingView();
+            } else {
+                this.applyView('waiting', `SSE 等待中${this.buildInFlightSuffix()}`);
+            }
             return;
         }
-        if (event === 'message') {
+        if (event === 'message' || event === 'msg') {
+            this.stopWaitingElapsed();
             this.applyView('sending', 'SSE 输出中');
             return;
         }
         if (event === 'message_end') {
+            this.stopWaitingElapsed();
             this.applyView('done', 'SSE 已完成');
         }
     },
