@@ -6,6 +6,10 @@ import { IframeExtractor } from '../features/iframe-extractor.js';
 import { ModelPopupSorter } from '../features/model-popup-sorter.js';
 
 export const SPAWatcher = {
+    originalPushState: null,
+    originalReplaceState: null,
+    popstateHandler: null,
+
     isSignupPage() {
         if (window.location.pathname.includes('/signup') ||
             window.location.pathname.includes('/register')) {
@@ -87,28 +91,46 @@ export const SPAWatcher = {
     },
 
     hookHistoryAPI() {
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
+        if (this.originalPushState || this.originalReplaceState) {
+            return;
+        }
+        this.originalPushState = history.pushState;
+        this.originalReplaceState = history.replaceState;
 
         history.pushState = (...args) => {
-            originalPushState.apply(history, args);
+            this.originalPushState.apply(history, args);
             this.handlePageChange();
         };
 
         history.replaceState = (...args) => {
-            originalReplaceState.apply(history, args);
+            this.originalReplaceState.apply(history, args);
             this.handlePageChange();
         };
 
-        window.addEventListener('popstate', () => {
+        this.popstateHandler = () => {
             this.handlePageChange();
-        });
+        };
+        window.addEventListener('popstate', this.popstateHandler);
     },
 
     stopObserver() {
         if (APP_STATE.spa.observer) {
             APP_STATE.spa.observer.disconnect();
             APP_STATE.spa.observer = null;
+        }
+        APP_STATE.spa.checkScheduled = false;
+
+        if (this.originalPushState) {
+            history.pushState = this.originalPushState;
+            this.originalPushState = null;
+        }
+        if (this.originalReplaceState) {
+            history.replaceState = this.originalReplaceState;
+            this.originalReplaceState = null;
+        }
+        if (this.popstateHandler) {
+            window.removeEventListener('popstate', this.popstateHandler);
+            this.popstateHandler = null;
         }
     },
 };

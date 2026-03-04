@@ -34,8 +34,11 @@
 | `src/features/` | 业务功能模块（注册、提取、排序） | 由 `src/app.js` 和 `src/ui/sidebar.js` 驱动 |
 | `src/features/auto-register/` | 自动注册子模块目录（按职责拆分的流程/接口/会话/工具层） | 被 `src/features/auto-register.js` 聚合并对外导出 |
 | `src/services/` | 数据与接口服务层（API、会话链存储） | 被 `features` 与 `ui` 依赖 |
+| `src/services/chat-history/` | 会话链服务子模块（索引、链路、导入导出、渲染） | 被 `src/services/chat-history-service.js` 聚合 |
 | `src/runtime/` | 运行时监听（SPA 路由与聊天请求监控） | 由 `src/app.js` 启动 |
+| `src/runtime/chat-monitor/` | chat-messages 监控子模块（hook、SSE、超时、状态发布） | 被 `src/runtime/chat-messages-monitor.js` 聚合 |
 | `src/ui/` | 侧边栏、toast、状态胶囊与样式注入 | 由 `src/app.js`、`runtime`、`features` 调用 |
+| `src/ui/sidebar/` | 侧边栏子模块（视图、事件、会话、设置、工具） | 被 `src/ui/sidebar.js` 聚合 |
 | `src/utils/` | 公共工具（日志、随机、DOM 输入、验证码提取） | 被 `features`、`menu`、`ui` 复用 |
 | `src/menu/` | 油猴菜单命令注册 | 由 `src/app.js` 调用 |
 
@@ -65,12 +68,27 @@
 | `src/features/auto-register/flow-methods.js` | 注册与换号高层流程编排 | 聚合进 `src/features/auto-register.js` |
 | `src/features/iframe-extractor.js` | 详情页 HTML 提取与导出 | 依赖 `gmRequestJson` 与 `Toast` |
 | `src/features/model-popup-sorter.js` | 模型弹窗按价格排序 | 依赖 `IframeExtractor`、`gm`、`constants` |
-| `src/services/api-service.js` | GPTMail API 调用与配额统计 | 依赖 `gm`、`constants`、`APP_STATE` |
+| `src/services/api-service.js` | GPTMail API 调用与配额统计（含用量订阅发布） | 依赖 `gm`、`constants` |
 | `src/services/chat-history-store.js` | IndexedDB 会话链存储基础层 | 被 `chat-history-service` 依赖 |
-| `src/services/chat-history-service.js` | 会话链业务层（索引、导入导出、渲染） | 依赖 `chat-history-store` 与 localStorage |
+| `src/services/chat-history-service.js` | 会话链兼容门面（聚合 `chat-history/*` 子模块） | 被 `features`、`ui` 调用 |
+| `src/services/chat-history/shared.js` | 会话链共享纯工具与索引读写 helper | 被 `chat-history/*` 子模块复用 |
+| `src/services/chat-history/index-store.js` | 会话链索引与存储元数据方法集合 | 聚合进 `chat-history-service` |
+| `src/services/chat-history/chain-service.js` | 会话链绑定、消息写入、统计方法集合 | 聚合进 `chat-history-service` |
+| `src/services/chat-history/bundle-service.js` | 会话链导入/导出方法集合 | 聚合进 `chat-history-service` |
+| `src/services/chat-history/viewer-renderer.js` | 会话链 HTML 预览渲染方法集合 | 聚合进 `chat-history-service` |
 | `src/runtime/spa-watcher.js` | SPA URL/DOM 变化监听与重注入 | 依赖 `APP_STATE`、`Sidebar`、`features` |
-| `src/runtime/chat-messages-monitor.js` | 监控 chat-messages 请求与 SSE 状态 | 依赖 `gmGetValue`、`Toast`、`ChatStreamCapsule` |
-| `src/ui/sidebar.js` | 侧边栏 UI 与交互主控 | 依赖 `APP_STATE`、`services`、`features` |
+| `src/runtime/chat-messages-monitor.js` | chat-messages 监控门面（支持 `start/stop` 生命周期） | 聚合 `runtime/chat-monitor/*` 子模块 |
+| `src/runtime/chat-monitor/fetch-hook.js` | fetch hook 安装与 SSE 监听流程 | 聚合进 `chat-messages-monitor` |
+| `src/runtime/chat-monitor/xhr-hook.js` | xhr hook 安装与超时处理流程 | 聚合进 `chat-messages-monitor` |
+| `src/runtime/chat-monitor/sse-parser.js` | SSE 解析、事件归一化与提示格式化 | 被 fetch/xhr hook 复用 |
+| `src/runtime/chat-monitor/timeout-context.js` | chat-messages 超时策略与 AbortContext | 被 fetch/xhr hook 与门面复用 |
+| `src/ui/sidebar.js` | 侧边栏兼容门面（聚合 `ui/sidebar/*` 子模块） | 被 `app`、`runtime`、`features` 调用 |
+| `src/ui/sidebar/sidebar-view.js` | 侧边栏视图创建与开关、Tab 切换 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-events.js` | 侧边栏事件绑定与剪贴板交互 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-conversation.js` | 会话面板交互、预览、导入导出 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额显示 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-state.js` | 侧边栏状态加载与渲染 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-tools.js` | 侧边栏工具面板可用性刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar.css.js` | 侧边栏样式注入 | 由 `src/index.js` 调用 |
 | `src/ui/toast.js` | 轻提示组件 | 被全局多个模块调用 |
 | `src/ui/chat-stream-capsule.js` | SSE 状态胶囊提示组件 | 被 `chat-messages-monitor` 调用 |
@@ -122,3 +140,4 @@
 
 - `2026-03-04`：创建初版 `INDEX.md`，建立目录与关键文件索引，并补充维护规则。
 - `2026-03-04`：`auto-register.js` 拆分为 `src/features/auto-register/` 子模块，入口改为兼容聚合门面。
+- `2026-03-05`：`sidebar`、`chat-history-service`、`chat-messages-monitor` 进一步拆分为子模块，`ApiService` 与 UI 解耦，`SPAWatcher` 历史 hook 支持可逆卸载。

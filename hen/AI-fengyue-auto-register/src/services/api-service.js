@@ -1,12 +1,12 @@
 import { CONFIG } from '../constants.js';
 import { gmGetValue, gmSetValue, gmXmlHttpRequest } from '../gm.js';
-import { APP_STATE } from '../state.js';
 import {
     isRetryableNetworkError,
     resolveRetryAttempts as resolveRetryAttemptsUtil,
 } from '../utils/retry-policy.js';
 
 const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
+const usageListeners = new Set();
 
 export const ApiService = {
     getApiKey() {
@@ -22,17 +22,50 @@ export const ApiService = {
         return gmGetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
     },
 
+    getUsageSnapshot() {
+        const used = this.getUsageCount();
+        const limit = CONFIG.API_QUOTA_LIMIT;
+        const remaining = this.getRemainingQuota();
+        const percentage = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+        return {
+            used,
+            limit,
+            remaining,
+            percentage,
+        };
+    },
+
+    subscribeUsageChange(listener) {
+        if (typeof listener !== 'function') {
+            return () => {};
+        }
+        usageListeners.add(listener);
+        return () => {
+            usageListeners.delete(listener);
+        };
+    },
+
+    emitUsageChange(snapshot = this.getUsageSnapshot()) {
+        for (const listener of usageListeners) {
+            try {
+                listener(snapshot);
+            } catch {
+                // 忽略订阅方异常，避免影响主流程。
+            }
+        }
+    },
+
     incrementUsageCount() {
         const count = this.getUsageCount() + 1;
         gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, count);
-        APP_STATE.refs.sidebar?.updateUsageDisplay();
+        this.emitUsageChange(this.getUsageSnapshot());
         return count;
     },
 
     resetUsageCount() {
         gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
         gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_RESET_DATE, new Date().toISOString());
-        APP_STATE.refs.sidebar?.updateUsageDisplay();
+        this.emitUsageChange(this.getUsageSnapshot());
     },
 
     getRemainingQuota() {
