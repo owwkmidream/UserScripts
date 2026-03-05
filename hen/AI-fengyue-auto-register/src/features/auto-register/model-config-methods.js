@@ -106,7 +106,7 @@ export const ModelConfigMethods = {
             group: typeof entryBase.group === 'string' ? entryBase.group : '',
             key_region: Number.isFinite(Number(entryBase.key_region))
                 ? Number(entryBase.key_region)
-                : 7,
+                : 2,
             value_region: Number.isFinite(Number(entryBase.value_region))
                 ? Number(entryBase.value_region)
                 : 1,
