@@ -3485,7 +3485,7 @@
 		CHAT_MESSAGES: "/console/api/installed-apps"
 	};
 	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 = 3;
-	const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = "%%test";
+	const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = "-=";
 	function readErrorMessage(payload, fallback) {
 		if (!payload || typeof payload !== "object") return fallback;
 		const raw = payload.error ?? payload.message ?? payload.msg ?? payload.detail ?? payload.errmsg;
@@ -4772,7 +4772,7 @@
 				key: entryKey,
 				value: worldBookValue,
 				group: typeof entryBase.group === "string" ? entryBase.group : "",
-				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 7,
+				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 2,
 				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 1
 			};
 			const nextWorldBook = [...existingWorldBook];
