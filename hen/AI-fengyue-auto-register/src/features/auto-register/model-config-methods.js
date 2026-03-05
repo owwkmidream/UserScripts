@@ -109,7 +109,7 @@ export const ModelConfigMethods = {
                 : 7,
             value_region: Number.isFinite(Number(entryBase.value_region))
                 ? Number(entryBase.value_region)
-                : 2,
+                : 1,
         };
 
         const nextWorldBook = [...existingWorldBook];
