@@ -34,7 +34,7 @@
 | `src/features/` | 业务功能模块（注册、提取、排序） | 由 `src/app.js` 和 `src/ui/sidebar.js` 驱动 |
 | `src/features/auto-register/` | 自动注册子模块目录（按职责拆分的流程/接口/会话/工具层） | 被 `src/features/auto-register.js` 聚合并对外导出 |
 | `src/services/` | 数据与接口服务层（API、会话链存储） | 被 `features` 与 `ui` 依赖 |
-| `src/services/chat-history/` | 会话链服务子模块（索引、链路、导入导出、渲染） | 被 `src/services/chat-history-service.js` 聚合 |
+| `src/services/chat-history/` | 会话链服务子模块（索引、链路、导入导出、渲染、预览样式快照） | 被 `src/services/chat-history-service.js` 聚合 |
 | `src/runtime/` | 运行时监听（SPA 路由与聊天请求监控） | 由 `src/app.js` 启动 |
 | `src/runtime/chat-monitor/` | chat-messages 监控子模块（hook、SSE、超时、状态发布） | 被 `src/runtime/chat-messages-monitor.js` 聚合 |
 | `src/ui/` | 侧边栏、toast、状态胶囊与样式注入 | 由 `src/app.js`、`runtime`、`features` 调用 |
@@ -77,6 +77,7 @@
 | `src/services/chat-history/chain-service.js` | 会话链绑定、消息写入、统计方法集合 | 聚合进 `chat-history-service` |
 | `src/services/chat-history/bundle-service.js` | 会话链导入/导出方法集合 | 聚合进 `chat-history-service` |
 | `src/services/chat-history/viewer-renderer.js` | 会话链 HTML 预览渲染方法集合 | 聚合进 `chat-history-service` |
+| `src/services/chat-history/preview-host-css.js` | 主站样式快照固化文件（用于预览页离线样式注入） | 被 `viewer-renderer` 注入到预览 HTML |
 | `src/runtime/spa-watcher.js` | SPA URL/DOM 变化监听与重注入 | 依赖 `APP_STATE`、`Sidebar`、`features` |
 | `src/runtime/chat-messages-monitor.js` | chat-messages 监控门面（支持 `start/stop` 生命周期） | 聚合 `runtime/chat-monitor/*` 子模块 |
 | `src/runtime/chat-monitor/fetch-hook.js` | fetch hook 安装与 SSE 监听流程 | 聚合进 `chat-messages-monitor` |
@@ -143,3 +144,4 @@
 - `2026-03-04`：`auto-register.js` 拆分为 `src/features/auto-register/` 子模块，入口改为兼容聚合门面。
 - `2026-03-05`：`sidebar`、`chat-history-service`、`chat-messages-monitor` 进一步拆分为子模块，`ApiService` 与 UI 解耦，`SPAWatcher` 历史 hook 支持可逆卸载。
 - `2026-03-05`：新增 `token-pool-methods` 号池模块，更换账号流程改为“优先号池 token，池空回退注册”，并加入全站定时补池与设置摘要。
+- `2026-03-05`：新增 `preview-host-css.js` 固化主站样式快照，预览页改为“兜底样式 + 固化主站 CSS + builtInCss”，并精简为仅保留会话内容与复制操作。

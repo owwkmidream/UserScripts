@@ -4,7 +4,7 @@
 
 - `api-service.js`：API 调用与用量统计，提供用量订阅能力（不再直接依赖 UI）。
 - `chat-history-service.js`：会话链兼容门面，聚合 `chat-history/` 子模块。
-- `chat-history/`：按职责拆分为 `shared.js`、`index-store.js`、`chain-service.js`、`bundle-service.js`、`viewer-renderer.js`。
+- `chat-history/`：按职责拆分为 `shared.js`、`index-store.js`、`chain-service.js`、`bundle-service.js`、`viewer-renderer.js`、`preview-host-css.js`。
 - `chat-history-store.js`：IndexedDB 持久化底层。
 
 ## 📥 CDN 下载导航
