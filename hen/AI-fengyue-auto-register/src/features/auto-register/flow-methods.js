@@ -557,7 +557,7 @@ export const FlowMethods = {
                 appendText,
             });
             const conversationName = `新的对话-${randomConversationSuffix(3)}`;
-            logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages query 已改为触发词前缀模式', {
+            logInfo(runCtx, 'SWITCH_CHAT', 'chat-messages query 已按触发词+换行格式构建', {
                 triggerWord: switchConfig.triggerWord,
                 appendTextLength: appendText.length,
                 queryLength: query.length,

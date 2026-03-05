@@ -9,6 +9,12 @@ import { FlowMethods } from './auto-register/flow-methods.js';
 export const AutoRegister = {
     registrationStartTime: null,
     switchingAccount: false,
+    accountPointPollTimer: null,
+    accountPointPollAppId: '',
+    accountPointPollIntervalMs: 0,
+    accountPointPollInFlight: false,
+    accountPointExhaustedTriggered: false,
+    accountPointIndicatorEl: null,
     ...RuntimeMethods,
     ...FormMethods,
     ...SiteApiMethods,

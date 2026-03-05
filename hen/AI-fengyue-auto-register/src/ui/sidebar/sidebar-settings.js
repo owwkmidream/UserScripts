@@ -75,6 +75,29 @@ export const sidebarSettingsMethods = {
         return normalized;
     },
 
+    normalizeAccountPointPollSeconds(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return 15;
+        const normalized = Math.floor(parsed);
+        if (normalized < 2) return 2;
+        return Math.min(normalized, 300);
+    },
+
+    getAccountPointPollSeconds() {
+        const saved = gmGetValue(CONFIG.STORAGE_KEYS.ACCOUNT_POINT_POLL_SECONDS, 15);
+        return this.normalizeAccountPointPollSeconds(saved);
+    },
+
+    setAccountPointPollSeconds(value) {
+        const normalized = this.normalizeAccountPointPollSeconds(value);
+        gmSetValue(CONFIG.STORAGE_KEYS.ACCOUNT_POINT_POLL_SECONDS, normalized);
+        const input = this.element?.querySelector?.('#aifengyue-account-point-poll-seconds');
+        if (input) {
+            input.value = String(normalized);
+        }
+        return normalized;
+    },
+
     setAutoReloadEnabled(enabled) {
         const normalized = !!enabled;
         gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);

@@ -55,6 +55,7 @@ export const SPAWatcher = {
                 IframeExtractor.checkAndUpdate();
                 ModelPopupSorter.scheduleSort();
                 Sidebar.updateToolPanel();
+                AutoRegister.refreshAccountPointPolling();
             }, 500);
         }
     },
@@ -77,6 +78,7 @@ export const SPAWatcher = {
                     IframeExtractor.checkAndUpdate();
                     ModelPopupSorter.scheduleSort();
                     Sidebar.updateToolPanel();
+                    AutoRegister.ensureAccountPointIndicator();
                 });
             }
         });
@@ -87,6 +89,7 @@ export const SPAWatcher = {
         });
 
         this.hookHistoryAPI();
+        AutoRegister.refreshAccountPointPolling();
         console.log('[AI风月注册助手] SPA 监听器已启动');
     },
 
@@ -132,5 +135,8 @@ export const SPAWatcher = {
             window.removeEventListener('popstate', this.popstateHandler);
             this.popstateHandler = null;
         }
+        AutoRegister.stopAccountPointPolling({
+            reason: 'spa-observer-stopped',
+        });
     },
 };

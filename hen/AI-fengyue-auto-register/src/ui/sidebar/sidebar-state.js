@@ -33,6 +33,10 @@ export const sidebarStateMethods = {
         if (chatTimeoutInput) {
             chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
         }
+        const accountPointPollInput = this.element.querySelector('#aifengyue-account-point-poll-seconds');
+        if (accountPointPollInput) {
+            accountPointPollInput.value = String(this.getAccountPointPollSeconds());
+        }
 
         this.updateUsageDisplay();
         this.render();
@@ -81,6 +85,7 @@ export const sidebarStateMethods = {
         const debugToggle = this.element.querySelector('#aifengyue-debug-toggle');
         const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
         const chatTimeoutInput = this.element.querySelector('#aifengyue-chat-timeout-seconds');
+        const accountPointPollInput = this.element.querySelector('#aifengyue-account-point-poll-seconds');
 
         if (email) email.textContent = this.state.email || '未生成';
         if (username) username.textContent = this.state.username || '未生成';
@@ -89,6 +94,7 @@ export const sidebarStateMethods = {
         if (debugToggle) debugToggle.checked = isDebugEnabled();
         if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
         if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
+        if (accountPointPollInput) accountPointPollInput.value = String(this.getAccountPointPollSeconds());
 
         this.updateToolPanel();
     },

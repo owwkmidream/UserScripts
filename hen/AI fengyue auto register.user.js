@@ -35,6 +35,7 @@
 			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled",
 			AUTO_RELOAD_ENABLED: "aifengyue_auto_reload_enabled",
 			CHAT_MESSAGES_TIMEOUT_SECONDS: "aifengyue_chat_messages_timeout_seconds",
+			ACCOUNT_POINT_POLL_SECONDS: "aifengyue_account_point_poll_seconds",
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
 			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
 			SIDEBAR_THEME: "aifengyue_sidebar_theme",
@@ -1673,7 +1674,7 @@
                         <div class="aifengyue-section-title">更换账号</div>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动以前缀触发词开头）"></textarea>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动组装为：触发词 + 换行 + 文本）"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -1826,6 +1827,20 @@
                             >
                             <div class="aifengyue-hint">
                                 等待中/发送中超过该秒数将主动中止请求并判定失败（0 关闭）。
+                            </div>
+                        </div>
+                        <div class="aifengyue-input-group">
+                            <label>积分轮询秒数</label>
+                            <input
+                                type="number"
+                                id="aifengyue-account-point-poll-seconds"
+                                min="2"
+                                max="300"
+                                step="1"
+                                placeholder="默认 15 秒"
+                            >
+                            <div class="aifengyue-hint">
+                                仅在应用详情页生效；到达间隔后会请求 account/point 并更新页面积分徽章。
                             </div>
                         </div>
                     </div>
@@ -2073,6 +2088,31 @@
 				} else {
 					getToast()?.info("/chat-messages 超时主动失败已关闭");
 				}
+			});
+			const pointPollInput = this.element.querySelector("#aifengyue-account-point-poll-seconds");
+			const applyPointPollingSeconds = (value, { showToast = false } = {}) => {
+				const seconds = this.setAccountPointPollSeconds(value);
+				getAutoRegister()?.refreshAccountPointPolling({ intervalMs: seconds * 1e3 });
+				if (showToast) {
+					getToast()?.info(`积分轮询间隔已设置为 ${seconds} 秒`);
+				}
+				return seconds;
+			};
+			pointPollInput.addEventListener("input", (e) => {
+				if (this.accountPointPollApplyTimer) {
+					clearTimeout(this.accountPointPollApplyTimer);
+				}
+				this.accountPointPollApplyTimer = setTimeout(() => {
+					applyPointPollingSeconds(e?.target?.value, { showToast: false });
+					this.accountPointPollApplyTimer = null;
+				}, 420);
+			});
+			pointPollInput.addEventListener("change", (e) => {
+				if (this.accountPointPollApplyTimer) {
+					clearTimeout(this.accountPointPollApplyTimer);
+					this.accountPointPollApplyTimer = null;
+				}
+				applyPointPollingSeconds(e?.target?.value, { showToast: true });
 			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
@@ -2787,6 +2827,26 @@
 			}
 			return normalized;
 		},
+		normalizeAccountPointPollSeconds(value) {
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed)) return 15;
+			const normalized = Math.floor(parsed);
+			if (normalized < 2) return 2;
+			return Math.min(normalized, 300);
+		},
+		getAccountPointPollSeconds() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.ACCOUNT_POINT_POLL_SECONDS, 15);
+			return this.normalizeAccountPointPollSeconds(saved);
+		},
+		setAccountPointPollSeconds(value) {
+			const normalized = this.normalizeAccountPointPollSeconds(value);
+			gmSetValue(CONFIG.STORAGE_KEYS.ACCOUNT_POINT_POLL_SECONDS, normalized);
+			const input = this.element?.querySelector?.("#aifengyue-account-point-poll-seconds");
+			if (input) {
+				input.value = String(normalized);
+			}
+			return normalized;
+		},
 		setAutoReloadEnabled(enabled) {
 			const normalized = !!enabled;
 			gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);
@@ -2874,6 +2934,10 @@
 			if (chatTimeoutInput) {
 				chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
 			}
+			const accountPointPollInput = this.element.querySelector("#aifengyue-account-point-poll-seconds");
+			if (accountPointPollInput) {
+				accountPointPollInput.value = String(this.getAccountPointPollSeconds());
+			}
 			this.updateUsageDisplay();
 			this.render();
 		},
@@ -2930,6 +2994,7 @@
 			const debugToggle = this.element.querySelector("#aifengyue-debug-toggle");
 			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
 			const chatTimeoutInput = this.element.querySelector("#aifengyue-chat-timeout-seconds");
+			const accountPointPollInput = this.element.querySelector("#aifengyue-account-point-poll-seconds");
 			if (email) email.textContent = this.state.email || "未生成";
 			if (username) username.textContent = this.state.username || "未生成";
 			if (password) password.textContent = this.state.password || "未生成";
@@ -2937,6 +3002,7 @@
 			if (debugToggle) debugToggle.checked = isDebugEnabled();
 			if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
 			if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
+			if (accountPointPollInput) accountPointPollInput.value = String(this.getAccountPointPollSeconds());
 			this.updateToolPanel();
 		}
 	};
@@ -3004,6 +3070,7 @@
 		layoutMode: "inline",
 		activeTab: "register",
 		theme: "light",
+		accountPointPollApplyTimer: null,
 		state: APP_STATE.sidebar.state,
 		conversation: {
 			appId: "",
@@ -3266,6 +3333,7 @@
 		FAVORITE_TAGS: "/console/api/account_extend/favorite_tags",
 		ACCOUNT_EXTEND_SET: "/console/api/account/extend_set",
 		ACCOUNT_PROFILE: "/go/api/account/profile",
+		ACCOUNT_POINT: "/go/api/account/point",
 		APP_DETAILS: "/go/api/apps",
 		APPS: "/console/api/apps",
 		INSTALLED_MESSAGES: "/console/api/installed-apps",
@@ -3352,6 +3420,9 @@
 
 //#endregion
 //#region src/features/auto-register/runtime-methods.js
+	const ACCOUNT_POINT_POLL_DEFAULT_SECONDS = 15;
+	const ACCOUNT_POINT_POLL_MIN_SECONDS = 2;
+	const ACCOUNT_POINT_POLL_MAX_SECONDS = 300;
 	const RuntimeMethods = {
 		resolveRetryAttempts(maxAttempts) {
 			return resolveRetryAttempts(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1);
@@ -3382,6 +3453,328 @@
 		},
 		isObjectiveRetryError(error) {
 			return isRetryableNetworkError(error, { includeHttpStatus: true });
+		},
+		normalizeAccountPointPollSeconds(value) {
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed)) return ACCOUNT_POINT_POLL_DEFAULT_SECONDS;
+			const normalized = Math.floor(parsed);
+			if (normalized < ACCOUNT_POINT_POLL_MIN_SECONDS) return ACCOUNT_POINT_POLL_MIN_SECONDS;
+			return Math.min(normalized, ACCOUNT_POINT_POLL_MAX_SECONDS);
+		},
+		getAccountPointPollIntervalMs() {
+			const saved = gmGetValue(CONFIG.STORAGE_KEYS.ACCOUNT_POINT_POLL_SECONDS, ACCOUNT_POINT_POLL_DEFAULT_SECONDS);
+			const seconds = this.normalizeAccountPointPollSeconds(saved);
+			return seconds * 1e3;
+		},
+		resolveAccountPointPollIntervalMs(intervalMs) {
+			if (Number.isFinite(Number(intervalMs)) && Number(intervalMs) > 0) {
+				return Math.max(ACCOUNT_POINT_POLL_MIN_SECONDS * 1e3, Number(intervalMs));
+			}
+			return this.getAccountPointPollIntervalMs();
+		},
+		isPointPollingPage() {
+			const pathname = typeof window.location?.pathname === "string" ? window.location.pathname : "";
+			return /\/zh\/explore\/(?:test-)?installed\/[0-9a-f-]+\/?$/i.test(pathname);
+		},
+		removeAccountPointIndicator() {
+			const existing = document.getElementById("aifengyue-account-point-indicator");
+			if (existing) {
+				existing.remove();
+			}
+			this.accountPointIndicatorEl = null;
+		},
+		ensureAccountPointIndicator() {
+			if (!this.isPointPollingPage()) {
+				this.removeAccountPointIndicator();
+				return null;
+			}
+			const anchor = document.getElementById("ai-mod-button2");
+			if (!anchor) {
+				this.accountPointIndicatorEl = null;
+				return null;
+			}
+			let indicator = document.getElementById("aifengyue-account-point-indicator");
+			if (!indicator) {
+				indicator = document.createElement("div");
+				indicator.id = "aifengyue-account-point-indicator";
+				indicator.style.cssText = [
+					"display:inline-flex",
+					"align-items:center",
+					"gap:6px",
+					"height:32px",
+					"padding:0 10px",
+					"margin-left:4px",
+					"border:1px solid #dbe5f2",
+					"border-radius:6px",
+					"background:#f8fbff",
+					"font-size:12px",
+					"line-height:1",
+					"white-space:nowrap",
+					"flex-shrink:0",
+					"color:#334155"
+				].join(";");
+				indicator.innerHTML = "<span data-role=\"label\" style=\"font-weight:600;color:#475569;\">积分</span><span data-role=\"value\" style=\"font-weight:700;color:#0f766e;\">--</span>";
+			}
+			const firstChild = anchor.firstElementChild;
+			if (indicator.parentElement !== anchor) {
+				anchor.insertBefore(indicator, firstChild || null);
+			} else if (firstChild !== indicator) {
+				anchor.insertBefore(indicator, firstChild || null);
+			}
+			this.accountPointIndicatorEl = indicator;
+			return indicator;
+		},
+		updateAccountPointIndicator({ points = null, loading = false, exhausted = false, failed = false } = {}) {
+			const indicator = this.ensureAccountPointIndicator();
+			if (!indicator) return;
+			const valueEl = indicator.querySelector("[data-role=\"value\"]");
+			if (!valueEl) return;
+			if (loading) {
+				valueEl.textContent = "读取中...";
+				valueEl.style.color = "#64748b";
+				indicator.title = "正在轮询积分";
+				return;
+			}
+			if (failed) {
+				valueEl.textContent = "--";
+				valueEl.style.color = "#f59e0b";
+				indicator.title = "积分读取失败，等待下次轮询";
+				return;
+			}
+			if (Number.isFinite(Number(points))) {
+				const normalized = Number(points);
+				valueEl.textContent = `${normalized}`;
+				if (exhausted) {
+					valueEl.style.color = "#dc2626";
+					indicator.title = "积分已耗尽，已触发自动更换账号";
+				} else {
+					valueEl.style.color = "#0f766e";
+					indicator.title = "当前积分";
+				}
+				return;
+			}
+			valueEl.textContent = "--";
+			valueEl.style.color = "#64748b";
+			indicator.title = "积分暂不可用";
+		},
+		stopAccountPointPolling({ runCtx, step = "POINT_MONITOR", reason = "" } = {}) {
+			const hadTimer = !!this.accountPointPollTimer;
+			if (this.accountPointPollTimer) {
+				clearInterval(this.accountPointPollTimer);
+				this.accountPointPollTimer = null;
+			}
+			this.accountPointPollAppId = "";
+			this.accountPointPollInFlight = false;
+			this.accountPointExhaustedTriggered = false;
+			this.accountPointPollIntervalMs = 0;
+			this.removeAccountPointIndicator();
+			if (hadTimer) {
+				logInfo$1(runCtx, step, "积分轮询已停止", { reason: reason || null });
+			}
+		},
+		async checkAccountPointOnce({ appId = "", runCtx, step = "POINT_MONITOR", reason = "manual" } = {}) {
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
+			if (!resolvedAppId) {
+				this.updateAccountPointIndicator({
+					points: null,
+					failed: true
+				});
+				return {
+					appId: "",
+					points: null,
+					exhausted: false,
+					skipped: true,
+					reason: "missing-app-id"
+				};
+			}
+			if (this.switchingAccount) {
+				this.updateAccountPointIndicator({
+					points: null,
+					loading: true
+				});
+				logDebug(runCtx, step, "更换账号进行中，跳过本轮积分检查", {
+					appId: resolvedAppId,
+					reason
+				});
+				return {
+					appId: resolvedAppId,
+					points: null,
+					exhausted: false,
+					skipped: true,
+					reason: "switching-account"
+				};
+			}
+			if (this.accountPointPollInFlight) {
+				return {
+					appId: resolvedAppId,
+					points: null,
+					exhausted: false,
+					skipped: true,
+					reason: "in-flight"
+				};
+			}
+			this.accountPointPollInFlight = true;
+			const ctx = runCtx || createRunContext("POINT");
+			const token = (localStorage.getItem("console_token") || "").trim();
+			try {
+				const pointResult = await this.fetchAccountPoint({
+					appId: resolvedAppId,
+					token,
+					runCtx: ctx,
+					step,
+					maxAttempts: 1
+				});
+				const points = Number(pointResult.points);
+				const exhausted = points <= 0;
+				this.updateAccountPointIndicator({
+					points,
+					exhausted
+				});
+				logInfo$1(ctx, step, "积分检查完成", {
+					appId: resolvedAppId,
+					points,
+					exhausted,
+					reason
+				});
+				if (exhausted) {
+					if (this.accountPointExhaustedTriggered) {
+						return {
+							appId: resolvedAppId,
+							points,
+							exhausted: true,
+							skipped: true,
+							reason: "already-triggered"
+						};
+					}
+					this.accountPointExhaustedTriggered = true;
+					Sidebar.updateState({
+						status: "fetching",
+						statusMessage: "检测到积分不足，正在启动更换账号流程..."
+					});
+					Toast.warning("积分 <= 0，正在自动启动更换账号流程", 3200);
+					logWarn$1(ctx, step, "积分耗尽，触发自动更换账号", {
+						appId: resolvedAppId,
+						points
+					});
+					await this.switchAccount(DEFAULT_SWITCH_WORLD_BOOK_TRIGGER);
+					return {
+						appId: resolvedAppId,
+						points,
+						exhausted: true,
+						skipped: false,
+						reason: "triggered-switch"
+					};
+				}
+				if (this.accountPointExhaustedTriggered) {
+					this.accountPointExhaustedTriggered = false;
+					logInfo$1(ctx, step, "积分已恢复为正数，重置耗尽触发标记", {
+						appId: resolvedAppId,
+						points
+					});
+				}
+				return {
+					appId: resolvedAppId,
+					points,
+					exhausted: false,
+					skipped: false
+				};
+			} catch (error) {
+				logWarn$1(ctx, step, "积分检查失败，本轮跳过", {
+					appId: resolvedAppId,
+					reason,
+					message: error?.message || String(error)
+				});
+				this.updateAccountPointIndicator({
+					points: null,
+					failed: true
+				});
+				return {
+					appId: resolvedAppId,
+					points: null,
+					exhausted: false,
+					skipped: true,
+					reason: "request-failed",
+					error
+				};
+			} finally {
+				this.accountPointPollInFlight = false;
+			}
+		},
+		startAccountPointPolling({ intervalMs = 0, runCtx } = {}) {
+			if (!this.isPointPollingPage()) {
+				this.stopAccountPointPolling({
+					runCtx,
+					reason: "not-installed-explore-page"
+				});
+				return false;
+			}
+			const appId = this.extractInstalledAppId();
+			if (!appId) {
+				this.stopAccountPointPolling({
+					runCtx,
+					reason: "not-installed-page"
+				});
+				return false;
+			}
+			const pollMs = this.resolveAccountPointPollIntervalMs(intervalMs);
+			if (this.accountPointPollTimer && this.accountPointPollAppId === appId && this.accountPointPollIntervalMs === pollMs) {
+				return true;
+			}
+			this.stopAccountPointPolling({
+				runCtx,
+				reason: this.accountPointPollAppId ? "app-changed" : "restart"
+			});
+			this.accountPointPollAppId = appId;
+			this.accountPointPollIntervalMs = pollMs;
+			this.accountPointExhaustedTriggered = false;
+			this.ensureAccountPointIndicator();
+			this.updateAccountPointIndicator({
+				points: null,
+				loading: true
+			});
+			this.accountPointPollTimer = setInterval(() => {
+				const currentAppId = typeof this.accountPointPollAppId === "string" ? this.accountPointPollAppId.trim() : "";
+				if (!currentAppId) {
+					return;
+				}
+				this.checkAccountPointOnce({
+					appId: currentAppId,
+					step: "POINT_MONITOR_TICK",
+					reason: "interval"
+				}).catch(() => {});
+			}, pollMs);
+			logInfo$1(runCtx, "POINT_MONITOR", "积分轮询已启动", {
+				appId,
+				intervalMs: pollMs
+			});
+			this.checkAccountPointOnce({
+				appId,
+				runCtx,
+				step: "POINT_MONITOR_INIT",
+				reason: "start"
+			}).catch(() => {});
+			return true;
+		},
+		refreshAccountPointPolling({ intervalMs = 0, runCtx } = {}) {
+			if (!this.isPointPollingPage()) {
+				this.stopAccountPointPolling({
+					runCtx,
+					reason: "route-not-installed-explore-page"
+				});
+				return false;
+			}
+			const appId = this.extractInstalledAppId();
+			if (!appId) {
+				this.stopAccountPointPolling({
+					runCtx,
+					reason: "route-not-installed-page"
+				});
+				return false;
+			}
+			return this.startAccountPointPolling({
+				intervalMs,
+				runCtx
+			});
 		},
 		async runWithObjectiveRetries(task, { runCtx, step = "RETRY", actionName = "请求", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1, baseDelayMs = 800 } = {}) {
 			const attempts = this.resolveRetryAttempts(maxAttempts);
@@ -3659,6 +4052,37 @@
 				throw new Error("account/profile 返回 data 为空");
 			}
 			return profile;
+		},
+		async fetchAccountPoint({ appId = "", token = "", runCtx, step = "GET_ACCOUNT_POINT", maxAttempts = 1 }) {
+			const normalizedAppId = typeof appId === "string" ? appId.trim() : "";
+			const headers = token ? { Authorization: `Bearer ${token}` } : {};
+			const path = SITE_ENDPOINTS.ACCOUNT_POINT;
+			const payload = await this.requestSiteApi(path, {
+				method: "GET",
+				headers,
+				maxAttempts,
+				strictCode: true,
+				acceptableCodes: [
+					0,
+					200,
+					1e5
+				]
+			}, runCtx, step);
+			const rawPoints = payload?.data?.points ?? payload?.points;
+			const points = Number(rawPoints);
+			if (!Number.isFinite(points)) {
+				throw new Error(`account/point 返回积分无效: ${rawPoints ?? "null"}`);
+			}
+			logInfo$1(runCtx, step, "account/point 获取成功", {
+				appId: normalizedAppId || null,
+				points
+			});
+			return {
+				appId: normalizedAppId,
+				points,
+				rawPoints,
+				payload
+			};
 		},
 		async verifyAccountExtendFlag({ token, key, expectedValue, runCtx, step }) {
 			try {
@@ -4221,12 +4645,16 @@
 			const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
 			const normalizedAppendText = typeof appendText === "string" ? appendText.trim() : "";
 			if (!normalizedAppendText) {
-				return normalizedTrigger;
+				return `${normalizedTrigger}\n`;
 			}
-			if (normalizedAppendText.startsWith(normalizedTrigger)) {
-				return normalizedAppendText;
+			let bodyText = normalizedAppendText;
+			if (bodyText.startsWith(normalizedTrigger)) {
+				bodyText = bodyText.slice(normalizedTrigger.length).trimStart();
 			}
-			return `${normalizedTrigger}${normalizedAppendText}`;
+			if (!bodyText) {
+				return `${normalizedTrigger}\n`;
+			}
+			return `${normalizedTrigger}\n${bodyText}`;
 		},
 		extractWorldBookFromModelConfigPayload(payload) {
 			const candidates = [];
@@ -5147,7 +5575,7 @@
 					appendText
 				});
 				const conversationName = `新的对话-${randomConversationSuffix(3)}`;
-				logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages query 已改为触发词前缀模式", {
+				logInfo$1(runCtx, "SWITCH_CHAT", "chat-messages query 已按触发词+换行格式构建", {
 					triggerWord: switchConfig.triggerWord,
 					appendTextLength: appendText.length,
 					queryLength: query.length
@@ -5323,6 +5751,12 @@
 	const AutoRegister = {
 		registrationStartTime: null,
 		switchingAccount: false,
+		accountPointPollTimer: null,
+		accountPointPollAppId: "",
+		accountPointPollIntervalMs: 0,
+		accountPointPollInFlight: false,
+		accountPointExhaustedTriggered: false,
+		accountPointIndicatorEl: null,
 		...RuntimeMethods,
 		...FormMethods,
 		...SiteApiMethods,
@@ -6835,6 +7269,7 @@
 					IframeExtractor.checkAndUpdate();
 					ModelPopupSorter.scheduleSort();
 					Sidebar.updateToolPanel();
+					AutoRegister.refreshAccountPointPolling();
 				}, 500);
 			}
 		},
@@ -6853,6 +7288,7 @@
 						IframeExtractor.checkAndUpdate();
 						ModelPopupSorter.scheduleSort();
 						Sidebar.updateToolPanel();
+						AutoRegister.ensureAccountPointIndicator();
 					});
 				}
 			});
@@ -6861,6 +7297,7 @@
 				subtree: true
 			});
 			this.hookHistoryAPI();
+			AutoRegister.refreshAccountPointPolling();
 			console.log("[AI风月注册助手] SPA 监听器已启动");
 		},
 		hookHistoryAPI() {
@@ -6900,6 +7337,7 @@
 				window.removeEventListener("popstate", this.popstateHandler);
 				this.popstateHandler = null;
 			}
+			AutoRegister.stopAccountPointPolling({ reason: "spa-observer-stopped" });
 		}
 	};
 

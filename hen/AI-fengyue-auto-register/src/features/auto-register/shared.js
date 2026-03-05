@@ -12,6 +12,7 @@ export const SITE_ENDPOINTS = {
     FAVORITE_TAGS: '/console/api/account_extend/favorite_tags',
     ACCOUNT_EXTEND_SET: '/console/api/account/extend_set',
     ACCOUNT_PROFILE: '/go/api/account/profile',
+    ACCOUNT_POINT: '/go/api/account/point',
     APP_DETAILS: '/go/api/apps',
     APPS: '/console/api/apps',
     INSTALLED_MESSAGES: '/console/api/installed-apps',

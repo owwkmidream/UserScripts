@@ -127,7 +127,7 @@ export const sidebarViewMethods = {
                         <div class="aifengyue-section-title">更换账号</div>
                         <div class="aifengyue-input-group">
                             <label>更换账号附加文本</label>
-                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动以前缀触发词开头）"></textarea>
+                            <textarea id="aifengyue-switch-text" class="aifengyue-textarea aifengyue-switch-textarea" placeholder="输入附加文本（query 会自动组装为：触发词 + 换行 + 文本）"></textarea>
                         </div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-switch-account">
                             🔀 更换账号
@@ -280,6 +280,20 @@ export const sidebarViewMethods = {
                             >
                             <div class="aifengyue-hint">
                                 等待中/发送中超过该秒数将主动中止请求并判定失败（0 关闭）。
+                            </div>
+                        </div>
+                        <div class="aifengyue-input-group">
+                            <label>积分轮询秒数</label>
+                            <input
+                                type="number"
+                                id="aifengyue-account-point-poll-seconds"
+                                min="2"
+                                max="300"
+                                step="1"
+                                placeholder="默认 15 秒"
+                            >
+                            <div class="aifengyue-hint">
+                                仅在应用详情页生效；到达间隔后会请求 account/point 并更新页面积分徽章。
                             </div>
                         </div>
                     </div>

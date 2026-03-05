@@ -12,6 +12,7 @@ export const CONFIG = {
         LOG_DEBUG_ENABLED: 'aifengyue_log_debug_enabled',
         AUTO_RELOAD_ENABLED: 'aifengyue_auto_reload_enabled',
         CHAT_MESSAGES_TIMEOUT_SECONDS: 'aifengyue_chat_messages_timeout_seconds',
+        ACCOUNT_POINT_POLL_SECONDS: 'aifengyue_account_point_poll_seconds',
         MODEL_SORT_ENABLED: 'aifengyue_model_sort_enabled',
         SIDEBAR_LAYOUT_MODE: 'aifengyue_sidebar_layout_mode',
         SIDEBAR_THEME: 'aifengyue_sidebar_theme',

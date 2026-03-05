@@ -67,6 +67,34 @@ export const sidebarEventsMethods = {
             }
         });
 
+        const pointPollInput = this.element.querySelector('#aifengyue-account-point-poll-seconds');
+        const applyPointPollingSeconds = (value, { showToast = false } = {}) => {
+            const seconds = this.setAccountPointPollSeconds(value);
+            getAutoRegister()?.refreshAccountPointPolling({
+                intervalMs: seconds * 1000,
+            });
+            if (showToast) {
+                getToast()?.info(`积分轮询间隔已设置为 ${seconds} 秒`);
+            }
+            return seconds;
+        };
+        pointPollInput.addEventListener('input', (e) => {
+            if (this.accountPointPollApplyTimer) {
+                clearTimeout(this.accountPointPollApplyTimer);
+            }
+            this.accountPointPollApplyTimer = setTimeout(() => {
+                applyPointPollingSeconds(e?.target?.value, { showToast: false });
+                this.accountPointPollApplyTimer = null;
+            }, 420);
+        });
+        pointPollInput.addEventListener('change', (e) => {
+            if (this.accountPointPollApplyTimer) {
+                clearTimeout(this.accountPointPollApplyTimer);
+                this.accountPointPollApplyTimer = null;
+            }
+            applyPointPollingSeconds(e?.target?.value, { showToast: true });
+        });
+
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
             getAutoRegister()?.start();
         });

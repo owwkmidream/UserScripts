@@ -307,6 +307,39 @@ export const SiteApiMethods = {
     },
 
 
+    async fetchAccountPoint({ appId = '', token = '', runCtx, step = 'GET_ACCOUNT_POINT', maxAttempts = 1 }) {
+        const normalizedAppId = typeof appId === 'string' ? appId.trim() : '';
+        const headers = token
+            ? { Authorization: `Bearer ${token}` }
+            : {};
+        const path = SITE_ENDPOINTS.ACCOUNT_POINT;
+        const payload = await this.requestSiteApi(path, {
+            method: 'GET',
+            headers,
+            maxAttempts,
+            strictCode: true,
+            acceptableCodes: [0, 200, 100000],
+        }, runCtx, step);
+
+        const rawPoints = payload?.data?.points ?? payload?.points;
+        const points = Number(rawPoints);
+        if (!Number.isFinite(points)) {
+            throw new Error(`account/point 返回积分无效: ${rawPoints ?? 'null'}`);
+        }
+
+        logInfo(runCtx, step, 'account/point 获取成功', {
+            appId: normalizedAppId || null,
+            points,
+        });
+        return {
+            appId: normalizedAppId,
+            points,
+            rawPoints,
+            payload,
+        };
+    },
+
+
     async verifyAccountExtendFlag({ token, key, expectedValue, runCtx, step }) {
         try {
             // 校验为附加能力，失败不影响主流程

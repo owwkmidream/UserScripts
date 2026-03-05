@@ -17,6 +17,7 @@ export const Sidebar = {
     layoutMode: 'inline',
     activeTab: 'register',
     theme: 'light',
+    accountPointPollApplyTimer: null,
     state: APP_STATE.sidebar.state,
     conversation: {
         appId: '',

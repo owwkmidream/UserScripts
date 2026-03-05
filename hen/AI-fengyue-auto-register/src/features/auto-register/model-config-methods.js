@@ -133,12 +133,19 @@ export const ModelConfigMethods = {
         const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
         const normalizedAppendText = typeof appendText === 'string' ? appendText.trim() : '';
         if (!normalizedAppendText) {
-            return normalizedTrigger;
+            return `${normalizedTrigger}\n`;
         }
-        if (normalizedAppendText.startsWith(normalizedTrigger)) {
-            return normalizedAppendText;
+
+        let bodyText = normalizedAppendText;
+        if (bodyText.startsWith(normalizedTrigger)) {
+            bodyText = bodyText.slice(normalizedTrigger.length).trimStart();
         }
-        return `${normalizedTrigger}${normalizedAppendText}`;
+
+        if (!bodyText) {
+            return `${normalizedTrigger}\n`;
+        }
+
+        return `${normalizedTrigger}\n${bodyText}`;
     },
 
 
