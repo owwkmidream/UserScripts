@@ -29,7 +29,7 @@
 
 | 路径 | 职责 | 关键依赖/被依赖 |
 | --- | --- | --- |
-| `scripts/` | 构建后辅助脚本（打开 userscript） | 被 `package.json` 的 `postbuild` 调用 |
+| `scripts/` | 构建后辅助脚本与发布脚本（打开 userscript、版本递增发布） | 被 `package.json` 的 `postbuild/release` 调用 |
 | `src/` | 核心源码目录 | 被 `rolldown.config.mjs` 作为打包输入 |
 | `src/features/` | 业务功能模块（注册、提取、排序） | 由 `src/app.js` 和 `src/ui/sidebar.js` 驱动 |
 | `src/features/auto-register/` | 自动注册子模块目录（按职责拆分的流程/接口/会话/工具层） | 被 `src/features/auto-register.js` 聚合并对外导出 |
@@ -48,7 +48,8 @@
 | --- | --- | --- |
 | `README.md` | 项目说明、构建命令与发布约束 | 面向维护者入口文档 |
 | `AGENTS.md` | 协作规范，定义读取与维护索引规则 | 约束所有后续改动流程 |
-| `package.json` | 构建命令、postbuild 命令定义 | 调用 `rolldown` 与 `scripts/open-userscript.mjs` |
+| `package.json` | 构建、postbuild 与 release 命令定义 | 调用 `rolldown`、`scripts/open-userscript.mjs`、`scripts/release.mjs` |
+| `scripts/release.mjs` | 发布脚本：更新 `src/meta.user.js` 版本号并执行构建 | 被 `package.json` 的 `release*` 脚本调用 |
 | `rolldown.config.mjs` | 打包配置与输出路径声明 | 读取 `src/meta.user.js` 与 `src/index.js` |
 | `scripts/open-userscript.mjs` | postbuild 启动浏览器 bridge | 依赖 Node `http/fs/child_process` |
 | `src/meta.user.js` | userscript 元数据头部 | 被 `rolldown.config.mjs` 注入 banner |
@@ -68,7 +69,7 @@
 | `src/features/auto-register/chat-messages-methods.js` | `/chat-messages` 请求与 SSE 解析流程 | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/flow-methods.js` | 注册与换号高层流程编排 | 聚合进 `src/features/auto-register.js` |
 | `src/features/iframe-extractor.js` | 详情页 HTML 提取与导出 | 依赖 `gmRequestJson` 与 `Toast` |
-| `src/features/model-popup-sorter.js` | 模型弹窗排序与模型类型 Tag 筛选（内置映射 + 自定义前缀映射） | 依赖 `gm`、`constants` |
+| `src/features/model-popup-sorter.js` | 模型弹窗排序与模型类型 Tag 筛选（内置映射 + 自定义前缀映射 + DOM 排序规则切换） | 依赖 `gm`、`constants` |
 | `src/services/api-service.js` | GPTMail API 调用与配额统计（含用量订阅发布） | 依赖 `gm`、`constants` |
 | `src/services/chat-history-store.js` | IndexedDB 会话链存储基础层 | 被 `chat-history-service` 依赖 |
 | `src/services/chat-history-service.js` | 会话链兼容门面（聚合 `chat-history/*` 子模块） | 被 `features`、`ui` 调用 |
@@ -148,3 +149,5 @@
 - `2026-03-05`：`model-popup-sorter.js` 排序策略由“价格优先”调整为“近期出字率优先，价格兜底”。
 - `2026-03-05`：`model-popup-sorter.js` 新增模型类型 Tag 筛选，支持同类型模型一键聚合查看（`Low/High/Preview` 归并）。
 - `2026-03-05`：模型类型改为“内置映射规则 + 侧边栏可编辑自定义前缀映射”，并新增未映射前缀补录入口。
+- `2026-03-05`：`model-popup-sorter.js` 新增 DOM 排序按钮，支持按价格/近期出字率切换升序或降序（分类内与分类块同步生效）。
+- `2026-03-05`：新增 `scripts/release.mjs` 与 `package.json release*` 命令，支持版本号更新与发布构建自动化。

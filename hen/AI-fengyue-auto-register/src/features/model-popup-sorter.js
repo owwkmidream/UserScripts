@@ -82,6 +82,52 @@ export const ModelPopupSorter = {
     familyTagRenderSignature: '',
     unknownPrefixStats: new Map(),
 
+    normalizeSortMetric(metric) {
+        const value = String(metric || '').trim();
+        return value === 'price' ? 'price' : 'outputRate';
+    },
+
+    normalizeSortDirection(direction) {
+        const value = String(direction || '').trim();
+        return value === 'asc' ? 'asc' : 'desc';
+    },
+
+    getSortMetric() {
+        return this.normalizeSortMetric(
+            gmGetValue(CONFIG.STORAGE_KEYS.MODEL_POPUP_SORT_METRIC, 'price')
+        );
+    },
+
+    setSortMetric(metric) {
+        this.setSortState(metric, this.getSortDirection());
+    },
+
+    getSortDirection() {
+        return this.normalizeSortDirection(
+            gmGetValue(CONFIG.STORAGE_KEYS.MODEL_POPUP_SORT_DIRECTION, 'asc')
+        );
+    },
+
+    setSortDirection(direction) {
+        this.setSortState(this.getSortMetric(), direction);
+    },
+
+    setSortState(metric, direction) {
+        const normalizedMetric = this.normalizeSortMetric(metric);
+        const normalized = this.normalizeSortDirection(direction);
+        gmSetValue(CONFIG.STORAGE_KEYS.MODEL_POPUP_SORT_METRIC, normalizedMetric);
+        gmSetValue(CONFIG.STORAGE_KEYS.MODEL_POPUP_SORT_DIRECTION, normalized);
+        this.familyTagRenderSignature = '';
+        this.scheduleSort();
+    },
+
+    getSortState() {
+        return {
+            metric: this.getSortMetric(),
+            direction: this.getSortDirection(),
+        };
+    },
+
     isSortEnabled() {
         return gmGetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, true);
     },
@@ -384,12 +430,24 @@ export const ModelPopupSorter = {
         };
     },
 
-    sortItemsInCategory(meta) {
-        const sorted = [...meta.itemMetas].sort((a, b) => {
-            if (a.outputRate !== b.outputRate) return b.outputRate - a.outputRate;
-            if (a.price !== b.price) return a.price - b.price;
-            return a.index - b.index;
-        });
+    compareItemMetas(a, b, sortState) {
+        const metric = sortState?.metric === 'price' ? 'price' : 'outputRate';
+        const direction = sortState?.direction === 'asc' ? 'asc' : 'desc';
+        const primaryA = metric === 'price' ? a.price : a.outputRate;
+        const primaryB = metric === 'price' ? b.price : b.outputRate;
+        if (primaryA !== primaryB) {
+            if (direction === 'asc') return primaryA - primaryB;
+            return primaryB - primaryA;
+        }
+
+        // 次级指标保持“出字率高优先 + 价格低优先”，避免同值时顺序抖动
+        if (a.outputRate !== b.outputRate) return b.outputRate - a.outputRate;
+        if (a.price !== b.price) return a.price - b.price;
+        return a.index - b.index;
+    },
+
+    sortItemsInCategory(meta, sortState) {
+        const sorted = [...meta.itemMetas].sort((a, b) => this.compareItemMetas(a, b, sortState));
 
         const needReorder = sorted.some((entry, index) => entry.item !== meta.itemMetas[index].item);
         if (!needReorder) return;
@@ -444,6 +502,21 @@ export const ModelPopupSorter = {
             bar.addEventListener('click', (event) => {
                 const target = event.target;
                 if (!(target instanceof Element)) return;
+
+                const metricBtn = target.closest('button[data-sort-metric]');
+                if (metricBtn) {
+                    const nextMetric = metricBtn.getAttribute('data-sort-metric') || '';
+                    if (!nextMetric) return;
+                    const current = this.getSortState();
+                    if (nextMetric === current.metric) {
+                        const nextDirection = current.direction === 'asc' ? 'desc' : 'asc';
+                        this.setSortState(nextMetric, nextDirection);
+                    } else {
+                        this.setSortState(nextMetric, 'asc');
+                    }
+                    return;
+                }
+
                 const btn = target.closest('button[data-family-key]');
                 if (!btn) return;
                 const nextKey = (btn.getAttribute('data-family-key') || '').trim();
@@ -461,11 +534,15 @@ export const ModelPopupSorter = {
         return bar;
     },
 
-    renderFamilyTagBar(bar, groups, activeKey) {
+    renderFamilyTagBar(bar, groups, activeKey, sortState) {
         if (!bar) return;
         const normalizedActive = String(activeKey || '').trim();
+        const currentSortMetric = sortState?.metric === 'price' ? 'price' : 'outputRate';
+        const currentSortDirection = sortState?.direction === 'asc' ? 'asc' : 'desc';
         const signature = JSON.stringify({
             active: normalizedActive,
+            metric: currentSortMetric,
+            direction: currentSortDirection,
             groups: groups.map((group) => [group.key, group.count]),
         });
         if (signature === this.familyTagRenderSignature) return;
@@ -487,7 +564,37 @@ export const ModelPopupSorter = {
         const total = groups.reduce((sum, group) => sum + group.count, 0);
         const allBtn = buildBtn('', '全部', total, !normalizedActive);
         const groupBtns = groups.map((group) => buildBtn(group.key, group.label, group.count, normalizedActive === group.key)).join('');
-        bar.innerHTML = `<span style="font-size:12px;font-weight:700;color:#334155;margin-right:2px;">模型类型</span>${allBtn}${groupBtns}`;
+
+        const buildSortBtn = (attrName, value, label, active) => {
+            const background = active ? '#0369a1' : '#eef2ff';
+            const color = active ? '#ffffff' : '#1e3a8a';
+            const border = active ? '#0369a1' : '#c7d2fe';
+            return [
+                `<button type="button" ${attrName}="${value}"`,
+                ` style="border:1px solid ${border};background:${background};color:${color};`,
+                'height:26px;padding:0 10px;border-radius:999px;font-size:12px;line-height:1;',
+                'display:inline-flex;align-items:center;cursor:pointer;white-space:nowrap;">',
+                `<span>${label}</span></button>`,
+            ].join('');
+        };
+        const priceLabel = currentSortMetric === 'price'
+            ? `价格 ${currentSortDirection === 'asc' ? '↑' : '↓'}`
+            : '价格';
+        const outputRateLabel = currentSortMetric === 'outputRate'
+            ? `出字率 ${currentSortDirection === 'asc' ? '↑' : '↓'}`
+            : '出字率';
+        const metricPriceBtn = buildSortBtn('data-sort-metric', 'price', priceLabel, currentSortMetric === 'price');
+        const metricRateBtn = buildSortBtn('data-sort-metric', 'outputRate', outputRateLabel, currentSortMetric === 'outputRate');
+
+        bar.innerHTML = [
+            '<span style="font-size:12px;font-weight:700;color:#334155;margin-right:2px;">排序</span>',
+            metricPriceBtn,
+            metricRateBtn,
+            '<span style="width:1px;height:16px;background:#cbd5e1;margin:0 2px;"></span>',
+            '<span style="font-size:12px;font-weight:700;color:#334155;margin-right:2px;">模型类型</span>',
+            allBtn,
+            groupBtns,
+        ].join('');
     },
 
     applyFamilyFilter(metas, familyKey) {
@@ -503,7 +610,7 @@ export const ModelPopupSorter = {
         });
     },
 
-    resolveCategorySortMetrics(meta, familyKey) {
+    resolveCategorySortMetrics(meta, familyKey, sortState) {
         const target = String(familyKey || '').trim();
         const source = target
             ? meta.itemMetas.filter((itemMeta) => itemMeta.familyKey === target)
@@ -511,14 +618,20 @@ export const ModelPopupSorter = {
         if (source.length === 0) {
             return {
                 hasVisible: false,
-                maxOutputRate: -1,
-                minPrice: Number.POSITIVE_INFINITY,
+                best: null,
             };
+        }
+
+        let best = source[0];
+        for (let index = 1; index < source.length; index += 1) {
+            const current = source[index];
+            if (this.compareItemMetas(current, best, sortState) < 0) {
+                best = current;
+            }
         }
         return {
             hasVisible: true,
-            maxOutputRate: source.reduce((max, itemMeta) => Math.max(max, itemMeta.outputRate), -1),
-            minPrice: source.reduce((min, itemMeta) => Math.min(min, itemMeta.price), Number.POSITIVE_INFINITY),
+            best,
         };
     },
 
@@ -543,12 +656,13 @@ export const ModelPopupSorter = {
 
         this.unknownPrefixStats = new Map();
         const rules = this.getActiveFamilyRules();
+        const sortState = this.getSortState();
         const metas = blocks
             .map((block, index) => this.buildCategoryMeta(block, index, rules))
             .filter(Boolean);
         if (metas.length === 0) return;
 
-        metas.forEach((meta) => this.sortItemsInCategory(meta));
+        metas.forEach((meta) => this.sortItemsInCategory(meta, sortState));
 
         const groups = this.buildFamilyTagGroups(metas);
         if (!groups.some((group) => group.key === this.activeModelFamilyKey)) {
@@ -556,12 +670,12 @@ export const ModelPopupSorter = {
         }
 
         const tagBar = this.ensureFamilyTagBar(popup, parent);
-        this.renderFamilyTagBar(tagBar, groups, this.activeModelFamilyKey);
+        this.renderFamilyTagBar(tagBar, groups, this.activeModelFamilyKey, sortState);
         this.applyFamilyFilter(metas, this.activeModelFamilyKey);
 
         const metricsMap = new Map();
         metas.forEach((meta) => {
-            metricsMap.set(meta, this.resolveCategorySortMetrics(meta, this.activeModelFamilyKey));
+            metricsMap.set(meta, this.resolveCategorySortMetrics(meta, this.activeModelFamilyKey, sortState));
         });
 
         const sortedCategories = [...metas].sort((a, b) => {
@@ -570,12 +684,9 @@ export const ModelPopupSorter = {
             if (aMetrics.hasVisible !== bMetrics.hasVisible) {
                 return aMetrics.hasVisible ? -1 : 1;
             }
-            if (aMetrics.maxOutputRate !== bMetrics.maxOutputRate) {
-                return bMetrics.maxOutputRate - aMetrics.maxOutputRate;
-            }
-            if (aMetrics.minPrice !== bMetrics.minPrice) {
-                return aMetrics.minPrice - bMetrics.minPrice;
-            }
+            if (!aMetrics.best || !bMetrics.best) return a.blockIndex - b.blockIndex;
+            const categoryCompare = this.compareItemMetas(aMetrics.best, bMetrics.best, sortState);
+            if (categoryCompare !== 0) return categoryCompare;
             return a.blockIndex - b.blockIndex;
         });
 
