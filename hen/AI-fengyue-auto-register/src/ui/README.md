@@ -1,13 +1,5 @@
 # ui
 
-## 模块结构
-
-- `sidebar.js`：侧边栏兼容门面，聚合 `sidebar/` 子模块。
-- `sidebar/`：按职责拆分为 `sidebar-view.js`、`sidebar-events.js`、`sidebar-conversation.js`、`sidebar-settings.js`、`sidebar-state.js`、`sidebar-tools.js`。
-- `chat-stream-capsule.js`：聊天流状态胶囊组件。
-- `toast.js`：通用轻提示组件。
-- `sidebar.css.js`：侧边栏样式注入入口。
-
 ## 📥 CDN 下载导航
 
 根据您的网络环境选择合适的 CDN 源：
@@ -28,6 +20,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/ui/toast.js) |
@@ -43,6 +36,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/ui/toast.js) |
@@ -58,6 +52,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/toast.js) |
@@ -73,6 +68,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/toast.js) |
@@ -88,6 +84,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/toast.js) |
@@ -103,6 +100,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-stream-capsule.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/chat-stream-capsule.js) |
 | sidebar.css.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.css.js) |
 | sidebar.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/sidebar.js) |
 | toast.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/ui/toast.js) |

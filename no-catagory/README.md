@@ -20,6 +20,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/no-catagory/rootz-idm-exporter.user.js) |
 
@@ -34,6 +35,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/no-catagory/rootz-idm-exporter.user.js) |
 
@@ -48,6 +50,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/no-catagory/rootz-idm-exporter.user.js) |
 
@@ -62,6 +65,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/no-catagory/rootz-idm-exporter.user.js) |
 
@@ -76,6 +80,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/no-catagory/rootz-idm-exporter.user.js) |
 
@@ -90,6 +95,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| dc-export.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/no-catagory/dc-export.js) |
 | linux-do-gift-code-redeemer.user.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/no-catagory/linux-do-gift-code-redeemer.user.js) |
 | rootz-idm-exporter.user.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/no-catagory/rootz-idm-exporter.user.js) |
 
