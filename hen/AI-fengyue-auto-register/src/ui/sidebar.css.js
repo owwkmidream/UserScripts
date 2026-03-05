@@ -91,11 +91,8 @@ const SIDEBAR_STYLES = `
         box-sizing: border-box;
         transition: padding-right 0.3s var(--af-ease, ease);
     }
-    body.aifengyue-sidebar-inline-mode .aifengyue-inline-main-root {
-        width: calc(100vw - 372px) !important;
-        max-width: calc(100vw - 372px) !important;
-        min-width: 0 !important;
-        box-sizing: border-box !important;
+    body.aifengyue-sidebar-inline-mode #header-setting-button {
+        margin-right: 70px !important;
     }
 
     /* --- Toggle 按钮 --- */

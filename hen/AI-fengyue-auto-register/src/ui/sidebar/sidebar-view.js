@@ -447,45 +447,10 @@ export const sidebarViewMethods = {
         this.syncInlineSpaceClass();
     },
 
-    resolveInlineMainRootElement() {
-        const children = Array.from(document.body?.children || []);
-        const candidates = children.filter((el) => {
-            if (!el || !(el instanceof HTMLElement)) return false;
-            const id = typeof el.id === 'string' ? el.id.trim() : '';
-            if (id.startsWith('aifengyue-')) return false;
-            const tagName = (el.tagName || '').toLowerCase();
-            if (tagName === 'script' || tagName === 'style' || tagName === 'link') return false;
-            const rect = el.getBoundingClientRect();
-            return rect.width > 200 && rect.height > 200;
-        });
-
-        if (!candidates.length) return null;
-        candidates.sort((a, b) => {
-            const aRect = a.getBoundingClientRect();
-            const bRect = b.getBoundingClientRect();
-            return (bRect.width * bRect.height) - (aRect.width * aRect.height);
-        });
-        return candidates[0];
-    },
-
-    applyInlineMainRootShift(enabled) {
-        if (this.inlineMainRootEl && this.inlineMainRootEl.isConnected) {
-            this.inlineMainRootEl.classList.remove('aifengyue-inline-main-root');
-        }
-        this.inlineMainRootEl = null;
-        if (!enabled) return;
-
-        const rootEl = this.resolveInlineMainRootElement();
-        if (!rootEl) return;
-        rootEl.classList.add('aifengyue-inline-main-root');
-        this.inlineMainRootEl = rootEl;
-    },
-
     syncInlineSpaceClass() {
         const isInlineOpen = this.layoutMode === 'inline' && this.isOpen;
         document.documentElement.classList.remove('aifengyue-sidebar-inline-mode');
         document.body.classList.toggle('aifengyue-sidebar-inline-mode', isInlineOpen);
-        this.applyInlineMainRootShift(isInlineOpen);
     },
 
     toggle() {
