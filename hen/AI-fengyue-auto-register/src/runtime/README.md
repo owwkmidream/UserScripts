@@ -1,11 +1,5 @@
 # runtime
 
-## 模块结构
-
-- `chat-messages-monitor.js`：监控门面，提供 `start()` / `stop()` 生命周期。
-- `chat-monitor/`：按职责拆分为 `constants.js`、`logger.js`、`state-publisher.js`、`timeout-context.js`、`sse-parser.js`、`fetch-hook.js`、`xhr-hook.js`。
-- `spa-watcher.js`：SPA 路由/DOM 监听，停止时会回滚 history hook 并解绑 `popstate` 监听。
-
 ## 📥 CDN 下载导航
 
 根据您的网络环境选择合适的 CDN 源：
@@ -26,6 +20,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
@@ -39,6 +34,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
@@ -52,6 +48,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
@@ -65,6 +62,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
@@ -78,6 +76,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
@@ -91,6 +90,7 @@
 
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
+| chat-messages-monitor.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/chat-messages-monitor.js) |
 | spa-watcher.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/runtime/spa-watcher.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
