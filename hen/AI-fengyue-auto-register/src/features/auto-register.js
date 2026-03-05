@@ -15,6 +15,7 @@ export const AutoRegister = {
     accountPointPollIntervalMs: 0,
     accountPointPollInFlight: false,
     accountPointLatestPoints: null,
+    accountPointHasFreshReading: false,
     accountPointIndicatorEl: null,
     accountPointLowBannerEl: null,
     accountPointSubmitInterceptorsBound: false,

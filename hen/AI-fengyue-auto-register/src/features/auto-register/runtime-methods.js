@@ -169,6 +169,12 @@ export const RuntimeMethods = {
     isAccountPointSubmitBlocked() {
         if (!this.isPointPollingPage()) return false;
         if (this.accountPointSubmitSwitchInFlight || this.switchingAccount) return true;
+        const currentAppId = this.extractInstalledAppId();
+        const pollingAppId = typeof this.accountPointPollAppId === 'string'
+            ? this.accountPointPollAppId.trim()
+            : '';
+        if (!currentAppId || !pollingAppId || currentAppId !== pollingAppId) return false;
+        if (this.accountPointPollInFlight || !this.accountPointHasFreshReading) return false;
         const points = Number(this.accountPointLatestPoints);
         return Number.isFinite(points) && points <= 0;
     },
@@ -412,67 +418,88 @@ export const RuntimeMethods = {
         failed = false,
     } = {}) {
         const indicator = this.ensureAccountPointIndicator();
-        if (!indicator) return;
-
-        const valueEl = indicator.querySelector('[data-role="value"]');
-        if (!valueEl) return;
+        const valueEl = indicator?.querySelector?.('[data-role="value"]') || null;
 
         if (loading) {
-            valueEl.textContent = '读取中...';
-            valueEl.style.color = '#64748b';
             this.accountPointLatestPoints = null;
-            indicator.dataset.points = '';
-            this.setAccountPointIndicatorInteractionState(indicator, {
-                enabled: false,
-                title: '正在轮询积分',
-            });
-            this.refreshAccountPointLowBanner();
-            return;
-        }
-
-        if (failed) {
-            valueEl.textContent = '--';
-            valueEl.style.color = '#f59e0b';
-            this.accountPointLatestPoints = null;
-            indicator.dataset.points = '';
-            this.setAccountPointIndicatorInteractionState(indicator, {
-                enabled: false,
-                title: '积分读取失败，等待下次轮询',
-            });
-            this.refreshAccountPointLowBanner();
-            return;
-        }
-
-        if (Number.isFinite(Number(points))) {
-            const normalized = Number(points);
-            valueEl.textContent = `${normalized}`;
-            this.accountPointLatestPoints = normalized;
-            indicator.dataset.points = `${normalized}`;
-            if (exhausted) {
-                valueEl.style.color = '#dc2626';
-                this.setAccountPointIndicatorInteractionState(indicator, {
-                    enabled: true,
-                    title: '积分 <= 0，发送将触发完整换号流程（也可点击积分手动触发）',
-                });
-            } else {
-                valueEl.style.color = '#0f766e';
+            this.accountPointHasFreshReading = false;
+            if (valueEl) {
+                valueEl.textContent = '读取中...';
+                valueEl.style.color = '#64748b';
+            }
+            if (indicator) {
+                indicator.dataset.points = '';
                 this.setAccountPointIndicatorInteractionState(indicator, {
                     enabled: false,
-                    title: '当前积分',
+                    title: '正在轮询积分',
                 });
             }
             this.refreshAccountPointLowBanner();
             return;
         }
 
-        valueEl.textContent = '--';
-        valueEl.style.color = '#64748b';
+        if (failed) {
+            this.accountPointLatestPoints = null;
+            this.accountPointHasFreshReading = false;
+            if (valueEl) {
+                valueEl.textContent = '--';
+                valueEl.style.color = '#f59e0b';
+            }
+            if (indicator) {
+                indicator.dataset.points = '';
+                this.setAccountPointIndicatorInteractionState(indicator, {
+                    enabled: false,
+                    title: '积分读取失败，等待下次轮询',
+                });
+            }
+            this.refreshAccountPointLowBanner();
+            return;
+        }
+
+        if (Number.isFinite(Number(points))) {
+            const normalized = Number(points);
+            this.accountPointLatestPoints = normalized;
+            this.accountPointHasFreshReading = true;
+            if (valueEl) {
+                valueEl.textContent = `${normalized}`;
+            }
+            if (indicator) {
+                indicator.dataset.points = `${normalized}`;
+            }
+            if (exhausted) {
+                if (valueEl) valueEl.style.color = '#dc2626';
+                if (indicator) {
+                    this.setAccountPointIndicatorInteractionState(indicator, {
+                        enabled: true,
+                        title: '积分 <= 0，发送将触发完整换号流程（也可点击积分手动触发）',
+                    });
+                }
+            } else {
+                if (valueEl) valueEl.style.color = '#0f766e';
+                if (indicator) {
+                    this.setAccountPointIndicatorInteractionState(indicator, {
+                        enabled: false,
+                        title: '当前积分',
+                    });
+                }
+            }
+            this.refreshAccountPointLowBanner();
+            return;
+        }
+
         this.accountPointLatestPoints = null;
-        indicator.dataset.points = '';
-        this.setAccountPointIndicatorInteractionState(indicator, {
-            enabled: false,
-            title: '积分暂不可用',
-        });
+        this.accountPointHasFreshReading = false;
+        if (valueEl) {
+            valueEl.textContent = '--';
+            valueEl.style.color = '#64748b';
+        }
+        if (indicator) {
+            indicator.dataset.points = '';
+            this.setAccountPointIndicatorInteractionState(indicator, {
+                enabled: false,
+                title: '积分暂不可用',
+            });
+        }
         this.refreshAccountPointLowBanner();
     },
 
@@ -486,6 +513,7 @@ export const RuntimeMethods = {
         this.accountPointPollAppId = '';
         this.accountPointPollInFlight = false;
         this.accountPointLatestPoints = null;
+        this.accountPointHasFreshReading = false;
         this.accountPointPollIntervalMs = 0;
         this.accountPointSubmitSwitchInFlight = false;
         this.removeAccountPointIndicator();
@@ -636,6 +664,14 @@ export const RuntimeMethods = {
             && this.accountPointPollAppId === appId
             && this.accountPointPollIntervalMs === pollMs
         ) {
+            if (!this.accountPointHasFreshReading && !this.accountPointPollInFlight) {
+                this.checkAccountPointOnce({
+                    appId,
+                    runCtx,
+                    step: 'POINT_MONITOR_RETRY',
+                    reason: 'missing-fresh-reading',
+                }).catch(() => {});
+            }
             return true;
         }
 
