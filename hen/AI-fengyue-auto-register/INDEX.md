@@ -68,7 +68,7 @@
 | `src/features/auto-register/chat-messages-methods.js` | `/chat-messages` 请求与 SSE 解析流程 | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/flow-methods.js` | 注册与换号高层流程编排 | 聚合进 `src/features/auto-register.js` |
 | `src/features/iframe-extractor.js` | 详情页 HTML 提取与导出 | 依赖 `gmRequestJson` 与 `Toast` |
-| `src/features/model-popup-sorter.js` | 模型弹窗按价格排序 | 依赖 `IframeExtractor`、`gm`、`constants` |
+| `src/features/model-popup-sorter.js` | 模型弹窗排序（近期出字率优先，其次价格系数） | 依赖 `IframeExtractor`、`gm`、`constants` |
 | `src/services/api-service.js` | GPTMail API 调用与配额统计（含用量订阅发布） | 依赖 `gm`、`constants` |
 | `src/services/chat-history-store.js` | IndexedDB 会话链存储基础层 | 被 `chat-history-service` 依赖 |
 | `src/services/chat-history-service.js` | 会话链兼容门面（聚合 `chat-history/*` 子模块） | 被 `features`、`ui` 调用 |
@@ -145,3 +145,4 @@
 - `2026-03-05`：`sidebar`、`chat-history-service`、`chat-messages-monitor` 进一步拆分为子模块，`ApiService` 与 UI 解耦，`SPAWatcher` 历史 hook 支持可逆卸载。
 - `2026-03-05`：新增 `token-pool-methods` 号池模块，更换账号流程改为“优先号池 token，池空回退注册”，并加入全站定时补池与设置摘要。
 - `2026-03-05`：新增 `preview-host-css.js` 固化主站样式快照，预览页改为“兜底样式 + 固化主站 CSS + builtInCss”，并精简为仅保留会话内容与复制操作。
+- `2026-03-05`：`model-popup-sorter.js` 排序策略由“价格优先”调整为“近期出字率优先，价格兜底”。

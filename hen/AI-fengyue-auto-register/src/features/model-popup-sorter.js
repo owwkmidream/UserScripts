@@ -92,6 +92,19 @@ export const ModelPopupSorter = {
         return Number.POSITIVE_INFINITY;
     },
 
+    extractOutputRate(itemEl) {
+        if (!itemEl) return -1;
+
+        const text = (itemEl.textContent || '').replace(/\s+/g, ' ');
+        const textMatch = text.match(/近期出字率[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*%/);
+        if (textMatch) {
+            const value = parseFloat(textMatch[1]);
+            if (Number.isFinite(value)) return value;
+        }
+
+        return -1;
+    },
+
     findCategoryBlocks(popup) {
         const blocks = Array.from(popup.querySelectorAll('div.w-full.cursor-pointer.block'));
         return blocks.filter((block) => Boolean(
@@ -114,9 +127,11 @@ export const ModelPopupSorter = {
             item,
             index,
             price: this.extractPrice(item),
+            outputRate: this.extractOutputRate(item),
         }));
 
         const minPrice = itemMetas.reduce((min, meta) => Math.min(min, meta.price), Number.POSITIVE_INFINITY);
+        const maxOutputRate = itemMetas.reduce((max, meta) => Math.max(max, meta.outputRate), -1);
 
         return {
             block,
@@ -124,11 +139,13 @@ export const ModelPopupSorter = {
             details,
             itemMetas,
             minPrice,
+            maxOutputRate,
         };
     },
 
     sortItemsInCategory(meta) {
         const sorted = [...meta.itemMetas].sort((a, b) => {
+            if (a.outputRate !== b.outputRate) return b.outputRate - a.outputRate;
             if (a.price !== b.price) return a.price - b.price;
             return a.index - b.index;
         });
@@ -168,6 +185,7 @@ export const ModelPopupSorter = {
         metas.forEach((meta) => this.sortItemsInCategory(meta));
 
         const sortedCategories = [...metas].sort((a, b) => {
+            if (a.maxOutputRate !== b.maxOutputRate) return b.maxOutputRate - a.maxOutputRate;
             if (a.minPrice !== b.minPrice) return a.minPrice - b.minPrice;
             return a.blockIndex - b.blockIndex;
         });
