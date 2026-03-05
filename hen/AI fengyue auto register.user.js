@@ -1987,10 +1987,41 @@
 			}
 			this.syncInlineSpaceClass();
 		},
+		resolveInlineMainRootElement() {
+			const children = Array.from(document.body?.children || []);
+			const candidates = children.filter((el) => {
+				if (!el || !(el instanceof HTMLElement)) return false;
+				const id = typeof el.id === "string" ? el.id.trim() : "";
+				if (id.startsWith("aifengyue-")) return false;
+				const tagName = (el.tagName || "").toLowerCase();
+				if (tagName === "script" || tagName === "style" || tagName === "link") return false;
+				const rect = el.getBoundingClientRect();
+				return rect.width > 200 && rect.height > 200;
+			});
+			if (!candidates.length) return null;
+			candidates.sort((a, b) => {
+				const aRect = a.getBoundingClientRect();
+				const bRect = b.getBoundingClientRect();
+				return bRect.width * bRect.height - aRect.width * aRect.height;
+			});
+			return candidates[0];
+		},
+		applyInlineMainRootShift(enabled) {
+			if (this.inlineMainRootEl && this.inlineMainRootEl.isConnected) {
+				this.inlineMainRootEl.classList.remove("aifengyue-inline-main-root");
+			}
+			this.inlineMainRootEl = null;
+			if (!enabled) return;
+			const rootEl = this.resolveInlineMainRootElement();
+			if (!rootEl) return;
+			rootEl.classList.add("aifengyue-inline-main-root");
+			this.inlineMainRootEl = rootEl;
+		},
 		syncInlineSpaceClass() {
 			const isInlineOpen = this.layoutMode === "inline" && this.isOpen;
 			document.documentElement.classList.remove("aifengyue-sidebar-inline-mode");
 			document.body.classList.toggle("aifengyue-sidebar-inline-mode", isInlineOpen);
+			this.applyInlineMainRootShift(isInlineOpen);
 		},
 		toggle() {
 			this.isOpen ? this.close() : this.open();
@@ -3216,6 +3247,7 @@
 		theme: "light",
 		accountPointPollApplyTimer: null,
 		tokenPoolCheckApplyTimer: null,
+		inlineMainRootEl: null,
 		state: APP_STATE.sidebar.state,
 		conversation: {
 			appId: "",
@@ -8145,6 +8177,12 @@
         padding-right: 372px !important;
         box-sizing: border-box;
         transition: padding-right 0.3s var(--af-ease, ease);
+    }
+    body.aifengyue-sidebar-inline-mode .aifengyue-inline-main-root {
+        width: calc(100vw - 372px) !important;
+        max-width: calc(100vw - 372px) !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
     }
 
     /* --- Toggle 按钮 --- */

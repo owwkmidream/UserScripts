@@ -19,6 +19,7 @@ export const Sidebar = {
     theme: 'light',
     accountPointPollApplyTimer: null,
     tokenPoolCheckApplyTimer: null,
+    inlineMainRootEl: null,
     state: APP_STATE.sidebar.state,
     conversation: {
         appId: '',
