@@ -23,7 +23,6 @@ import {
     X_LANGUAGE,
     SITE_ENDPOINTS,
     DEFAULT_OBJECTIVE_RETRY_ATTEMPTS,
-    DEFAULT_SWITCH_WORLD_BOOK_TRIGGER,
     readErrorMessage,
     normalizeTimestamp,
     decodeEscapedText,
@@ -117,6 +116,232 @@ export const RuntimeMethods = {
         this.accountPointIndicatorEl = null;
     },
 
+    removeAccountPointLowBanner() {
+        const existing = document.getElementById('aifengyue-account-point-low-banner');
+        if (existing) {
+            existing.remove();
+        }
+        this.accountPointLowBannerEl = null;
+    },
+
+    ensureAccountPointLowBanner() {
+        if (!this.isPointPollingPage()) {
+            this.removeAccountPointLowBanner();
+            return null;
+        }
+
+        const anchor = document.getElementById('ai-mod-button2');
+        const parent = anchor?.parentElement;
+        if (!anchor || !parent) {
+            this.accountPointLowBannerEl = null;
+            return null;
+        }
+
+        let banner = document.getElementById('aifengyue-account-point-low-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'aifengyue-account-point-low-banner';
+            banner.style.cssText = [
+                'display:flex',
+                'align-items:center',
+                'justify-content:center',
+                'padding:8px 12px',
+                'margin:6px 4px 8px',
+                'border:1px solid #ef4444',
+                'border-radius:8px',
+                'background:#fef2f2',
+                'color:#991b1b',
+                'font-size:12px',
+                'font-weight:700',
+                'line-height:1.4',
+                'text-align:center',
+                'box-shadow:0 1px 0 rgba(239,68,68,0.12)',
+            ].join(';');
+        }
+
+        if (banner.parentElement !== parent || banner.previousElementSibling !== anchor) {
+            parent.insertBefore(banner, anchor.nextSibling);
+        }
+        this.accountPointLowBannerEl = banner;
+        return banner;
+    },
+
+    isAccountPointSubmitBlocked() {
+        if (!this.isPointPollingPage()) return false;
+        if (this.accountPointSubmitSwitchInFlight || this.switchingAccount) return true;
+        const points = Number(this.accountPointLatestPoints);
+        return Number.isFinite(points) && points <= 0;
+    },
+
+    refreshAccountPointLowBanner() {
+        if (!this.isAccountPointSubmitBlocked()) {
+            this.removeAccountPointLowBanner();
+            return;
+        }
+        const banner = this.ensureAccountPointLowBanner();
+        if (!banner) return;
+
+        const points = Number(this.accountPointLatestPoints);
+        const pointsText = Number.isFinite(points) ? `${points}` : '--';
+        if (this.accountPointSubmitSwitchInFlight || this.switchingAccount) {
+            banner.textContent = '积分不足：已拦截本次发送，正在执行完整换号流程，请稍候...';
+            return;
+        }
+        banner.textContent = `积分不足（${pointsText}）：发送已被接管，按 Enter / 发送键将执行完整换号流程`;
+    },
+
+    ensureAccountPointSubmitInterceptors() {
+        if (this.accountPointSubmitInterceptorsBound) {
+            return;
+        }
+
+        this.accountPointSubmitKeydownHandler = (event) => {
+            if (!event || event.defaultPrevented) return;
+            if (event.key !== 'Enter') return;
+            if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const inputEl = document.getElementById('ai-chat-input');
+            if (!inputEl || target !== inputEl) return;
+            this.tryInterceptAccountPointSubmit(event, 'enter');
+        };
+
+        this.accountPointSubmitClickHandler = (event) => {
+            if (!event || event.defaultPrevented) return;
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const sendBtn = target.closest('#ai-send-button');
+            if (!sendBtn) return;
+            this.tryInterceptAccountPointSubmit(event, 'send-button');
+        };
+
+        document.addEventListener('keydown', this.accountPointSubmitKeydownHandler, true);
+        document.addEventListener('click', this.accountPointSubmitClickHandler, true);
+        this.accountPointSubmitInterceptorsBound = true;
+    },
+
+    removeAccountPointSubmitInterceptors() {
+        if (!this.accountPointSubmitInterceptorsBound) return;
+        if (this.accountPointSubmitKeydownHandler) {
+            document.removeEventListener('keydown', this.accountPointSubmitKeydownHandler, true);
+        }
+        if (this.accountPointSubmitClickHandler) {
+            document.removeEventListener('click', this.accountPointSubmitClickHandler, true);
+        }
+        this.accountPointSubmitKeydownHandler = null;
+        this.accountPointSubmitClickHandler = null;
+        this.accountPointSubmitInterceptorsBound = false;
+    },
+
+    stopEventForSubmitGuard(event) {
+        if (!event) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    },
+
+    tryInterceptAccountPointSubmit(event, source = 'unknown') {
+        if (!this.isAccountPointSubmitBlocked()) return false;
+        this.stopEventForSubmitGuard(event);
+        this.triggerSwitchAccountFromSubmit(source).catch((error) => {
+            const runCtx = createRunContext('POINT_SUBMIT');
+            logError(runCtx, 'POINT_SUBMIT', '发送拦截触发换号失败', {
+                source,
+                message: error?.message || String(error),
+            });
+            Toast.error(`拦截发送后换号失败: ${error?.message || String(error)}`, 5000);
+        });
+        return true;
+    },
+
+    async triggerSwitchAccountFromSubmit(source = 'unknown') {
+        if (this.accountPointSubmitSwitchInFlight || this.switchingAccount) {
+            Toast.info('更换账号流程执行中，请稍候');
+            return false;
+        }
+
+        const inputEl = document.getElementById('ai-chat-input');
+        const extraText = typeof inputEl?.value === 'string' ? inputEl.value.trim() : '';
+        if (!extraText) {
+            Toast.warning('输入框为空，请先输入内容再发送');
+            return false;
+        }
+
+        this.accountPointSubmitSwitchInFlight = true;
+        this.refreshAccountPointLowBanner();
+        const runCtx = createRunContext('POINT_SUBMIT');
+        logInfo(runCtx, 'POINT_SUBMIT', '积分不足，发送已拦截并改走完整换号流程', {
+            source,
+            points: Number.isFinite(Number(this.accountPointLatestPoints))
+                ? Number(this.accountPointLatestPoints)
+                : null,
+            extraTextLength: extraText.length,
+        });
+        Sidebar.updateState({
+            status: 'fetching',
+            statusMessage: '积分不足：已拦截发送，正在执行完整换号流程...',
+        });
+        Toast.warning('积分不足，已拦截发送并执行完整换号流程', 3200);
+
+        try {
+            await this.switchAccount(extraText);
+            return true;
+        } finally {
+            this.accountPointSubmitSwitchInFlight = false;
+            this.refreshAccountPointLowBanner();
+        }
+    },
+
+    setAccountPointIndicatorInteractionState(indicator, {
+        enabled = false,
+        title = '',
+    } = {}) {
+        if (!indicator) return;
+        indicator.dataset.switchEnabled = enabled ? '1' : '0';
+        indicator.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+        indicator.style.cursor = enabled ? 'pointer' : 'default';
+        indicator.style.borderColor = enabled ? '#fecaca' : '#dbe5f2';
+        indicator.style.background = enabled ? '#fff1f2' : '#f8fbff';
+        indicator.title = title;
+    },
+
+    async handleAccountPointIndicatorClick() {
+        const indicator = this.ensureAccountPointIndicator();
+        if (!indicator) return;
+
+        const switchEnabled = indicator.dataset.switchEnabled === '1';
+        const points = Number(indicator.dataset.points);
+        if (!switchEnabled) {
+            if (Number.isFinite(points) && points > 0) {
+                Toast.info(`当前积分 ${points}，仅在积分 <= 0 时可主动换号`, 2600);
+            } else {
+                Toast.info('请等待积分读取完成后再尝试主动换号', 2600);
+            }
+            return;
+        }
+
+        if (this.switchingAccount) {
+            Toast.warning('更换账号正在执行，请稍候');
+            return;
+        }
+
+        const inputEl = document.getElementById('ai-chat-input');
+        const extraText = typeof inputEl?.value === 'string' ? inputEl.value.trim() : '';
+        if (!extraText) {
+            Toast.warning('输入框为空，请先输入附加文本后再点击积分');
+            return;
+        }
+
+        const runCtx = createRunContext('POINT_CLICK');
+        logInfo(runCtx, 'POINT_CLICK', '积分按钮触发主动换号', {
+            points: Number.isFinite(points) ? points : null,
+            extraTextLength: extraText.length,
+        });
+        await this.triggerSwitchAccountFromSubmit('point-indicator');
+    },
+
 
     ensureAccountPointIndicator() {
         if (!this.isPointPollingPage()) {
@@ -151,6 +376,22 @@ export const RuntimeMethods = {
                 'color:#334155',
             ].join(';');
             indicator.innerHTML = '<span data-role="label" style="font-weight:600;color:#475569;">积分</span><span data-role="value" style="font-weight:700;color:#0f766e;">--</span>';
+            indicator.setAttribute('role', 'button');
+            indicator.tabIndex = 0;
+            const triggerManualSwitch = () => {
+                this.handleAccountPointIndicatorClick().catch((error) => {
+                    const runCtx = createRunContext('POINT_CLICK');
+                    logError(runCtx, 'POINT_CLICK', '积分按钮主动换号失败', {
+                        message: error?.message || String(error),
+                    });
+                });
+            };
+            indicator.addEventListener('click', triggerManualSwitch);
+            indicator.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                triggerManualSwitch();
+            });
         }
 
         const firstChild = anchor.firstElementChild;
@@ -179,33 +420,60 @@ export const RuntimeMethods = {
         if (loading) {
             valueEl.textContent = '读取中...';
             valueEl.style.color = '#64748b';
-            indicator.title = '正在轮询积分';
+            this.accountPointLatestPoints = null;
+            indicator.dataset.points = '';
+            this.setAccountPointIndicatorInteractionState(indicator, {
+                enabled: false,
+                title: '正在轮询积分',
+            });
+            this.refreshAccountPointLowBanner();
             return;
         }
 
         if (failed) {
             valueEl.textContent = '--';
             valueEl.style.color = '#f59e0b';
-            indicator.title = '积分读取失败，等待下次轮询';
+            this.accountPointLatestPoints = null;
+            indicator.dataset.points = '';
+            this.setAccountPointIndicatorInteractionState(indicator, {
+                enabled: false,
+                title: '积分读取失败，等待下次轮询',
+            });
+            this.refreshAccountPointLowBanner();
             return;
         }
 
         if (Number.isFinite(Number(points))) {
             const normalized = Number(points);
             valueEl.textContent = `${normalized}`;
+            this.accountPointLatestPoints = normalized;
+            indicator.dataset.points = `${normalized}`;
             if (exhausted) {
                 valueEl.style.color = '#dc2626';
-                indicator.title = '积分已耗尽，已触发自动更换账号';
+                this.setAccountPointIndicatorInteractionState(indicator, {
+                    enabled: true,
+                    title: '积分 <= 0，发送将触发完整换号流程（也可点击积分手动触发）',
+                });
             } else {
                 valueEl.style.color = '#0f766e';
-                indicator.title = '当前积分';
+                this.setAccountPointIndicatorInteractionState(indicator, {
+                    enabled: false,
+                    title: '当前积分',
+                });
             }
+            this.refreshAccountPointLowBanner();
             return;
         }
 
         valueEl.textContent = '--';
         valueEl.style.color = '#64748b';
-        indicator.title = '积分暂不可用';
+        this.accountPointLatestPoints = null;
+        indicator.dataset.points = '';
+        this.setAccountPointIndicatorInteractionState(indicator, {
+            enabled: false,
+            title: '积分暂不可用',
+        });
+        this.refreshAccountPointLowBanner();
     },
 
 
@@ -217,9 +485,12 @@ export const RuntimeMethods = {
         }
         this.accountPointPollAppId = '';
         this.accountPointPollInFlight = false;
-        this.accountPointExhaustedTriggered = false;
+        this.accountPointLatestPoints = null;
         this.accountPointPollIntervalMs = 0;
+        this.accountPointSubmitSwitchInFlight = false;
         this.removeAccountPointIndicator();
+        this.removeAccountPointLowBanner();
+        this.removeAccountPointSubmitInterceptors();
 
         if (hadTimer) {
             logInfo(runCtx, step, '积分轮询已停止', {
@@ -304,39 +575,7 @@ export const RuntimeMethods = {
             });
 
             if (exhausted) {
-                if (this.accountPointExhaustedTriggered) {
-                    return {
-                        appId: resolvedAppId,
-                        points,
-                        exhausted: true,
-                        skipped: true,
-                        reason: 'already-triggered',
-                    };
-                }
-
-                this.accountPointExhaustedTriggered = true;
-                Sidebar.updateState({
-                    status: 'fetching',
-                    statusMessage: '检测到积分不足，正在启动更换账号流程...',
-                });
-                Toast.warning('积分 <= 0，正在自动启动更换账号流程', 3200);
-                logWarn(ctx, step, '积分耗尽，触发自动更换账号', {
-                    appId: resolvedAppId,
-                    points,
-                });
-                await this.switchAccount(DEFAULT_SWITCH_WORLD_BOOK_TRIGGER);
-                return {
-                    appId: resolvedAppId,
-                    points,
-                    exhausted: true,
-                    skipped: false,
-                    reason: 'triggered-switch',
-                };
-            }
-
-            if (this.accountPointExhaustedTriggered) {
-                this.accountPointExhaustedTriggered = false;
-                logInfo(ctx, step, '积分已恢复为正数，重置耗尽触发标记', {
+                logWarn(ctx, step, '积分耗尽，等待发送触发完整换号流程（也可点击积分）', {
                     appId: resolvedAppId,
                     points,
                 });
@@ -345,8 +584,9 @@ export const RuntimeMethods = {
             return {
                 appId: resolvedAppId,
                 points,
-                exhausted: false,
+                exhausted,
                 skipped: false,
+                reason: exhausted ? 'manual-switch-required' : 'ok',
             };
         } catch (error) {
             logWarn(ctx, step, '积分检查失败，本轮跳过', {
@@ -406,7 +646,7 @@ export const RuntimeMethods = {
 
         this.accountPointPollAppId = appId;
         this.accountPointPollIntervalMs = pollMs;
-        this.accountPointExhaustedTriggered = false;
+        this.ensureAccountPointSubmitInterceptors();
         this.ensureAccountPointIndicator();
         this.updateAccountPointIndicator({
             points: null,

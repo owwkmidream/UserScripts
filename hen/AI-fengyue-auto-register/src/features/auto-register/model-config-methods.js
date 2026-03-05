@@ -84,21 +84,23 @@ export const ModelConfigMethods = {
             ? [...clonedConfig.world_book]
             : [];
         const triggerWord = normalizeSwitchTriggerWord(explicitTriggerWord)
-            || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER
-            || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook);
+            || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook)
+            || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
+        const scriptEntryKey = `_or_${triggerWord}`;
 
-        const matchedIndex = existingWorldBook.findIndex((entry) => {
-            if (!entry || typeof entry !== 'object') return false;
-            const key = typeof entry?.key === 'string' ? entry.key : '';
-            return normalizeSwitchTriggerWord(key) === triggerWord;
+        const matchedIndexes = [];
+        existingWorldBook.forEach((entry, index) => {
+            const key = typeof entry?.key === 'string' ? entry.key.trim() : '';
+            if (key === scriptEntryKey) {
+                matchedIndexes.push(index);
+            }
         });
+        const matchedIndex = matchedIndexes.length ? matchedIndexes[0] : -1;
 
         const entryBase = matchedIndex >= 0 && existingWorldBook[matchedIndex] && typeof existingWorldBook[matchedIndex] === 'object'
             ? { ...existingWorldBook[matchedIndex] }
             : {};
-        const entryKey = normalizeSwitchTriggerWord(entryBase.key)
-            ? String(entryBase.key).trim()
-            : `_or_${triggerWord}`;
+        const entryKey = scriptEntryKey;
         const worldBookEntry = {
             ...entryBase,
             key: entryKey,
@@ -112,24 +114,29 @@ export const ModelConfigMethods = {
                 : 1,
         };
 
-        const nextWorldBook = [...existingWorldBook];
+        const nextWorldBook = existingWorldBook.filter((_, index) => !matchedIndexes.includes(index));
         if (matchedIndex >= 0) {
-            nextWorldBook[matchedIndex] = worldBookEntry;
+            const insertIndex = Math.min(matchedIndex, nextWorldBook.length);
+            nextWorldBook.splice(insertIndex, 0, worldBookEntry);
         } else {
             nextWorldBook.unshift(worldBookEntry);
         }
         clonedConfig.world_book = nextWorldBook;
+        const removedDuplicateCount = Math.max(0, matchedIndexes.length - 1);
 
         logInfo(
             runCtx,
             'SWITCH_WORLD_BOOK',
-            matchedIndex >= 0 ? '已替换 world_book 触发词条目' : '已新增 world_book 触发词条目',
+            matchedIndex >= 0
+                ? '已归并并替换脚本 world_book 触发词条目'
+                : '已新增脚本 world_book 触发词条目',
             {
                 triggerWord,
                 worldBookCount: nextWorldBook.length,
                 entryKey: worldBookEntry.key,
                 answerLength: normalizedAnswer.length,
                 valueLength: worldBookValue.length,
+                removedDuplicateCount,
             }
         );
         logDebug(runCtx, 'SWITCH_WORLD_BOOK', 'world_book 写入后的配置', {
