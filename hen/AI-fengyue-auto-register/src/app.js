@@ -17,6 +17,7 @@ function init() {
 
     Sidebar.init();
     ChatMessagesMonitor.start();
+    AutoRegister.startTokenPoolScheduler();
 
     SPAWatcher.startObserver();
     registerMenuCommands();

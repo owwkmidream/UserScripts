@@ -37,8 +37,13 @@ export const sidebarStateMethods = {
         if (accountPointPollInput) {
             accountPointPollInput.value = String(this.getAccountPointPollSeconds());
         }
+        const tokenPoolCheckInput = this.element.querySelector('#aifengyue-token-pool-check-seconds');
+        if (tokenPoolCheckInput) {
+            tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
+        }
 
         this.updateUsageDisplay();
+        this.refreshTokenPoolSummary();
         this.render();
     },
 
@@ -86,6 +91,7 @@ export const sidebarStateMethods = {
         const autoReloadToggle = this.element.querySelector('#aifengyue-auto-reload-toggle');
         const chatTimeoutInput = this.element.querySelector('#aifengyue-chat-timeout-seconds');
         const accountPointPollInput = this.element.querySelector('#aifengyue-account-point-poll-seconds');
+        const tokenPoolCheckInput = this.element.querySelector('#aifengyue-token-pool-check-seconds');
 
         if (email) email.textContent = this.state.email || '未生成';
         if (username) username.textContent = this.state.username || '未生成';
@@ -95,6 +101,8 @@ export const sidebarStateMethods = {
         if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
         if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
         if (accountPointPollInput) accountPointPollInput.value = String(this.getAccountPointPollSeconds());
+        if (tokenPoolCheckInput) tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
+        this.refreshTokenPoolSummary();
 
         this.updateToolPanel();
     },

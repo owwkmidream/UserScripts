@@ -53,13 +53,14 @@
 | `scripts/open-userscript.mjs` | postbuild 启动浏览器 bridge | 依赖 Node `http/fs/child_process` |
 | `src/meta.user.js` | userscript 元数据头部 | 被 `rolldown.config.mjs` 注入 banner |
 | `src/index.js` | 入口：注入 sidebar 样式并启动 app | 依赖 `src/app.js`、`src/ui/sidebar.css.js` |
-| `src/app.js` | 统一初始化：绑定 refs、启动监听与菜单 | 依赖 `features`、`runtime`、`ui`、`menu` |
+| `src/app.js` | 统一初始化：绑定 refs、启动监听、号池维护与菜单 | 依赖 `features`、`runtime`、`ui`、`menu` |
 | `src/constants.js` | 全局配置常量与存储键 | 被全项目多数模块依赖 |
 | `src/state.js` | 全局运行时状态容器 `APP_STATE` | 被 `app`、`ui`、`runtime`、`services` 读写 |
 | `src/gm.js` | GM API 封装与 GM 请求 Promise 化 | 被 `services`、`menu`、`ui`、`features` 依赖 |
 | `src/features/auto-register.js` | 自动注册兼容门面（聚合子模块并导出 `AutoRegister`） | 被 `app`、`menu`、`runtime`、`ui` 依赖 |
 | `src/features/auto-register/shared.js` | 自动注册共享常量与纯工具函数 | 被 `auto-register/*-methods.js` 复用 |
 | `src/features/auto-register/runtime-methods.js` | 自动注册通用运行时能力（重试、自动刷新） | 聚合进 `src/features/auto-register.js` |
+| `src/features/auto-register/token-pool-methods.js` | 号池维护能力（本地 token 池、定时补池、退避、消费策略） | 聚合进 `src/features/auto-register.js`，被 `flow-methods` 调用 |
 | `src/features/auto-register/form-methods.js` | 注册页表单能力（页面识别、输入、按钮触发） | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/site-api-methods.js` | 站点接口调用与首次引导处理 | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/conversation-methods.js` | 会话链路读取/同步/预览入口封装 | 依赖 `chat-history-service`，聚合进 `auto-register` |
@@ -86,7 +87,7 @@
 | `src/ui/sidebar/sidebar-view.js` | 侧边栏视图创建与开关、Tab 切换 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-events.js` | 侧边栏事件绑定与剪贴板交互 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-conversation.js` | 会话面板交互、预览、导入导出 | 聚合进 `sidebar` |
-| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额显示 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额/号池摘要显示 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-state.js` | 侧边栏状态加载与渲染 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-tools.js` | 侧边栏工具面板可用性刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar.css.js` | 侧边栏样式注入 | 由 `src/index.js` 调用 |
@@ -102,7 +103,7 @@
 
 1. `src/index.js` 执行：`injectSidebarStyles()` 注入样式后调用 `startApp()`。
 2. `src/app.js` 初始化：将 `Toast`、`Sidebar`、`AutoRegister`、`IframeExtractor`、`ModelPopupSorter` 绑定到 `APP_STATE.refs`。
-3. 启动运行时与菜单：`Sidebar.init()`、`ChatMessagesMonitor.start()`、`SPAWatcher.startObserver()`、`registerMenuCommands()`。
+3. 启动运行时与菜单：`Sidebar.init()`、`ChatMessagesMonitor.start()`、`AutoRegister.startTokenPoolScheduler()`、`SPAWatcher.startObserver()`、`registerMenuCommands()`。
 4. 首次延时检查（约 800ms）：
 - 若在注册页，`SPAWatcher.ensureDOM()` 保证 UI 仍存在。
 - `IframeExtractor.checkAndUpdate()` 检查详情页工具按钮状态。
@@ -141,3 +142,4 @@
 - `2026-03-04`：创建初版 `INDEX.md`，建立目录与关键文件索引，并补充维护规则。
 - `2026-03-04`：`auto-register.js` 拆分为 `src/features/auto-register/` 子模块，入口改为兼容聚合门面。
 - `2026-03-05`：`sidebar`、`chat-history-service`、`chat-messages-monitor` 进一步拆分为子模块，`ApiService` 与 UI 解耦，`SPAWatcher` 历史 hook 支持可逆卸载。
+- `2026-03-05`：新增 `token-pool-methods` 号池模块，更换账号流程改为“优先号池 token，池空回退注册”，并加入全站定时补池与设置摘要。

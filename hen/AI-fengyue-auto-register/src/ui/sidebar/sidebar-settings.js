@@ -1,7 +1,7 @@
 import { CONFIG } from '../../constants.js';
 import { gmGetValue, gmSetValue } from '../../gm.js';
 import { ApiService } from '../../services/api-service.js';
-import { VALID_TABS } from './sidebar-context.js';
+import { getAutoRegister, VALID_TABS } from './sidebar-context.js';
 
 export const sidebarSettingsMethods = {
     getLayoutMode() {
@@ -96,6 +96,76 @@ export const sidebarSettingsMethods = {
             input.value = String(normalized);
         }
         return normalized;
+    },
+
+    normalizeTokenPoolCheckSeconds(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return 300;
+        const normalized = Math.floor(parsed);
+        if (normalized <= 0) return 0;
+        return Math.min(normalized, 3600);
+    },
+
+    getTokenPoolCheckSeconds() {
+        const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS);
+        const fallback = 300;
+        return this.normalizeTokenPoolCheckSeconds(raw === null ? fallback : raw);
+    },
+
+    setTokenPoolCheckSeconds(value) {
+        const normalized = this.normalizeTokenPoolCheckSeconds(value);
+        localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS, String(normalized));
+        const input = this.element?.querySelector?.('#aifengyue-token-pool-check-seconds');
+        if (input) {
+            input.value = String(normalized);
+        }
+        return normalized;
+    },
+
+    formatTokenPoolTime(value) {
+        const timestamp = Number(value);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return '-';
+        try {
+            return new Date(timestamp).toLocaleString();
+        } catch {
+            return '-';
+        }
+    },
+
+    refreshTokenPoolSummary(summary = null) {
+        if (!this.element) return;
+        const autoRegister = getAutoRegister();
+        const resolvedSummary = (summary && typeof summary === 'object')
+            ? summary
+            : (autoRegister?.getTokenPoolSummary?.() || null);
+        if (!resolvedSummary || typeof resolvedSummary !== 'object') return;
+
+        const fullCount = Number(resolvedSummary.fullCount || 0);
+        const totalCount = Number(resolvedSummary.totalCount || 0);
+        const targetFullCount = Number(resolvedSummary.targetFullCount || 2);
+        const maxCount = Number(resolvedSummary.maxCount || 5);
+        const lastCheckAtText = this.formatTokenPoolTime(resolvedSummary.lastCheckAt);
+        const nextAllowedAtText = this.formatTokenPoolTime(resolvedSummary.nextAllowedAt);
+        const errorText = typeof resolvedSummary.lastError === 'string' && resolvedSummary.lastError.trim()
+            ? resolvedSummary.lastError.trim()
+            : '-';
+        const statusText = resolvedSummary.schedulerEnabled
+            ? (resolvedSummary.schedulerRunning ? '运行中' : '待启动')
+            : '已关闭';
+
+        const fullEl = this.element.querySelector('#aifengyue-token-pool-full');
+        const totalEl = this.element.querySelector('#aifengyue-token-pool-total');
+        const statusEl = this.element.querySelector('#aifengyue-token-pool-status');
+        const lastCheckEl = this.element.querySelector('#aifengyue-token-pool-last-check');
+        const nextAllowedEl = this.element.querySelector('#aifengyue-token-pool-next-allowed');
+        const errorEl = this.element.querySelector('#aifengyue-token-pool-last-error');
+
+        if (fullEl) fullEl.textContent = `${fullCount} / ${targetFullCount}`;
+        if (totalEl) totalEl.textContent = `${totalCount} / ${maxCount}`;
+        if (statusEl) statusEl.textContent = statusText;
+        if (lastCheckEl) lastCheckEl.textContent = lastCheckAtText;
+        if (nextAllowedEl) nextAllowedEl.textContent = nextAllowedAtText;
+        if (errorEl) errorEl.textContent = errorText;
     },
 
     setAutoReloadEnabled(enabled) {

@@ -18,6 +18,7 @@ export const Sidebar = {
     activeTab: 'register',
     theme: 'light',
     accountPointPollApplyTimer: null,
+    tokenPoolCheckApplyTimer: null,
     state: APP_STATE.sidebar.state,
     conversation: {
         appId: '',

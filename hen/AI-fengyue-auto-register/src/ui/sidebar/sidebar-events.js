@@ -95,6 +95,41 @@ export const sidebarEventsMethods = {
             applyPointPollingSeconds(e?.target?.value, { showToast: true });
         });
 
+        const tokenPoolCheckInput = this.element.querySelector('#aifengyue-token-pool-check-seconds');
+        const applyTokenPoolCheckSeconds = (value, { showToast = false } = {}) => {
+            const seconds = this.setTokenPoolCheckSeconds(value);
+            const autoRegister = getAutoRegister();
+            autoRegister?.refreshTokenPoolScheduler?.({
+                intervalSeconds: seconds,
+                reason: 'settings-change',
+            });
+            this.refreshTokenPoolSummary(autoRegister?.getTokenPoolSummary?.() || null);
+            if (showToast) {
+                if (seconds > 0) {
+                    getToast()?.info(`号池定时检测已设置为 ${seconds} 秒`);
+                } else {
+                    getToast()?.info('号池定时检测已关闭');
+                }
+            }
+            return seconds;
+        };
+        tokenPoolCheckInput.addEventListener('input', (e) => {
+            if (this.tokenPoolCheckApplyTimer) {
+                clearTimeout(this.tokenPoolCheckApplyTimer);
+            }
+            this.tokenPoolCheckApplyTimer = setTimeout(() => {
+                applyTokenPoolCheckSeconds(e?.target?.value, { showToast: false });
+                this.tokenPoolCheckApplyTimer = null;
+            }, 420);
+        });
+        tokenPoolCheckInput.addEventListener('change', (e) => {
+            if (this.tokenPoolCheckApplyTimer) {
+                clearTimeout(this.tokenPoolCheckApplyTimer);
+                this.tokenPoolCheckApplyTimer = null;
+            }
+            applyTokenPoolCheckSeconds(e?.target?.value, { showToast: true });
+        });
+
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
             getAutoRegister()?.start();
         });

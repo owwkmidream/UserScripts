@@ -296,6 +296,46 @@ export const sidebarViewMethods = {
                                 仅在应用详情页生效；到达间隔后会请求 account/point 并更新页面积分徽章。
                             </div>
                         </div>
+                        <div class="aifengyue-input-group">
+                            <label>号池定时检测秒数</label>
+                            <input
+                                type="number"
+                                id="aifengyue-token-pool-check-seconds"
+                                min="0"
+                                max="3600"
+                                step="1"
+                                placeholder="默认 300 秒（0=关闭）"
+                            >
+                            <div class="aifengyue-hint">
+                                全站后台维护号池，目标保留 2 个满积分备用 token（不含当前账号）。
+                            </div>
+                        </div>
+                        <div class="aifengyue-status-card">
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">备用满积分</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-full">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">池总量</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-total">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">维护状态</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-status">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">最近检测</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-last-check">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">退避到期</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-next-allowed">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">最近错误</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-last-error">-</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

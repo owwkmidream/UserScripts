@@ -33,12 +33,15 @@ import {
 } from './shared.js';
 
 export const FlowMethods = {
-    async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2000, runCtx) {
+    async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2000, runCtx, options = {}) {
+        const silent = options?.silent === true;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            Sidebar.updateState({
-                status: 'fetching',
-                statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`,
-            });
+            if (!silent) {
+                Sidebar.updateState({
+                    status: 'fetching',
+                    statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`,
+                });
+            }
             logInfo(runCtx, 'POLL_CODE', `轮询验证码第 ${attempt}/${maxAttempts} 次`);
 
             const emails = await ApiService.getEmails(email);
@@ -142,15 +145,24 @@ export const FlowMethods = {
         const flowName = options.flowName || '一键注册';
         const showStepToasts = options.showStepToasts !== false;
         const markSuccess = options.markSuccess !== false;
+        const persistConsoleToken = options.persistConsoleToken !== false;
+        const silent = options.silent === true;
+        const requireGuideSkipped = options.requireGuideSkipped !== false;
+        const showToasts = showStepToasts && !silent;
+        const updateSidebarState = (payload) => {
+            if (!silent) {
+                Sidebar.updateState(payload);
+            }
+        };
 
         let currentStep = '初始化';
 
         currentStep = '生成临时邮箱';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'generating',
             statusMessage: `${flowName}：正在生成临时邮箱...`,
         });
-        if (showStepToasts) {
+        if (showToasts) {
             Toast.info(`${flowName}：正在生成临时邮箱`, 2200);
         }
 
@@ -162,7 +174,7 @@ export const FlowMethods = {
         const password = generatePassword();
         logInfo(runCtx, 'GENERATE', `${flowName} 生成注册信息完成`, { email, username, password });
 
-        Sidebar.updateState({ email, username, password, statusMessage: `${flowName}：正在填充表单...` });
+        updateSidebarState({ email, username, password, statusMessage: `${flowName}：正在填充表单...` });
 
         gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
         gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
@@ -171,31 +183,33 @@ export const FlowMethods = {
         this.fillForm(email, username, password);
 
         currentStep = '发送验证码';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'fetching',
             statusMessage: `${flowName}：正在发送验证码...`,
             verificationCode: '',
         });
         await this.sendRegisterEmailCode(email, runCtx);
-        if (showStepToasts) {
+        if (showToasts) {
             Toast.info(`${flowName}：验证码已发送，正在轮询邮箱`, 2200);
         }
 
         currentStep = '轮询邮箱验证码';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'fetching',
             statusMessage: `${flowName}：验证码已发送，正在自动轮询邮箱...`,
         });
 
-        const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2000, runCtx);
+        const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2000, runCtx, {
+            silent,
+        });
         if (!code) {
             throw new Error('未在轮询窗口内获取到验证码');
         }
-        if (showStepToasts) {
+        if (showToasts) {
             Toast.success(`${flowName}：已获取验证码`, 1800);
         }
 
-        Sidebar.updateState({
+        updateSidebarState({
             verificationCode: code,
             statusMessage: `${flowName}：验证码已获取: ${code}`,
         });
@@ -209,14 +223,14 @@ export const FlowMethods = {
         }
 
         currentStep = '获取注册令牌';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'fetching',
             statusMessage: `${flowName}：正在获取注册令牌...`,
         });
         const regToken = await this.getRegToken(runCtx);
 
         currentStep = '提交注册';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'fetching',
             statusMessage: `${flowName}：正在提交注册...`,
         });
@@ -228,26 +242,31 @@ export const FlowMethods = {
             regToken,
         }, runCtx);
 
-        localStorage.setItem('console_token', token);
-        logInfo(runCtx, 'AUTH', `${flowName} 已写入 localStorage.console_token`);
-        logDebug(runCtx, 'AUTH', `${flowName} localStorage 写入 token 完整值`, { token });
-        if (showStepToasts) {
-            Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+        if (persistConsoleToken) {
+            localStorage.setItem('console_token', token);
+            logInfo(runCtx, 'AUTH', `${flowName} 已写入 localStorage.console_token`);
+            logDebug(runCtx, 'AUTH', `${flowName} localStorage 写入 token 完整值`, { token });
+            if (showToasts) {
+                Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+            }
+        } else {
+            logInfo(runCtx, 'AUTH', `${flowName} 已获取 token（补池模式，不写入 console_token）`);
+            logDebug(runCtx, 'AUTH', `${flowName} token 完整值（补池模式）`, { token });
         }
 
         currentStep = '跳过首次引导';
-        Sidebar.updateState({
+        updateSidebarState({
             status: 'fetching',
             statusMessage: `${flowName}：注册成功，正在跳过首次引导...`,
         });
-        if (showStepToasts) {
+        if (showToasts) {
             Toast.info(`${flowName}：正在跳过首次引导（快速模式）`, 2600);
         }
 
         let guideSkipped = true;
         try {
             await this.skipFirstGuide(token, runCtx);
-            if (showStepToasts) {
+            if (showToasts) {
                 Toast.success(`${flowName}：首次引导已跳过`, 1800);
             }
         } catch (guideError) {
@@ -257,10 +276,16 @@ export const FlowMethods = {
                 message: guideError?.message,
                 stack: guideError?.stack,
             });
-            Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6000);
+            if (!silent) {
+                Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6000);
+            }
         }
 
-        if (markSuccess) {
+        if (requireGuideSkipped && !guideSkipped) {
+            throw new Error(`${flowName}终止：首次引导未跳过成功`);
+        }
+
+        if (markSuccess && !silent) {
             Sidebar.updateState({
                 status: 'success',
                 statusMessage: guideSkipped
@@ -270,7 +295,7 @@ export const FlowMethods = {
             Toast.success(guideSkipped
                 ? `${flowName}完成：已自动跳过首次引导并写入登录态`
                 : `${flowName}完成：已写入登录态；首次引导跳过失败`, 5000);
-        } else {
+        } else if (!silent) {
             Sidebar.updateState({
                 status: 'fetching',
                 statusMessage: `${flowName}已完成注册，准备执行后续操作...`,
@@ -331,6 +356,7 @@ export const FlowMethods = {
                 flowName: '一键注册',
                 showStepToasts: true,
                 markSuccess: false,
+                requireGuideSkipped: false,
             });
 
             if (appId && oldUserModelConfig) {
@@ -508,24 +534,58 @@ export const FlowMethods = {
                 Toast.warning('旧会话可能仍有更早消息未拉取，可在“会话”Tab手动同步', 4500);
             }
 
+            let nextToken = '';
+            let tokenSource = 'pool';
             Sidebar.updateState({
                 status: 'fetching',
-                statusMessage: '更换账号：已提取旧回答，正在注册新账号...',
+                statusMessage: '更换账号：已提取旧回答，正在从号池选择账号...',
             });
-            Toast.info('更换账号：开始注册新账号', 2200);
+            Toast.info('更换账号：优先从号池选择新账号', 2200);
+            const poolTokenResult = await this.acquireBestTokenFromPool({
+                runCtx,
+            });
+            nextToken = typeof poolTokenResult?.token === 'string'
+                ? poolTokenResult.token.trim()
+                : '';
 
-            const registerResult = await this.registerByApi(runCtx, {
-                flowName: '更换账号',
-                showStepToasts: true,
-                markSuccess: false,
-            });
-            if (!registerResult.guideSkipped) {
-                throw new Error('更换账号终止：首次引导未跳过成功，不发送 chat-messages');
+            if (nextToken) {
+                tokenSource = poolTokenResult?.source || 'pool';
+                logInfo(runCtx, 'SWITCH_POOL', '已从号池获取可用 token', {
+                    tokenSource,
+                    points: Number(poolTokenResult?.points || 0) || null,
+                });
+                Toast.success('更换账号：已从号池获取账号 token', 1800);
+            } else {
+                tokenSource = poolTokenResult?.source || 'register-fallback';
+                Sidebar.updateState({
+                    status: 'fetching',
+                    statusMessage: '更换账号：号池暂无可用 token，回退注册新账号...',
+                });
+                Toast.warning('号池暂无可用 token，回退注册新账号', 2600);
+                const registerResult = await this.registerByApi(runCtx, {
+                    flowName: '更换账号（回退注册）',
+                    showStepToasts: true,
+                    markSuccess: false,
+                    persistConsoleToken: false,
+                    requireGuideSkipped: true,
+                });
+                nextToken = typeof registerResult?.token === 'string'
+                    ? registerResult.token.trim()
+                    : '';
+                tokenSource = 'register-fallback';
             }
+
+            if (!nextToken) {
+                throw new Error('更换账号终止：未获取到可用新账号 token');
+            }
+            localStorage.setItem('console_token', nextToken);
+            logInfo(runCtx, 'SWITCH_POOL', '更换账号已写入新 console_token', {
+                tokenSource,
+            });
 
             await this.syncAppMetaToLocalHistory({
                 appId,
-                token: registerResult.token,
+                token: nextToken,
                 runCtx,
                 step: 'SWITCH_SYNC_APP_META_NEW',
             });
@@ -544,7 +604,7 @@ export const FlowMethods = {
             });
             await this.saveUserAppModelConfig({
                 appId,
-                token: registerResult.token,
+                token: nextToken,
                 config: switchConfig.config,
                 runCtx,
                 ensureWorldBookNotEmpty: true,
@@ -570,12 +630,12 @@ export const FlowMethods = {
 
             const chatResult = await this.sendChatMessagesAndReload({
                 appId,
-                token: registerResult.token,
+                token: nextToken,
                 query,
                 conversationName,
                 runCtx,
             });
-            const newTokenSignature = buildTokenSignature(registerResult.token);
+            const newTokenSignature = buildTokenSignature(nextToken);
 
             const newConversationId = typeof chatResult?.conversationId === 'string'
                 ? chatResult.conversationId.trim()
@@ -623,6 +683,14 @@ export const FlowMethods = {
                     3600
                 );
             }
+            this.maintainTokenPool({
+                reason: 'post-switch',
+                force: false,
+            }).catch((poolError) => {
+                logWarn(runCtx, 'SWITCH_POOL', '切号后号池补充失败（不影响主流程）', {
+                    message: poolError?.message || String(poolError),
+                });
+            });
 
             this.reloadPageIfEnabled({
                 delayMs: 120,

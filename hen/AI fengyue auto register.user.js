@@ -36,6 +36,12 @@
 			AUTO_RELOAD_ENABLED: "aifengyue_auto_reload_enabled",
 			CHAT_MESSAGES_TIMEOUT_SECONDS: "aifengyue_chat_messages_timeout_seconds",
 			ACCOUNT_POINT_POLL_SECONDS: "aifengyue_account_point_poll_seconds",
+			TOKEN_POOL_ENTRIES: "aifengyue_token_pool_entries",
+			TOKEN_POOL_CHECK_SECONDS: "aifengyue_token_pool_check_seconds",
+			TOKEN_POOL_LAST_CHECK_AT: "aifengyue_token_pool_last_check_at",
+			TOKEN_POOL_NEXT_ALLOWED_AT: "aifengyue_token_pool_next_allowed_at",
+			TOKEN_POOL_BACKOFF_LEVEL: "aifengyue_token_pool_backoff_level",
+			TOKEN_POOL_LAST_ERROR: "aifengyue_token_pool_last_error",
 			MODEL_SORT_ENABLED: "aifengyue_model_sort_enabled",
 			SIDEBAR_LAYOUT_MODE: "aifengyue_sidebar_layout_mode",
 			SIDEBAR_THEME: "aifengyue_sidebar_theme",
@@ -1843,6 +1849,46 @@
                                 仅在应用详情页生效；到达间隔后会请求 account/point 并更新页面积分徽章。
                             </div>
                         </div>
+                        <div class="aifengyue-input-group">
+                            <label>号池定时检测秒数</label>
+                            <input
+                                type="number"
+                                id="aifengyue-token-pool-check-seconds"
+                                min="0"
+                                max="3600"
+                                step="1"
+                                placeholder="默认 300 秒（0=关闭）"
+                            >
+                            <div class="aifengyue-hint">
+                                全站后台维护号池，目标保留 2 个满积分备用 token（不含当前账号）。
+                            </div>
+                        </div>
+                        <div class="aifengyue-status-card">
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">备用满积分</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-full">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">池总量</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-total">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">维护状态</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-status">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">最近检测</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-last-check">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">退避到期</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-next-allowed">-</span>
+                            </div>
+                            <div class="aifengyue-info-row">
+                                <span class="aifengyue-info-label">最近错误</span>
+                                <span class="aifengyue-info-value" id="aifengyue-token-pool-last-error">-</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2113,6 +2159,40 @@
 					this.accountPointPollApplyTimer = null;
 				}
 				applyPointPollingSeconds(e?.target?.value, { showToast: true });
+			});
+			const tokenPoolCheckInput = this.element.querySelector("#aifengyue-token-pool-check-seconds");
+			const applyTokenPoolCheckSeconds = (value, { showToast = false } = {}) => {
+				const seconds = this.setTokenPoolCheckSeconds(value);
+				const autoRegister = getAutoRegister();
+				autoRegister?.refreshTokenPoolScheduler?.({
+					intervalSeconds: seconds,
+					reason: "settings-change"
+				});
+				this.refreshTokenPoolSummary(autoRegister?.getTokenPoolSummary?.() || null);
+				if (showToast) {
+					if (seconds > 0) {
+						getToast()?.info(`号池定时检测已设置为 ${seconds} 秒`);
+					} else {
+						getToast()?.info("号池定时检测已关闭");
+					}
+				}
+				return seconds;
+			};
+			tokenPoolCheckInput.addEventListener("input", (e) => {
+				if (this.tokenPoolCheckApplyTimer) {
+					clearTimeout(this.tokenPoolCheckApplyTimer);
+				}
+				this.tokenPoolCheckApplyTimer = setTimeout(() => {
+					applyTokenPoolCheckSeconds(e?.target?.value, { showToast: false });
+					this.tokenPoolCheckApplyTimer = null;
+				}, 420);
+			});
+			tokenPoolCheckInput.addEventListener("change", (e) => {
+				if (this.tokenPoolCheckApplyTimer) {
+					clearTimeout(this.tokenPoolCheckApplyTimer);
+					this.tokenPoolCheckApplyTimer = null;
+				}
+				applyTokenPoolCheckSeconds(e?.target?.value, { showToast: true });
 			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
@@ -2847,6 +2927,62 @@
 			}
 			return normalized;
 		},
+		normalizeTokenPoolCheckSeconds(value) {
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed)) return 300;
+			const normalized = Math.floor(parsed);
+			if (normalized <= 0) return 0;
+			return Math.min(normalized, 3600);
+		},
+		getTokenPoolCheckSeconds() {
+			const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS);
+			const fallback = 300;
+			return this.normalizeTokenPoolCheckSeconds(raw === null ? fallback : raw);
+		},
+		setTokenPoolCheckSeconds(value) {
+			const normalized = this.normalizeTokenPoolCheckSeconds(value);
+			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS, String(normalized));
+			const input = this.element?.querySelector?.("#aifengyue-token-pool-check-seconds");
+			if (input) {
+				input.value = String(normalized);
+			}
+			return normalized;
+		},
+		formatTokenPoolTime(value) {
+			const timestamp = Number(value);
+			if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+			try {
+				return new Date(timestamp).toLocaleString();
+			} catch {
+				return "-";
+			}
+		},
+		refreshTokenPoolSummary(summary = null) {
+			if (!this.element) return;
+			const autoRegister = getAutoRegister();
+			const resolvedSummary = summary && typeof summary === "object" ? summary : autoRegister?.getTokenPoolSummary?.() || null;
+			if (!resolvedSummary || typeof resolvedSummary !== "object") return;
+			const fullCount = Number(resolvedSummary.fullCount || 0);
+			const totalCount = Number(resolvedSummary.totalCount || 0);
+			const targetFullCount = Number(resolvedSummary.targetFullCount || 2);
+			const maxCount = Number(resolvedSummary.maxCount || 5);
+			const lastCheckAtText = this.formatTokenPoolTime(resolvedSummary.lastCheckAt);
+			const nextAllowedAtText = this.formatTokenPoolTime(resolvedSummary.nextAllowedAt);
+			const errorText = typeof resolvedSummary.lastError === "string" && resolvedSummary.lastError.trim() ? resolvedSummary.lastError.trim() : "-";
+			const statusText = resolvedSummary.schedulerEnabled ? resolvedSummary.schedulerRunning ? "运行中" : "待启动" : "已关闭";
+			const fullEl = this.element.querySelector("#aifengyue-token-pool-full");
+			const totalEl = this.element.querySelector("#aifengyue-token-pool-total");
+			const statusEl = this.element.querySelector("#aifengyue-token-pool-status");
+			const lastCheckEl = this.element.querySelector("#aifengyue-token-pool-last-check");
+			const nextAllowedEl = this.element.querySelector("#aifengyue-token-pool-next-allowed");
+			const errorEl = this.element.querySelector("#aifengyue-token-pool-last-error");
+			if (fullEl) fullEl.textContent = `${fullCount} / ${targetFullCount}`;
+			if (totalEl) totalEl.textContent = `${totalCount} / ${maxCount}`;
+			if (statusEl) statusEl.textContent = statusText;
+			if (lastCheckEl) lastCheckEl.textContent = lastCheckAtText;
+			if (nextAllowedEl) nextAllowedEl.textContent = nextAllowedAtText;
+			if (errorEl) errorEl.textContent = errorText;
+		},
 		setAutoReloadEnabled(enabled) {
 			const normalized = !!enabled;
 			gmSetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, normalized);
@@ -2938,7 +3074,12 @@
 			if (accountPointPollInput) {
 				accountPointPollInput.value = String(this.getAccountPointPollSeconds());
 			}
+			const tokenPoolCheckInput = this.element.querySelector("#aifengyue-token-pool-check-seconds");
+			if (tokenPoolCheckInput) {
+				tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
+			}
 			this.updateUsageDisplay();
+			this.refreshTokenPoolSummary();
 			this.render();
 		},
 		resetState() {
@@ -2995,6 +3136,7 @@
 			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
 			const chatTimeoutInput = this.element.querySelector("#aifengyue-chat-timeout-seconds");
 			const accountPointPollInput = this.element.querySelector("#aifengyue-account-point-poll-seconds");
+			const tokenPoolCheckInput = this.element.querySelector("#aifengyue-token-pool-check-seconds");
 			if (email) email.textContent = this.state.email || "未生成";
 			if (username) username.textContent = this.state.username || "未生成";
 			if (password) password.textContent = this.state.password || "未生成";
@@ -3003,6 +3145,8 @@
 			if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
 			if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
 			if (accountPointPollInput) accountPointPollInput.value = String(this.getAccountPointPollSeconds());
+			if (tokenPoolCheckInput) tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
+			this.refreshTokenPoolSummary();
 			this.updateToolPanel();
 		}
 	};
@@ -3071,6 +3215,7 @@
 		activeTab: "register",
 		theme: "light",
 		accountPointPollApplyTimer: null,
+		tokenPoolCheckApplyTimer: null,
 		state: APP_STATE.sidebar.state,
 		conversation: {
 			appId: "",
@@ -4583,6 +4728,15 @@
 //#endregion
 //#region src/features/auto-register/model-config-methods.js
 	const ModelConfigMethods = {
+		buildWorldBookValueWithUserSeparator(answerText) {
+			const baseText = typeof answerText === "string" ? answerText.replace(/\s+$/g, "") : String(answerText ?? "").replace(/\s+$/g, "");
+			const separator = "\n---continue with\nuser:\n";
+			if (!baseText) return separator;
+			if (baseText.endsWith(separator.trimEnd())) {
+				return `${baseText.replace(/\s*$/g, "")}\n`;
+			}
+			return `${baseText}${separator}`;
+		},
 		resolveSwitchTriggerWordFromWorldBook(worldBook) {
 			if (!Array.isArray(worldBook)) return "";
 			for (const entry of worldBook) {
@@ -4599,6 +4753,7 @@
 			if (!normalizedAnswer) {
 				throw new Error("旧会话 answer 为空，无法写入 world_book");
 			}
+			const worldBookValue = this.buildWorldBookValueWithUserSeparator(normalizedAnswer);
 			const clonedConfig = cloneJsonSafe(baseConfig);
 			if (!clonedConfig || typeof clonedConfig !== "object" || Array.isArray(clonedConfig)) {
 				throw new Error("user_app_model_config 结构异常，无法写入 world_book");
@@ -4615,10 +4770,10 @@
 			const worldBookEntry = {
 				...entryBase,
 				key: entryKey,
-				value: normalizedAnswer,
+				value: worldBookValue,
 				group: typeof entryBase.group === "string" ? entryBase.group : "",
 				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 7,
-				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 2
+				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 1
 			};
 			const nextWorldBook = [...existingWorldBook];
 			if (matchedIndex >= 0) {
@@ -4631,7 +4786,8 @@
 				triggerWord,
 				worldBookCount: nextWorldBook.length,
 				entryKey: worldBookEntry.key,
-				answerLength: normalizedAnswer.length
+				answerLength: normalizedAnswer.length,
+				valueLength: worldBookValue.length
 			});
 			logDebug(runCtx, "SWITCH_WORLD_BOOK", "world_book 写入后的配置", { worldBook: nextWorldBook });
 			return {
@@ -5104,14 +5260,483 @@
 	};
 
 //#endregion
+//#region src/features/auto-register/token-pool-methods.js
+	const TOKEN_POOL_TARGET_FULL_COUNT = 2;
+	const TOKEN_POOL_MAX_COUNT = 5;
+	const TOKEN_POOL_FULL_POINTS = 5e3;
+	const TOKEN_POOL_CHECK_DEFAULT_SECONDS = 300;
+	const TOKEN_POOL_CHECK_MAX_SECONDS = 3600;
+	const TOKEN_POOL_BACKOFF_MINUTES = [
+		1,
+		2,
+		5,
+		10,
+		30
+	];
+	function toFiniteNumber(value, fallback = 0) {
+		const numberValue = Number(value);
+		if (!Number.isFinite(numberValue)) return fallback;
+		return numberValue;
+	}
+	function normalizeTimestampMs(value, fallback = 0) {
+		const numberValue = Math.floor(toFiniteNumber(value, fallback));
+		return numberValue > 0 ? numberValue : fallback;
+	}
+	const TokenPoolMethods = {
+		normalizeTokenPoolCheckSeconds(value) {
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed)) return TOKEN_POOL_CHECK_DEFAULT_SECONDS;
+			const normalized = Math.floor(parsed);
+			if (normalized <= 0) return 0;
+			return Math.min(normalized, TOKEN_POOL_CHECK_MAX_SECONDS);
+		},
+		getTokenPoolCheckSeconds() {
+			const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS);
+			const fallback = TOKEN_POOL_CHECK_DEFAULT_SECONDS;
+			return this.normalizeTokenPoolCheckSeconds(raw === null ? fallback : raw);
+		},
+		setTokenPoolCheckSeconds(value) {
+			const normalized = this.normalizeTokenPoolCheckSeconds(value);
+			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS, String(normalized));
+			return normalized;
+		},
+		readTokenPoolBackoffState() {
+			return {
+				lastCheckAt: normalizeTimestampMs(localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_CHECK_AT), 0),
+				nextAllowedAt: normalizeTimestampMs(localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_NEXT_ALLOWED_AT), 0),
+				backoffLevel: Math.max(0, Math.floor(toFiniteNumber(localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_BACKOFF_LEVEL), 0))),
+				lastError: (localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_ERROR) || "").trim()
+			};
+		},
+		writeTokenPoolBackoffState({ lastCheckAt = null, nextAllowedAt = null, backoffLevel = null, lastError = null } = {}) {
+			if (lastCheckAt !== null) {
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_CHECK_AT, String(normalizeTimestampMs(lastCheckAt, 0)));
+			}
+			if (nextAllowedAt !== null) {
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_NEXT_ALLOWED_AT, String(normalizeTimestampMs(nextAllowedAt, 0)));
+			}
+			if (backoffLevel !== null) {
+				const normalized = Math.max(0, Math.floor(toFiniteNumber(backoffLevel, 0)));
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_BACKOFF_LEVEL, String(normalized));
+			}
+			if (lastError !== null) {
+				const text = typeof lastError === "string" ? lastError.trim() : String(lastError ?? "").trim();
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_ERROR, text);
+			}
+		},
+		clearTokenPoolBackoffState() {
+			this.writeTokenPoolBackoffState({
+				nextAllowedAt: 0,
+				backoffLevel: 0,
+				lastError: ""
+			});
+		},
+		applyTokenPoolBackoff(error, runCtx) {
+			const previous = this.readTokenPoolBackoffState();
+			const nextLevel = Math.min(TOKEN_POOL_BACKOFF_MINUTES.length, Math.max(1, previous.backoffLevel + 1));
+			const waitMinutes = TOKEN_POOL_BACKOFF_MINUTES[nextLevel - 1] || TOKEN_POOL_BACKOFF_MINUTES[TOKEN_POOL_BACKOFF_MINUTES.length - 1];
+			const waitMs = waitMinutes * 60 * 1e3;
+			const now = Date.now();
+			const nextAllowedAt = now + waitMs;
+			const errorMessage = error?.message || String(error);
+			this.writeTokenPoolBackoffState({
+				lastCheckAt: now,
+				nextAllowedAt,
+				backoffLevel: nextLevel,
+				lastError: errorMessage
+			});
+			logWarn$1(runCtx, "TOKEN_POOL_BACKOFF", "号池维护失败，进入退避等待", {
+				nextLevel,
+				waitMinutes,
+				nextAllowedAt,
+				errorMessage
+			});
+		},
+		normalizeTokenPoolEntry(entry = {}, fallbackNow = Date.now()) {
+			const token = typeof entry?.token === "string" ? entry.token.trim() : "";
+			if (!token) return null;
+			const points = toFiniteNumber(entry?.points, -1);
+			const isFull = points >= TOKEN_POOL_FULL_POINTS;
+			const createdAt = normalizeTimestampMs(entry?.createdAt, fallbackNow);
+			const lastCheckedAt = normalizeTimestampMs(entry?.lastCheckedAt, createdAt);
+			const lastUsedAt = normalizeTimestampMs(entry?.lastUsedAt, 0);
+			const source = "auto-register";
+			const status = isFull ? "full" : "partial";
+			return {
+				token,
+				points,
+				isFull,
+				createdAt,
+				lastCheckedAt,
+				lastUsedAt,
+				source,
+				status
+			};
+		},
+		normalizeTokenPoolEntries(entries, { excludeCurrentToken = true, onlyFull = true } = {}) {
+			const now = Date.now();
+			const list = Array.isArray(entries) ? entries : [];
+			const currentToken = excludeCurrentToken ? (localStorage.getItem("console_token") || "").trim() : "";
+			const dedupMap = new Map();
+			for (const item of list) {
+				const normalized = this.normalizeTokenPoolEntry(item, now);
+				if (!normalized) continue;
+				if (excludeCurrentToken && currentToken && normalized.token === currentToken) continue;
+				if (onlyFull && !normalized.isFull) continue;
+				const existing = dedupMap.get(normalized.token);
+				if (!existing || normalized.lastCheckedAt > existing.lastCheckedAt) {
+					dedupMap.set(normalized.token, normalized);
+				}
+			}
+			return Array.from(dedupMap.values()).sort((a, b) => b.lastCheckedAt - a.lastCheckedAt || b.createdAt - a.createdAt).slice(0, TOKEN_POOL_MAX_COUNT);
+		},
+		readTokenPool() {
+			const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES);
+			let parsed = [];
+			if (raw) {
+				try {
+					parsed = JSON.parse(raw);
+				} catch {
+					parsed = [];
+				}
+			}
+			const normalized = this.normalizeTokenPoolEntries(parsed, {
+				excludeCurrentToken: true,
+				onlyFull: true
+			});
+			const normalizedRaw = JSON.stringify(normalized);
+			if (raw !== normalizedRaw) {
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES, normalizedRaw);
+			}
+			return normalized;
+		},
+		writeTokenPool(entries = []) {
+			const normalized = this.normalizeTokenPoolEntries(entries, {
+				excludeCurrentToken: true,
+				onlyFull: true
+			});
+			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES, JSON.stringify(normalized));
+			return normalized;
+		},
+		buildTokenPoolSummary({ entries = null, reason = "", status = "idle" } = {}) {
+			const resolvedEntries = Array.isArray(entries) ? entries : this.readTokenPool();
+			const fullCount = resolvedEntries.length;
+			const backoff = this.readTokenPoolBackoffState();
+			const intervalSeconds = this.getTokenPoolCheckSeconds();
+			return {
+				reason: reason || "",
+				status,
+				fullCount,
+				totalCount: resolvedEntries.length,
+				targetFullCount: TOKEN_POOL_TARGET_FULL_COUNT,
+				maxCount: TOKEN_POOL_MAX_COUNT,
+				fullPointThreshold: TOKEN_POOL_FULL_POINTS,
+				intervalSeconds,
+				schedulerEnabled: intervalSeconds > 0,
+				schedulerRunning: !!this.tokenPoolTimer,
+				lastCheckAt: backoff.lastCheckAt,
+				nextAllowedAt: backoff.nextAllowedAt,
+				backoffLevel: backoff.backoffLevel,
+				lastError: backoff.lastError,
+				updatedAt: Date.now()
+			};
+		},
+		updateTokenPoolSummary(summary, runCtx) {
+			const resolved = summary && typeof summary === "object" ? summary : this.buildTokenPoolSummary();
+			this.tokenPoolLastSummary = resolved;
+			Sidebar.refreshTokenPoolSummary?.(resolved);
+			logDebug(runCtx, "TOKEN_POOL_SUMMARY", "号池摘要已更新", resolved);
+			return resolved;
+		},
+		getTokenPoolSummary() {
+			if (this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === "object") {
+				return this.tokenPoolLastSummary;
+			}
+			return this.updateTokenPoolSummary(this.buildTokenPoolSummary({ reason: "initial" }));
+		},
+		async validateTokenPoolToken({ token, runCtx, step = "TOKEN_POOL_VALIDATE" }) {
+			const normalizedToken = typeof token === "string" ? token.trim() : "";
+			if (!normalizedToken) {
+				return {
+					ok: false,
+					points: null,
+					isFull: false,
+					message: "token 为空"
+				};
+			}
+			try {
+				const pointResult = await this.fetchAccountPoint({
+					token: normalizedToken,
+					runCtx,
+					step,
+					maxAttempts: 1
+				});
+				const points = toFiniteNumber(pointResult?.points, NaN);
+				if (!Number.isFinite(points)) {
+					return {
+						ok: false,
+						points: null,
+						isFull: false,
+						message: "积分返回非法"
+					};
+				}
+				const isFull = points >= TOKEN_POOL_FULL_POINTS;
+				return {
+					ok: isFull,
+					points,
+					isFull,
+					message: isFull ? "ok" : `积分不足(${points})`
+				};
+			} catch (error) {
+				return {
+					ok: false,
+					points: null,
+					isFull: false,
+					message: error?.message || String(error)
+				};
+			}
+		},
+		async acquireBestTokenFromPool({ runCtx } = {}) {
+			const ctx = runCtx || createRunContext("POOL_ACQUIRE");
+			let entries = this.readTokenPool();
+			if (!entries.length) {
+				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					entries,
+					reason: "acquire-empty",
+					status: "empty"
+				}), ctx);
+				return {
+					token: "",
+					points: null,
+					source: "pool-empty"
+				};
+			}
+			for (let index = 0; index < entries.length; index++) {
+				const entry = entries[index];
+				const checkResult = await this.validateTokenPoolToken({
+					token: entry.token,
+					runCtx: ctx,
+					step: `TOKEN_POOL_ACQUIRE_VALIDATE_${index + 1}`
+				});
+				if (!checkResult.ok) {
+					logWarn$1(ctx, "TOKEN_POOL_ACQUIRE", "池中 token 校验未通过，已剔除", {
+						points: checkResult.points,
+						message: checkResult.message
+					});
+					entries = entries.filter((item) => item.token !== entry.token);
+					this.writeTokenPool(entries);
+					continue;
+				}
+				const selectedToken = entry.token;
+				entries = entries.filter((item) => item.token !== selectedToken);
+				this.writeTokenPool(entries);
+				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					entries,
+					reason: "acquire-hit",
+					status: "ready"
+				}), ctx);
+				logInfo$1(ctx, "TOKEN_POOL_ACQUIRE", "号池命中可用 token，已消费", {
+					points: checkResult.points,
+					remainingCount: entries.length
+				});
+				return {
+					token: selectedToken,
+					points: checkResult.points,
+					source: "pool"
+				};
+			}
+			this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+				entries,
+				reason: "acquire-depleted",
+				status: "empty"
+			}), ctx);
+			return {
+				token: "",
+				points: null,
+				source: "pool-depleted"
+			};
+		},
+		async maintainTokenPool({ reason = "manual", force = false, runCtx } = {}) {
+			if (this.tokenPoolMaintaining) {
+				return this.getTokenPoolSummary();
+			}
+			const ctx = runCtx || createRunContext("POOL");
+			this.tokenPoolMaintaining = true;
+			try {
+				const backoff = this.readTokenPoolBackoffState();
+				const now = Date.now();
+				if (!force && backoff.nextAllowedAt > now) {
+					const summary = this.buildTokenPoolSummary({
+						reason: reason || "backoff-skip",
+						status: "backoff"
+					});
+					this.updateTokenPoolSummary(summary, ctx);
+					return summary;
+				}
+				let entries = this.readTokenPool();
+				const checkedEntries = [];
+				for (let index = 0; index < entries.length; index++) {
+					const item = entries[index];
+					const checkResult = await this.validateTokenPoolToken({
+						token: item.token,
+						runCtx: ctx,
+						step: `TOKEN_POOL_CHECK_EXISTING_${index + 1}`
+					});
+					if (!checkResult.ok) {
+						logWarn$1(ctx, "TOKEN_POOL", "号池现有 token 校验失败，已剔除", { message: checkResult.message });
+						continue;
+					}
+					checkedEntries.push({
+						...item,
+						points: checkResult.points,
+						isFull: true,
+						status: "full",
+						lastCheckedAt: Date.now()
+					});
+				}
+				entries = this.writeTokenPool(checkedEntries);
+				const maxRegisterAttempts = Math.max(2, TOKEN_POOL_TARGET_FULL_COUNT * 3);
+				let registerAttempts = 0;
+				while (entries.length < TOKEN_POOL_TARGET_FULL_COUNT && entries.length < TOKEN_POOL_MAX_COUNT && registerAttempts < maxRegisterAttempts) {
+					registerAttempts += 1;
+					this.tokenPoolInFlightRegister = true;
+					let registerResult = null;
+					try {
+						registerResult = await this.registerByApi(ctx, {
+							flowName: "号池补充",
+							showStepToasts: false,
+							markSuccess: false,
+							persistConsoleToken: false,
+							silent: true,
+							requireGuideSkipped: true
+						});
+					} finally {
+						this.tokenPoolInFlightRegister = false;
+					}
+					const token = typeof registerResult?.token === "string" ? registerResult.token.trim() : "";
+					if (!token) {
+						throw new Error("补池注册未返回 token");
+					}
+					const checkResult = await this.validateTokenPoolToken({
+						token,
+						runCtx: ctx,
+						step: `TOKEN_POOL_CHECK_NEW_${registerAttempts}`
+					});
+					if (!checkResult.ok) {
+						logWarn$1(ctx, "TOKEN_POOL", "新注册账号积分不足，跳过入池", { message: checkResult.message });
+						continue;
+					}
+					entries.push({
+						token,
+						points: checkResult.points,
+						isFull: true,
+						createdAt: Date.now(),
+						lastCheckedAt: Date.now(),
+						lastUsedAt: 0,
+						source: "auto-register",
+						status: "full"
+					});
+					entries = this.writeTokenPool(entries);
+				}
+				this.writeTokenPoolBackoffState({ lastCheckAt: Date.now() });
+				if (entries.length < TOKEN_POOL_TARGET_FULL_COUNT) {
+					throw new Error(`号池补充后仍不足 ${TOKEN_POOL_TARGET_FULL_COUNT} 个满积分 token`);
+				}
+				this.clearTokenPoolBackoffState();
+				const summary = this.buildTokenPoolSummary({
+					entries,
+					reason: reason || "maintain",
+					status: "ok"
+				});
+				this.updateTokenPoolSummary(summary, ctx);
+				logInfo$1(ctx, "TOKEN_POOL", "号池维护完成", {
+					reason,
+					fullCount: entries.length,
+					target: TOKEN_POOL_TARGET_FULL_COUNT
+				});
+				return summary;
+			} catch (error) {
+				this.applyTokenPoolBackoff(error, ctx);
+				const failedSummary = this.buildTokenPoolSummary({
+					reason: reason || "maintain",
+					status: "failed"
+				});
+				this.updateTokenPoolSummary(failedSummary, ctx);
+				return failedSummary;
+			} finally {
+				this.tokenPoolMaintaining = false;
+				this.tokenPoolInFlightRegister = false;
+			}
+		},
+		startTokenPoolScheduler({ intervalSeconds = null, runCtx } = {}) {
+			return this.refreshTokenPoolScheduler({
+				intervalSeconds,
+				runCtx,
+				reason: "start"
+			});
+		},
+		stopTokenPoolScheduler({ runCtx, reason = "stop" } = {}) {
+			if (this.tokenPoolTimer) {
+				clearInterval(this.tokenPoolTimer);
+				this.tokenPoolTimer = null;
+			}
+			const summary = this.buildTokenPoolSummary({
+				reason,
+				status: "stopped"
+			});
+			this.updateTokenPoolSummary(summary, runCtx);
+			logInfo$1(runCtx, "TOKEN_POOL_TIMER", "号池定时维护已停止", { reason });
+			return summary;
+		},
+		refreshTokenPoolScheduler({ intervalSeconds = null, runCtx, reason = "refresh" } = {}) {
+			const resolvedSeconds = intervalSeconds === null || intervalSeconds === undefined ? this.getTokenPoolCheckSeconds() : this.normalizeTokenPoolCheckSeconds(intervalSeconds);
+			if (this.tokenPoolTimer) {
+				clearInterval(this.tokenPoolTimer);
+				this.tokenPoolTimer = null;
+			}
+			if (resolvedSeconds <= 0) {
+				return this.stopTokenPoolScheduler({
+					runCtx,
+					reason: "disabled"
+				});
+			}
+			const intervalMs = resolvedSeconds * 1e3;
+			this.tokenPoolTimer = setInterval(() => {
+				this.maintainTokenPool({
+					reason: "timer",
+					force: false
+				}).catch(() => {});
+			}, intervalMs);
+			const summary = this.buildTokenPoolSummary({
+				reason,
+				status: "running"
+			});
+			this.updateTokenPoolSummary(summary, runCtx);
+			logInfo$1(runCtx, "TOKEN_POOL_TIMER", "号池定时维护已启动", {
+				intervalSeconds: resolvedSeconds,
+				intervalMs
+			});
+			this.maintainTokenPool({
+				reason: "timer-initial",
+				force: false,
+				runCtx
+			}).catch(() => {});
+			return summary;
+		}
+	};
+
+//#endregion
 //#region src/features/auto-register/flow-methods.js
 	const FlowMethods = {
-		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
+		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx, options = {}) {
+			const silent = options?.silent === true;
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-				Sidebar.updateState({
-					status: "fetching",
-					statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
-				});
+				if (!silent) {
+					Sidebar.updateState({
+						status: "fetching",
+						statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
+					});
+				}
 				logInfo$1(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
 				const emails = await ApiService.getEmails(email);
 				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -5211,13 +5836,22 @@
 			const flowName = options.flowName || "一键注册";
 			const showStepToasts = options.showStepToasts !== false;
 			const markSuccess = options.markSuccess !== false;
+			const persistConsoleToken = options.persistConsoleToken !== false;
+			const silent = options.silent === true;
+			const requireGuideSkipped = options.requireGuideSkipped !== false;
+			const showToasts = showStepToasts && !silent;
+			const updateSidebarState = (payload) => {
+				if (!silent) {
+					Sidebar.updateState(payload);
+				}
+			};
 			let currentStep = "初始化";
 			currentStep = "生成临时邮箱";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "generating",
 				statusMessage: `${flowName}：正在生成临时邮箱...`
 			});
-			if (showStepToasts) {
+			if (showToasts) {
 				Toast.info(`${flowName}：正在生成临时邮箱`, 2200);
 			}
 			this.registrationStartTime = Math.floor(Date.now() / 1e3);
@@ -5230,7 +5864,7 @@
 				username,
 				password
 			});
-			Sidebar.updateState({
+			updateSidebarState({
 				email,
 				username,
 				password,
@@ -5241,28 +5875,28 @@
 			gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
 			this.fillForm(email, username, password);
 			currentStep = "发送验证码";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "fetching",
 				statusMessage: `${flowName}：正在发送验证码...`,
 				verificationCode: ""
 			});
 			await this.sendRegisterEmailCode(email, runCtx);
-			if (showStepToasts) {
+			if (showToasts) {
 				Toast.info(`${flowName}：验证码已发送，正在轮询邮箱`, 2200);
 			}
 			currentStep = "轮询邮箱验证码";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "fetching",
 				statusMessage: `${flowName}：验证码已发送，正在自动轮询邮箱...`
 			});
-			const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2e3, runCtx);
+			const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2e3, runCtx, { silent });
 			if (!code) {
 				throw new Error("未在轮询窗口内获取到验证码");
 			}
-			if (showStepToasts) {
+			if (showToasts) {
 				Toast.success(`${flowName}：已获取验证码`, 1800);
 			}
-			Sidebar.updateState({
+			updateSidebarState({
 				verificationCode: code,
 				statusMessage: `${flowName}：验证码已获取: ${code}`
 			});
@@ -5274,13 +5908,13 @@
 				logWarn$1(runCtx, "FORM", `${flowName} 未找到验证码输入框，跳过自动填充`);
 			}
 			currentStep = "获取注册令牌";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "fetching",
 				statusMessage: `${flowName}：正在获取注册令牌...`
 			});
 			const regToken = await this.getRegToken(runCtx);
 			currentStep = "提交注册";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "fetching",
 				statusMessage: `${flowName}：正在提交注册...`
 			});
@@ -5291,24 +5925,29 @@
 				code,
 				regToken
 			}, runCtx);
-			localStorage.setItem("console_token", token);
-			logInfo$1(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
-			logDebug(runCtx, "AUTH", `${flowName} localStorage 写入 token 完整值`, { token });
-			if (showStepToasts) {
-				Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+			if (persistConsoleToken) {
+				localStorage.setItem("console_token", token);
+				logInfo$1(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
+				logDebug(runCtx, "AUTH", `${flowName} localStorage 写入 token 完整值`, { token });
+				if (showToasts) {
+					Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+				}
+			} else {
+				logInfo$1(runCtx, "AUTH", `${flowName} 已获取 token（补池模式，不写入 console_token）`);
+				logDebug(runCtx, "AUTH", `${flowName} token 完整值（补池模式）`, { token });
 			}
 			currentStep = "跳过首次引导";
-			Sidebar.updateState({
+			updateSidebarState({
 				status: "fetching",
 				statusMessage: `${flowName}：注册成功，正在跳过首次引导...`
 			});
-			if (showStepToasts) {
+			if (showToasts) {
 				Toast.info(`${flowName}：正在跳过首次引导（快速模式）`, 2600);
 			}
 			let guideSkipped = true;
 			try {
 				await this.skipFirstGuide(token, runCtx);
-				if (showStepToasts) {
+				if (showToasts) {
 					Toast.success(`${flowName}：首次引导已跳过`, 1800);
 				}
 			} catch (guideError) {
@@ -5318,15 +5957,20 @@
 					message: guideError?.message,
 					stack: guideError?.stack
 				});
-				Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6e3);
+				if (!silent) {
+					Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6e3);
+				}
 			}
-			if (markSuccess) {
+			if (requireGuideSkipped && !guideSkipped) {
+				throw new Error(`${flowName}终止：首次引导未跳过成功`);
+			}
+			if (markSuccess && !silent) {
 				Sidebar.updateState({
 					status: "success",
 					statusMessage: guideSkipped ? `${flowName}成功，已写入 console_token 并跳过首次引导` : `${flowName}成功，已写入 console_token（首次引导跳过失败）`
 				});
 				Toast.success(guideSkipped ? `${flowName}完成：已自动跳过首次引导并写入登录态` : `${flowName}完成：已写入登录态；首次引导跳过失败`, 5e3);
-			} else {
+			} else if (!silent) {
 				Sidebar.updateState({
 					status: "fetching",
 					statusMessage: `${flowName}已完成注册，准备执行后续操作...`
@@ -5378,7 +6022,8 @@
 				const registerResult = await this.registerByApi(runCtx, {
 					flowName: "一键注册",
 					showStepToasts: true,
-					markSuccess: false
+					markSuccess: false,
+					requireGuideSkipped: false
 				});
 				if (appId && oldUserModelConfig) {
 					Sidebar.updateState({
@@ -5530,22 +6175,47 @@
 				if (oldConversation.hasPastRecord || oldConversation.isEarliestDataPage === false) {
 					Toast.warning("旧会话可能仍有更早消息未拉取，可在“会话”Tab手动同步", 4500);
 				}
+				let nextToken = "";
+				let tokenSource = "pool";
 				Sidebar.updateState({
 					status: "fetching",
-					statusMessage: "更换账号：已提取旧回答，正在注册新账号..."
+					statusMessage: "更换账号：已提取旧回答，正在从号池选择账号..."
 				});
-				Toast.info("更换账号：开始注册新账号", 2200);
-				const registerResult = await this.registerByApi(runCtx, {
-					flowName: "更换账号",
-					showStepToasts: true,
-					markSuccess: false
-				});
-				if (!registerResult.guideSkipped) {
-					throw new Error("更换账号终止：首次引导未跳过成功，不发送 chat-messages");
+				Toast.info("更换账号：优先从号池选择新账号", 2200);
+				const poolTokenResult = await this.acquireBestTokenFromPool({ runCtx });
+				nextToken = typeof poolTokenResult?.token === "string" ? poolTokenResult.token.trim() : "";
+				if (nextToken) {
+					tokenSource = poolTokenResult?.source || "pool";
+					logInfo$1(runCtx, "SWITCH_POOL", "已从号池获取可用 token", {
+						tokenSource,
+						points: Number(poolTokenResult?.points || 0) || null
+					});
+					Toast.success("更换账号：已从号池获取账号 token", 1800);
+				} else {
+					tokenSource = poolTokenResult?.source || "register-fallback";
+					Sidebar.updateState({
+						status: "fetching",
+						statusMessage: "更换账号：号池暂无可用 token，回退注册新账号..."
+					});
+					Toast.warning("号池暂无可用 token，回退注册新账号", 2600);
+					const registerResult = await this.registerByApi(runCtx, {
+						flowName: "更换账号（回退注册）",
+						showStepToasts: true,
+						markSuccess: false,
+						persistConsoleToken: false,
+						requireGuideSkipped: true
+					});
+					nextToken = typeof registerResult?.token === "string" ? registerResult.token.trim() : "";
+					tokenSource = "register-fallback";
 				}
+				if (!nextToken) {
+					throw new Error("更换账号终止：未获取到可用新账号 token");
+				}
+				localStorage.setItem("console_token", nextToken);
+				logInfo$1(runCtx, "SWITCH_POOL", "更换账号已写入新 console_token", { tokenSource });
 				await this.syncAppMetaToLocalHistory({
 					appId,
-					token: registerResult.token,
+					token: nextToken,
 					runCtx,
 					step: "SWITCH_SYNC_APP_META_NEW"
 				});
@@ -5563,7 +6233,7 @@
 				});
 				await this.saveUserAppModelConfig({
 					appId,
-					token: registerResult.token,
+					token: nextToken,
 					config: switchConfig.config,
 					runCtx,
 					ensureWorldBookNotEmpty: true,
@@ -5587,12 +6257,12 @@
 				Toast.info("更换账号：正在发送 chat-messages", 2200);
 				const chatResult = await this.sendChatMessagesAndReload({
 					appId,
-					token: registerResult.token,
+					token: nextToken,
 					query,
 					conversationName,
 					runCtx
 				});
-				const newTokenSignature = buildTokenSignature(registerResult.token);
+				const newTokenSignature = buildTokenSignature(nextToken);
 				const newConversationId = typeof chatResult?.conversationId === "string" ? chatResult.conversationId.trim() : "";
 				if (newConversationId) {
 					this.upsertConversationIdInfo(appId, newConversationId, runCtx);
@@ -5622,6 +6292,12 @@
 				} else {
 					Toast.warning(autoReloadEnabled ? "未获取到新会话ID，仍将刷新，可在“会话”Tab手动同步" : "未获取到新会话ID，自动刷新已关闭，可在“会话”Tab手动同步", 3600);
 				}
+				this.maintainTokenPool({
+					reason: "post-switch",
+					force: false
+				}).catch((poolError) => {
+					logWarn$1(runCtx, "SWITCH_POOL", "切号后号池补充失败（不影响主流程）", { message: poolError?.message || String(poolError) });
+				});
 				this.reloadPageIfEnabled({
 					delayMs: 120,
 					runCtx,
@@ -5757,12 +6433,17 @@
 		accountPointPollInFlight: false,
 		accountPointExhaustedTriggered: false,
 		accountPointIndicatorEl: null,
+		tokenPoolTimer: null,
+		tokenPoolMaintaining: false,
+		tokenPoolLastSummary: null,
+		tokenPoolInFlightRegister: false,
 		...RuntimeMethods,
 		...FormMethods,
 		...SiteApiMethods,
 		...ConversationMethods,
 		...ModelConfigMethods,
 		...ChatMessagesMethods,
+		...TokenPoolMethods,
 		...FlowMethods
 	};
 
@@ -7351,6 +8032,7 @@
 		APP_STATE.refs.modelPopupSorter = ModelPopupSorter;
 		Sidebar.init();
 		ChatMessagesMonitor.start();
+		AutoRegister.startTokenPoolScheduler();
 		SPAWatcher.startObserver();
 		registerMenuCommands();
 		setTimeout(() => {
