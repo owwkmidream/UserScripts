@@ -15,6 +15,7 @@ import {
     extractLatestQueryTail,
     cloneJsonCompatible,
     hasMeaningfulText,
+    normalizeTimestamp,
     toChainRecord,
 } from './shared.js';
 

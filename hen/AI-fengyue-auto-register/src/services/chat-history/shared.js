@@ -229,3 +229,5 @@ export function toChainRecord(base, extras = {}) {
         ...extras,
     };
 }
+
+export { normalizeTimestamp };

@@ -141,8 +141,58 @@
 	}
 
 //#endregion
+//#region src/utils/retry-policy.js
+	function resolveRetryAttempts(maxAttempts, fallback = 3) {
+		const parsed = Number(maxAttempts);
+		if (Number.isInteger(parsed) && parsed >= 1) {
+			return parsed;
+		}
+		return Number.isInteger(fallback) && fallback >= 1 ? fallback : 3;
+	}
+	function isRetryableNetworkError(error, { includeHttpStatus = true } = {}) {
+		if (includeHttpStatus) {
+			const status = Number(error?.httpStatus || error?.status || 0);
+			if (status === 408 || status === 429 || status >= 500) {
+				return true;
+			}
+		}
+		const message = String(error?.message || "").toLowerCase();
+		if (!message) return false;
+		return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("gm 请求失败") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+	}
+	async function runWithRetries(task, { maxAttempts = 3, waitBaseMs = 700, isRetryable = isRetryableNetworkError, onRetry = null } = {}) {
+		const attempts = resolveRetryAttempts(maxAttempts, 3);
+		let lastError = null;
+		for (let attempt = 1; attempt <= attempts; attempt++) {
+			try {
+				return await task(attempt, attempts);
+			} catch (error) {
+				lastError = error;
+				const hasNext = attempt < attempts;
+				if (!hasNext || !isRetryable(error)) {
+					throw error;
+				}
+				const waitMs = Math.max(0, Number(waitBaseMs) || 0) * attempt;
+				if (typeof onRetry === "function") {
+					await onRetry({
+						attempt,
+						attempts,
+						waitMs,
+						error
+					});
+				}
+				if (waitMs > 0) {
+					await new Promise((resolve) => setTimeout(resolve, waitMs));
+				}
+			}
+		}
+		throw lastError || new Error("重试执行失败");
+	}
+
+//#endregion
 //#region src/services/api-service.js
 	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2 = 3;
+	const usageListeners = new Set();
 	const ApiService = {
 		getApiKey() {
 			return gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, CONFIG.DEFAULT_API_KEY);
@@ -154,16 +204,44 @@
 		getUsageCount() {
 			return gmGetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
 		},
+		getUsageSnapshot() {
+			const used = this.getUsageCount();
+			const limit = CONFIG.API_QUOTA_LIMIT;
+			const remaining = this.getRemainingQuota();
+			const percentage = limit > 0 ? Math.min(used / limit * 100, 100) : 0;
+			return {
+				used,
+				limit,
+				remaining,
+				percentage
+			};
+		},
+		subscribeUsageChange(listener) {
+			if (typeof listener !== "function") {
+				return () => {};
+			}
+			usageListeners.add(listener);
+			return () => {
+				usageListeners.delete(listener);
+			};
+		},
+		emitUsageChange(snapshot = this.getUsageSnapshot()) {
+			for (const listener of usageListeners) {
+				try {
+					listener(snapshot);
+				} catch {}
+			}
+		},
 		incrementUsageCount() {
 			const count = this.getUsageCount() + 1;
 			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, count);
-			APP_STATE.refs.sidebar?.updateUsageDisplay();
+			this.emitUsageChange(this.getUsageSnapshot());
 			return count;
 		},
 		resetUsageCount() {
 			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
 			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_RESET_DATE, new Date().toISOString());
-			APP_STATE.refs.sidebar?.updateUsageDisplay();
+			this.emitUsageChange(this.getUsageSnapshot());
 		},
 		getRemainingQuota() {
 			return CONFIG.API_QUOTA_LIMIT - this.getUsageCount();
@@ -172,16 +250,10 @@
 			return this.getUsageCount() >= CONFIG.API_QUOTA_LIMIT;
 		},
 		resolveRetryAttempts(maxAttempts) {
-			const parsed = Number(maxAttempts);
-			if (Number.isInteger(parsed) && parsed >= 1) {
-				return parsed;
-			}
-			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2;
+			return resolveRetryAttempts(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2);
 		},
 		isObjectiveRetryError(error) {
-			const message = String(error?.message || "").toLowerCase();
-			if (!message) return false;
-			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+			return isRetryableNetworkError(error, { includeHttpStatus: false });
 		},
 		async request(endpoint, options = {}) {
 			const attempts = this.resolveRetryAttempts(options.maxAttempts);
@@ -253,6 +325,225 @@
 			return data.emails || [];
 		}
 	};
+
+//#endregion
+//#region src/utils/text-normalize.js
+	function normalizeTimestamp$1(value) {
+		if (typeof value === "number" && Number.isFinite(value)) {
+			return value;
+		}
+		if (typeof value === "string" && value.trim()) {
+			const asNumber = Number(value);
+			if (Number.isFinite(asNumber)) return asNumber;
+			const parsed = Date.parse(value);
+			if (Number.isFinite(parsed)) return parsed;
+		}
+		return 0;
+	}
+	function decodeEscapedText$1(raw) {
+		if (typeof raw !== "string") return "";
+		let value = raw;
+		for (let i = 0; i < 3; i++) {
+			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
+				break;
+			}
+			try {
+				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
+				if (next === value) break;
+				value = next;
+			} catch {
+				break;
+			}
+		}
+		return value;
+	}
+	function hasMeaningfulText$1(value) {
+		let normalized = "";
+		if (value !== null && value !== undefined) {
+			if (typeof value === "string") {
+				normalized = decodeEscapedText$1(value);
+			} else {
+				normalized = String(value);
+			}
+		}
+		const lowered = normalized.trim().toLowerCase();
+		if (!lowered) return false;
+		if (lowered === "null" || lowered === "undefined" || lowered === "\"\"" || lowered === "''") {
+			return false;
+		}
+		return true;
+	}
+
+//#endregion
+//#region src/services/chat-history/shared.js
+	const INDEX_KEY = "aifengyue_chat_index_v1";
+	function normalizeId(value) {
+		return typeof value === "string" ? value.trim() : "";
+	}
+	function makeConversationKey(appId, conversationId) {
+		return `${appId}::${conversationId}`;
+	}
+	function createChainId(appId) {
+		const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+		return `chain-${appId}-${suffix}`;
+	}
+	function uniqueStringArray(values) {
+		const output = [];
+		const seen = new Set();
+		for (const value of values || []) {
+			const normalized = normalizeId(value);
+			if (!normalized || seen.has(normalized)) continue;
+			seen.add(normalized);
+			output.push(normalized);
+		}
+		return output;
+	}
+	function readIndex() {
+		const fallback = {
+			activeChainByAppId: {},
+			conversationToChain: {},
+			conversationTokenByKey: {},
+			lastSyncByChainId: {}
+		};
+		const raw = localStorage.getItem(INDEX_KEY);
+		if (!raw) return fallback;
+		try {
+			const parsed = JSON.parse(raw);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return fallback;
+			}
+			return {
+				activeChainByAppId: parsed.activeChainByAppId && typeof parsed.activeChainByAppId === "object" ? { ...parsed.activeChainByAppId } : {},
+				conversationToChain: parsed.conversationToChain && typeof parsed.conversationToChain === "object" ? { ...parsed.conversationToChain } : {},
+				conversationTokenByKey: parsed.conversationTokenByKey && typeof parsed.conversationTokenByKey === "object" ? { ...parsed.conversationTokenByKey } : {},
+				lastSyncByChainId: parsed.lastSyncByChainId && typeof parsed.lastSyncByChainId === "object" ? { ...parsed.lastSyncByChainId } : {}
+			};
+		} catch {
+			return fallback;
+		}
+	}
+	function writeIndex(index) {
+		localStorage.setItem(INDEX_KEY, JSON.stringify(index));
+	}
+	function escapeHtml(text) {
+		return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+	}
+	function formatTime(value) {
+		const ts = normalizeTimestamp$1(value);
+		if (!ts) return "-";
+		try {
+			return new Date(ts * (ts > 0xe8d4a51000 ? 1 : 1e3)).toLocaleString();
+		} catch {
+			return String(value);
+		}
+	}
+	function asDisplayContent(value) {
+		if (value === null || value === undefined) return "";
+		if (typeof value === "string") return decodeEscapedText$1(value);
+		return String(value);
+	}
+	function looksLikeHtml(value) {
+		return /<\/?[a-z][\s\S]*>/i.test(value);
+	}
+	function uniqueTextArray(values) {
+		const output = [];
+		const seen = new Set();
+		for (const value of values || []) {
+			if (typeof value !== "string") continue;
+			if (!value) continue;
+			if (seen.has(value)) continue;
+			seen.add(value);
+			output.push(value);
+		}
+		return output;
+	}
+	function isPrefixBoundary(rest) {
+		if (!rest) return true;
+		return /^[\s\r\n\u00a0:：,，.。!！?？;；、\-—]/.test(rest);
+	}
+	function trimPrefixConnectors(text) {
+		return String(text || "").replace(/^[\s\r\n\u00a0]+/, "").replace(/^[：:，,。.!！？?；;、\-—]+/, "").replace(/^[\s\r\n\u00a0]+/, "");
+	}
+	function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
+		const source = asDisplayContent(queryText);
+		if (!source) {
+			return {
+				text: "",
+				removedPrefix: ""
+			};
+		}
+		const candidates = uniqueTextArray(answerHistory).sort((a, b) => b.length - a.length);
+		for (const candidate of candidates) {
+			if (!candidate) continue;
+			if (!source.startsWith(candidate)) continue;
+			const rest = source.slice(candidate.length);
+			if (!isPrefixBoundary(rest)) continue;
+			return {
+				text: trimPrefixConnectors(rest),
+				removedPrefix: candidate
+			};
+		}
+		return {
+			text: source,
+			removedPrefix: ""
+		};
+	}
+	function renderMessageBody(text, emptyPlaceholder = "(空)") {
+		const normalized = asDisplayContent(text);
+		if (!normalized) {
+			return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
+		}
+		if (looksLikeHtml(normalized)) {
+			const normalizedHtml = normalizeLineBreakTokens(normalized);
+			return `<div class="markdown-body false" style="font-size:14px;white-space:pre-wrap;">${normalizedHtml}</div>`;
+		}
+		const plainText = normalizeLineBreakTokens(normalized);
+		return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
+	}
+	function normalizeLineBreakTokens(text) {
+		let value = String(text ?? "");
+		for (let i = 0; i < 4; i++) {
+			const next = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\\+r\\+n/g, "\n").replace(/\\+n/g, "\n").replace(/\\+r/g, "\n");
+			if (next === value) {
+				break;
+			}
+			value = next;
+		}
+		return value;
+	}
+	function extractLatestQueryTail(records, tailLength = 28) {
+		if (!Array.isArray(records) || records.length === 0) return "";
+		for (let i = records.length - 1; i >= 0; i--) {
+			const record = records[i];
+			const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+			const query = asDisplayContent(rawMessage.query ?? record?.query ?? "");
+			if (!hasMeaningfulText(query)) continue;
+			const singleLine = normalizeLineBreakTokens(query).replace(/\s+/g, " ").trim();
+			if (!singleLine) continue;
+			return singleLine.length > tailLength ? `...${singleLine.slice(-tailLength)}` : singleLine;
+		}
+		return "";
+	}
+	function cloneJsonCompatible(value, fallback = null) {
+		try {
+			return JSON.parse(JSON.stringify(value));
+		} catch {
+			return fallback;
+		}
+	}
+	function hasMeaningfulText(value) {
+		return hasMeaningfulText$1(asDisplayContent(value));
+	}
+	function toChainRecord(base, extras = {}) {
+		return {
+			chainId: normalizeId(base.chainId),
+			appId: normalizeId(base.appId),
+			conversationIds: uniqueStringArray(base.conversationIds),
+			createdAt: Number(base.createdAt || Date.now()),
+			updatedAt: Number(base.updatedAt || Date.now()),
+			...extras
+		};
+	}
 
 //#endregion
 //#region src/services/chat-history-store.js
@@ -448,211 +739,8 @@
 	};
 
 //#endregion
-//#region src/services/chat-history-service.js
-	const INDEX_KEY = "aifengyue_chat_index_v1";
-	function normalizeId(value) {
-		return typeof value === "string" ? value.trim() : "";
-	}
-	function normalizeTimestamp$1(value) {
-		if (typeof value === "number" && Number.isFinite(value)) {
-			return value;
-		}
-		if (typeof value === "string" && value.trim()) {
-			const asNumber = Number(value);
-			if (Number.isFinite(asNumber)) return asNumber;
-			const parsed = Date.parse(value);
-			if (Number.isFinite(parsed)) return parsed;
-		}
-		return 0;
-	}
-	function decodeEscapedText$2(raw) {
-		if (typeof raw !== "string") return "";
-		let value = raw;
-		for (let i = 0; i < 3; i++) {
-			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-				break;
-			}
-			try {
-				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
-				if (next === value) break;
-				value = next;
-			} catch {
-				break;
-			}
-		}
-		return value;
-	}
-	function makeConversationKey(appId, conversationId) {
-		return `${appId}::${conversationId}`;
-	}
-	function createChainId(appId) {
-		const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-		return `chain-${appId}-${suffix}`;
-	}
-	function uniqueStringArray(values) {
-		const output = [];
-		const seen = new Set();
-		for (const value of values || []) {
-			const normalized = normalizeId(value);
-			if (!normalized || seen.has(normalized)) continue;
-			seen.add(normalized);
-			output.push(normalized);
-		}
-		return output;
-	}
-	function readIndex() {
-		const fallback = {
-			activeChainByAppId: {},
-			conversationToChain: {},
-			conversationTokenByKey: {},
-			lastSyncByChainId: {}
-		};
-		const raw = localStorage.getItem(INDEX_KEY);
-		if (!raw) return fallback;
-		try {
-			const parsed = JSON.parse(raw);
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-				return fallback;
-			}
-			return {
-				activeChainByAppId: parsed.activeChainByAppId && typeof parsed.activeChainByAppId === "object" ? { ...parsed.activeChainByAppId } : {},
-				conversationToChain: parsed.conversationToChain && typeof parsed.conversationToChain === "object" ? { ...parsed.conversationToChain } : {},
-				conversationTokenByKey: parsed.conversationTokenByKey && typeof parsed.conversationTokenByKey === "object" ? { ...parsed.conversationTokenByKey } : {},
-				lastSyncByChainId: parsed.lastSyncByChainId && typeof parsed.lastSyncByChainId === "object" ? { ...parsed.lastSyncByChainId } : {}
-			};
-		} catch {
-			return fallback;
-		}
-	}
-	function writeIndex(index) {
-		localStorage.setItem(INDEX_KEY, JSON.stringify(index));
-	}
-	function escapeHtml(text) {
-		return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-	}
-	function formatTime(value) {
-		const ts = normalizeTimestamp$1(value);
-		if (!ts) return "-";
-		try {
-			return new Date(ts * (ts > 0xe8d4a51000 ? 1 : 1e3)).toLocaleString();
-		} catch {
-			return String(value);
-		}
-	}
-	function asDisplayContent(value) {
-		if (value === null || value === undefined) return "";
-		if (typeof value === "string") return decodeEscapedText$2(value);
-		return String(value);
-	}
-	function looksLikeHtml(value) {
-		return /<\/?[a-z][\s\S]*>/i.test(value);
-	}
-	function uniqueTextArray(values) {
-		const output = [];
-		const seen = new Set();
-		for (const value of values || []) {
-			if (typeof value !== "string") continue;
-			if (!value) continue;
-			if (seen.has(value)) continue;
-			seen.add(value);
-			output.push(value);
-		}
-		return output;
-	}
-	function isPrefixBoundary(rest) {
-		if (!rest) return true;
-		return /^[\s\r\n\u00a0:：,，.。!！?？;；、\-—]/.test(rest);
-	}
-	function trimPrefixConnectors(text) {
-		return String(text || "").replace(/^[\s\r\n\u00a0]+/, "").replace(/^[：:，,。.!！？?；;、\-—]+/, "").replace(/^[\s\r\n\u00a0]+/, "");
-	}
-	function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
-		const source = asDisplayContent(queryText);
-		if (!source) {
-			return {
-				text: "",
-				removedPrefix: ""
-			};
-		}
-		const candidates = uniqueTextArray(answerHistory).sort((a, b) => b.length - a.length);
-		for (const candidate of candidates) {
-			if (!candidate) continue;
-			if (!source.startsWith(candidate)) continue;
-			const rest = source.slice(candidate.length);
-			if (!isPrefixBoundary(rest)) continue;
-			return {
-				text: trimPrefixConnectors(rest),
-				removedPrefix: candidate
-			};
-		}
-		return {
-			text: source,
-			removedPrefix: ""
-		};
-	}
-	function renderMessageBody(text, emptyPlaceholder = "(空)") {
-		const normalized = asDisplayContent(text);
-		if (!normalized) {
-			return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
-		}
-		if (looksLikeHtml(normalized)) {
-			const normalizedHtml = normalizeLineBreakTokens(normalized);
-			return `<div class="markdown-body false" style="font-size:14px;white-space:pre-wrap;">${normalizedHtml}</div>`;
-		}
-		const plainText = normalizeLineBreakTokens(normalized);
-		return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
-	}
-	function normalizeLineBreakTokens(text) {
-		let value = String(text ?? "");
-		for (let i = 0; i < 4; i++) {
-			const next = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\\+r\\+n/g, "\n").replace(/\\+n/g, "\n").replace(/\\+r/g, "\n");
-			if (next === value) {
-				break;
-			}
-			value = next;
-		}
-		return value;
-	}
-	function extractLatestQueryTail(records, tailLength = 28) {
-		if (!Array.isArray(records) || records.length === 0) return "";
-		for (let i = records.length - 1; i >= 0; i--) {
-			const record = records[i];
-			const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
-			const query = asDisplayContent(rawMessage.query ?? record?.query ?? "");
-			if (!hasMeaningfulText(query)) continue;
-			const singleLine = normalizeLineBreakTokens(query).replace(/\s+/g, " ").trim();
-			if (!singleLine) continue;
-			return singleLine.length > tailLength ? `...${singleLine.slice(-tailLength)}` : singleLine;
-		}
-		return "";
-	}
-	function cloneJsonCompatible(value, fallback = null) {
-		try {
-			return JSON.parse(JSON.stringify(value));
-		} catch {
-			return fallback;
-		}
-	}
-	function hasMeaningfulText(value) {
-		const normalized = asDisplayContent(value).trim().toLowerCase();
-		if (!normalized) return false;
-		if (normalized === "null" || normalized === "undefined" || normalized === "\"\"" || normalized === "''") {
-			return false;
-		}
-		return true;
-	}
-	function toChainRecord(base, extras = {}) {
-		return {
-			chainId: normalizeId(base.chainId),
-			appId: normalizeId(base.appId),
-			conversationIds: uniqueStringArray(base.conversationIds),
-			createdAt: Number(base.createdAt || Date.now()),
-			updatedAt: Number(base.updatedAt || Date.now()),
-			...extras
-		};
-	}
-	const ChatHistoryService = {
-		INDEX_KEY,
+//#region src/services/chat-history/index-store.js
+	const chatHistoryIndexMethods = {
 		readIndexSnapshot() {
 			return readIndex();
 		},
@@ -818,7 +906,12 @@
 				removedConversationMappingCount,
 				deletedConversationCount: uniqueStringArray(chain.conversationIds || []).length
 			};
-		},
+		}
+	};
+
+//#endregion
+//#region src/services/chat-history/chain-service.js
+	const chatHistoryChainMethods = {
 		async bindConversation({ appId, conversationId, previousConversationId = "", preferredChainId = "", tokenSignature = "" }) {
 			const normalizedAppId = normalizeId(appId);
 			const normalizedConversationId = normalizeId(conversationId);
@@ -996,7 +1089,12 @@
 				answerCount,
 				latestQueryTail: extractLatestQueryTail(records)
 			};
-		},
+		}
+	};
+
+//#endregion
+//#region src/services/chat-history/bundle-service.js
+	const chatHistoryBundleMethods = {
 		async exportChainBundle({ appId, chainId }) {
 			const normalizedAppId = normalizeId(appId);
 			const normalizedChainId = normalizeId(chainId);
@@ -1154,38 +1252,42 @@
 				importedMessageCount: records.length,
 				savedCount
 			};
-		},
-		async buildChainViewerHtml({ appId, chainId }) {
-			const normalizedAppId = normalizeId(appId);
-			const normalizedChainId = normalizeId(chainId);
-			if (!normalizedAppId || !normalizedChainId) {
-				return "<html><body><p>缺少 appId 或 chainId。</p></body></html>";
+		}
+	};
+
+//#endregion
+//#region src/services/chat-history/viewer-renderer.js
+	const chatHistoryViewerMethods = { async buildChainViewerHtml({ appId, chainId }) {
+		const normalizedAppId = normalizeId(appId);
+		const normalizedChainId = normalizeId(chainId);
+		if (!normalizedAppId || !normalizedChainId) {
+			return "<html><body><p>缺少 appId 或 chainId。</p></body></html>";
+		}
+		const [appMeta, chain, records] = await Promise.all([
+			this.getAppMeta(normalizedAppId),
+			this.getChain(normalizedChainId),
+			this.listMessagesByChain(normalizedChainId)
+		]);
+		const name = escapeHtml(appMeta?.name || normalizedAppId);
+		const style = String(appMeta?.builtInCss || "");
+		const conversationIds = uniqueStringArray(chain?.conversationIds || []);
+		const answerHistory = [];
+		const messageHtml = records.length > 0 ? records.map((record, index) => {
+			const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
+			const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? "");
+			const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? "");
+			const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
+			const renderedQuery = renderMessageBody(dedupResult.text || "(去重后为空)", "(去重后为空)");
+			const renderedAnswer = renderMessageBody(answerText, "(空回复)");
+			const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
+			const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || "-"));
+			const queryContentId = `af-query-content-${index + 1}`;
+			const answerContentId = `af-answer-content-${index + 1}`;
+			if (answerText) {
+				answerHistory.push(answerText);
 			}
-			const [appMeta, chain, records] = await Promise.all([
-				this.getAppMeta(normalizedAppId),
-				this.getChain(normalizedChainId),
-				this.listMessagesByChain(normalizedChainId)
-			]);
-			const name = escapeHtml(appMeta?.name || normalizedAppId);
-			const style = String(appMeta?.builtInCss || "");
-			const conversationIds = uniqueStringArray(chain?.conversationIds || []);
-			const answerHistory = [];
-			const messageHtml = records.length > 0 ? records.map((record, index) => {
-				const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
-				const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? "");
-				const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? "");
-				const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
-				const renderedQuery = renderMessageBody(dedupResult.text || "(去重后为空)", "(去重后为空)");
-				const renderedAnswer = renderMessageBody(answerText, "(空回复)");
-				const createdAtText = escapeHtml(formatTime(rawMessage.created_at ?? record?.createdAt));
-				const messageIdText = escapeHtml(String(rawMessage.id || record?.messageId || "-"));
-				const queryContentId = `af-query-content-${index + 1}`;
-				const answerContentId = `af-answer-content-${index + 1}`;
-				if (answerText) {
-					answerHistory.push(answerText);
-				}
-				const dedupHint = dedupResult.removedPrefix ? "<div class=\"af-dedup-hint\">已自动去重历史前缀 answer</div>" : "";
-				return `
+			const dedupHint = dedupResult.removedPrefix ? "<div class=\"af-dedup-hint\">已自动去重历史前缀 answer</div>" : "";
+			return `
                     <div class="group flex mb-2 last:mb-0 af-row-user">
                         <div class="group relative ml-2 md:ml-0 af-bubble-wrap af-user-wrap">
                             <div id="${queryContentId}" class="relative inline-block px-4 py-3 max-w-full text-gray-900 rounded-xl text-sm af-message-bubble af-user-bubble">
@@ -1217,8 +1319,8 @@
                         </div>
                     </div>
                 `;
-			}).join("\n") : "<div class=\"af-empty\">当前链路暂无消息，点击“手动同步”拉取历史。</div>";
-			return `<!doctype html>
+		}).join("\n") : "<div class=\"af-empty\">当前链路暂无消息，点击“手动同步”拉取历史。</div>";
+		return `<!doctype html>
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
@@ -1410,71 +1512,20 @@
     </div>
 </body>
 </html>`;
-		}
+	} };
+
+//#endregion
+//#region src/services/chat-history-service.js
+	const ChatHistoryService = {
+		INDEX_KEY,
+		...chatHistoryIndexMethods,
+		...chatHistoryChainMethods,
+		...chatHistoryBundleMethods,
+		...chatHistoryViewerMethods
 	};
 
 //#endregion
-//#region src/utils/logger.js
-	const PREFIX = "AI风月注册助手";
-	function output(level, text, meta) {
-		if (level === "ERROR") {
-			if (meta === undefined) console.error(text);
-			else console.error(text, meta);
-			return;
-		}
-		if (level === "WARN") {
-			if (meta === undefined) console.warn(text);
-			else console.warn(text, meta);
-			return;
-		}
-		if (level === "DEBUG") {
-			if (meta === undefined) console.debug(text);
-			else console.debug(text, meta);
-			return;
-		}
-		if (meta === undefined) console.log(text);
-		else console.log(text, meta);
-	}
-	function baseLog(level, runCtx, step, message, meta) {
-		const runId = runCtx?.runId || "NO-RUN";
-		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
-		output(level, tag, meta);
-	}
-	function createRunContext(prefix = "AR") {
-		const stamp = Date.now().toString(36);
-		const rand = Math.random().toString(36).slice(2, 6);
-		return {
-			runId: `${prefix}-${stamp}-${rand}`,
-			startedAt: Date.now()
-		};
-	}
-	function isDebugEnabled() {
-		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
-	}
-	function setDebugEnabled(enabled) {
-		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
-	}
-	function toggleDebugEnabled() {
-		const next = !isDebugEnabled();
-		setDebugEnabled(next);
-		return next;
-	}
-	function logInfo$1(runCtx, step, message, meta) {
-		baseLog("INFO", runCtx, step, message, meta);
-	}
-	function logWarn$1(runCtx, step, message, meta) {
-		baseLog("WARN", runCtx, step, message, meta);
-	}
-	function logError(runCtx, step, message, meta) {
-		baseLog("ERROR", runCtx, step, message, meta);
-	}
-	function logDebug(runCtx, step, message, meta) {
-		if (!isDebugEnabled()) return;
-		baseLog("DEBUG", runCtx, step, message, meta);
-	}
-
-//#endregion
-//#region src/ui/sidebar.js
+//#region src/ui/sidebar/sidebar-context.js
 	const VALID_TABS = [
 		"register",
 		"tools",
@@ -1493,44 +1544,10 @@
 	function getModelPopupSorter() {
 		return APP_STATE.refs.modelPopupSorter;
 	}
-	const Sidebar = {
-		element: null,
-		conversationModal: null,
-		conversationModalOpen: false,
-		conversationModalEscHandler: null,
-		isOpen: false,
-		layoutMode: "inline",
-		activeTab: "register",
-		theme: "light",
-		state: APP_STATE.sidebar.state,
-		conversation: {
-			appId: "",
-			chains: [],
-			activeChainId: "",
-			globalChains: [],
-			activeGlobalChainId: "",
-			loading: false
-		},
-		init() {
-			if (this.element && document.body.contains(this.element) && document.getElementById("aifengyue-sidebar-toggle")) {
-				return;
-			}
-			this.activeTab = this.getDefaultTab();
-			this.layoutMode = this.getLayoutMode();
-			this.theme = this.getTheme();
-			this.createSidebar();
-			this.createConversationModal();
-			this.createToggleButton();
-			this.loadSavedData();
-			this.applyLayoutModeClass();
-			this.applyTheme();
-			this.setActiveTab(this.activeTab);
-			if (this.getDefaultOpen()) {
-				this.open();
-			} else {
-				this.close();
-			}
-		},
+
+//#endregion
+//#region src/ui/sidebar/sidebar-view.js
+	const sidebarViewMethods = {
 		createSidebar() {
 			const existing = document.getElementById("aifengyue-sidebar");
 			if (existing) {
@@ -1880,6 +1897,130 @@
 			btn.addEventListener("click", () => this.toggle());
 			document.body.appendChild(btn);
 		},
+		setActiveTab(tab) {
+			if (!VALID_TABS.includes(tab)) return;
+			this.activeTab = tab;
+			this.element.querySelectorAll(".aifengyue-tab-btn").forEach((btn) => {
+				btn.classList.toggle("active", btn.dataset.tab === this.activeTab);
+			});
+			this.element.querySelectorAll(".aifengyue-panel").forEach((panel) => {
+				panel.classList.toggle("active", panel.dataset.panel === this.activeTab);
+			});
+			if (this.activeTab === "conversation") {
+				this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: true
+				}).catch((error) => {
+					this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+				});
+			}
+		},
+		applyLayoutModeClass() {
+			if (!this.element) return;
+			const isInline = this.layoutMode === "inline";
+			this.element.classList.toggle("mode-inline", isInline);
+			this.element.classList.toggle("mode-floating", !isInline);
+			const modeInput = this.element.querySelector("#aifengyue-layout-mode");
+			if (modeInput) {
+				modeInput.value = this.layoutMode;
+			}
+			this.syncInlineSpaceClass();
+		},
+		syncInlineSpaceClass() {
+			const isInlineOpen = this.layoutMode === "inline" && this.isOpen;
+			document.documentElement.classList.remove("aifengyue-sidebar-inline-mode");
+			document.body.classList.toggle("aifengyue-sidebar-inline-mode", isInlineOpen);
+		},
+		toggle() {
+			this.isOpen ? this.close() : this.open();
+		},
+		open() {
+			if (!this.element) return;
+			this.element.classList.add("open");
+			const toggle = document.getElementById("aifengyue-sidebar-toggle");
+			if (toggle) {
+				toggle.classList.add("is-open");
+				toggle.textContent = "收起助手";
+			}
+			this.isOpen = true;
+			this.syncInlineSpaceClass();
+		},
+		close() {
+			if (!this.element) return;
+			this.element.classList.remove("open");
+			const toggle = document.getElementById("aifengyue-sidebar-toggle");
+			if (toggle) {
+				toggle.classList.remove("is-open");
+				toggle.textContent = "打开助手";
+			}
+			this.isOpen = false;
+			this.syncInlineSpaceClass();
+		}
+	};
+
+//#endregion
+//#region src/utils/logger.js
+	const PREFIX = "AI风月注册助手";
+	function output(level, text, meta) {
+		if (level === "ERROR") {
+			if (meta === undefined) console.error(text);
+			else console.error(text, meta);
+			return;
+		}
+		if (level === "WARN") {
+			if (meta === undefined) console.warn(text);
+			else console.warn(text, meta);
+			return;
+		}
+		if (level === "DEBUG") {
+			if (meta === undefined) console.debug(text);
+			else console.debug(text, meta);
+			return;
+		}
+		if (meta === undefined) console.log(text);
+		else console.log(text, meta);
+	}
+	function baseLog(level, runCtx, step, message, meta) {
+		const runId = runCtx?.runId || "NO-RUN";
+		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
+		output(level, tag, meta);
+	}
+	function createRunContext(prefix = "AR") {
+		const stamp = Date.now().toString(36);
+		const rand = Math.random().toString(36).slice(2, 6);
+		return {
+			runId: `${prefix}-${stamp}-${rand}`,
+			startedAt: Date.now()
+		};
+	}
+	function isDebugEnabled() {
+		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
+	}
+	function setDebugEnabled(enabled) {
+		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
+	}
+	function toggleDebugEnabled() {
+		const next = !isDebugEnabled();
+		setDebugEnabled(next);
+		return next;
+	}
+	function logInfo$1(runCtx, step, message, meta) {
+		baseLog("INFO", runCtx, step, message, meta);
+	}
+	function logWarn$1(runCtx, step, message, meta) {
+		baseLog("WARN", runCtx, step, message, meta);
+	}
+	function logError(runCtx, step, message, meta) {
+		baseLog("ERROR", runCtx, step, message, meta);
+	}
+	function logDebug(runCtx, step, message, meta) {
+		if (!isDebugEnabled()) return;
+		baseLog("DEBUG", runCtx, step, message, meta);
+	}
+
+//#endregion
+//#region src/ui/sidebar/sidebar-events.js
+	const sidebarEventsMethods = {
 		bindEvents() {
 			this.element.querySelector(".aifengyue-sidebar-close").addEventListener("click", () => this.close());
 			this.element.querySelector(".aifengyue-theme-toggle").addEventListener("click", () => this.toggleTheme());
@@ -2058,56 +2199,6 @@
 				await this.deleteSelectedGlobalConversationChain();
 			});
 		},
-		loadSavedData() {
-			const apiKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, "");
-			if (apiKey) {
-				this.element.querySelector("#aifengyue-api-key").value = apiKey;
-			}
-			const layoutModeInput = this.element.querySelector("#aifengyue-layout-mode");
-			if (layoutModeInput) {
-				layoutModeInput.value = this.layoutMode;
-			}
-			const defaultTabInput = this.element.querySelector("#aifengyue-default-tab");
-			if (defaultTabInput) {
-				defaultTabInput.value = this.getDefaultTab();
-			}
-			const defaultOpenInput = this.element.querySelector("#aifengyue-default-open");
-			if (defaultOpenInput) {
-				defaultOpenInput.value = this.getDefaultOpen() ? "open" : "closed";
-			}
-			const debugToggle = this.element.querySelector("#aifengyue-debug-toggle");
-			if (debugToggle) {
-				debugToggle.checked = isDebugEnabled();
-			}
-			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
-			if (autoReloadToggle) {
-				autoReloadToggle.checked = this.getAutoReloadEnabled();
-			}
-			const chatTimeoutInput = this.element.querySelector("#aifengyue-chat-timeout-seconds");
-			if (chatTimeoutInput) {
-				chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
-			}
-			this.updateUsageDisplay();
-			this.render();
-		},
-		setActiveTab(tab) {
-			if (!VALID_TABS.includes(tab)) return;
-			this.activeTab = tab;
-			this.element.querySelectorAll(".aifengyue-tab-btn").forEach((btn) => {
-				btn.classList.toggle("active", btn.dataset.tab === this.activeTab);
-			});
-			this.element.querySelectorAll(".aifengyue-panel").forEach((panel) => {
-				panel.classList.toggle("active", panel.dataset.panel === this.activeTab);
-			});
-			if (this.activeTab === "conversation") {
-				this.refreshConversationPanel({
-					showToast: false,
-					keepSelection: true
-				}).catch((error) => {
-					this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
-				});
-			}
-		},
 		async copyTextToClipboard(text, { successMessage = "已复制到剪贴板", errorMessage = "复制失败" } = {}) {
 			const value = typeof text === "string" ? text : String(text ?? "");
 			if (!value) return false;
@@ -2178,7 +2269,12 @@
 					}
 				});
 			});
-		},
+		}
+	};
+
+//#endregion
+//#region src/ui/sidebar/sidebar-conversation.js
+	const sidebarConversationMethods = {
 		setConversationStatus(message) {
 			const statusEl = this.element?.querySelector("#aifengyue-conversation-status");
 			if (statusEl) {
@@ -2624,7 +2720,12 @@
 			} finally {
 				this.setConversationBusy(false);
 			}
-		},
+		}
+	};
+
+//#endregion
+//#region src/ui/sidebar/sidebar-settings.js
+	const sidebarSettingsMethods = {
 		getLayoutMode() {
 			const mode = gmGetValue(CONFIG.STORAGE_KEYS.SIDEBAR_LAYOUT_MODE, "inline");
 			return mode === "floating" ? "floating" : "inline";
@@ -2717,28 +2818,12 @@
 		toggleTheme() {
 			this.setTheme(this.theme === "dark" ? "light" : "dark");
 		},
-		applyLayoutModeClass() {
+		updateUsageDisplay(snapshot = ApiService.getUsageSnapshot()) {
 			if (!this.element) return;
-			const isInline = this.layoutMode === "inline";
-			this.element.classList.toggle("mode-inline", isInline);
-			this.element.classList.toggle("mode-floating", !isInline);
-			const modeInput = this.element.querySelector("#aifengyue-layout-mode");
-			if (modeInput) {
-				modeInput.value = this.layoutMode;
-			}
-			this.syncInlineSpaceClass();
-		},
-		syncInlineSpaceClass() {
-			const isInlineOpen = this.layoutMode === "inline" && this.isOpen;
-			document.documentElement.classList.remove("aifengyue-sidebar-inline-mode");
-			document.body.classList.toggle("aifengyue-sidebar-inline-mode", isInlineOpen);
-		},
-		updateUsageDisplay() {
-			if (!this.element) return;
-			const used = ApiService.getUsageCount();
-			const limit = CONFIG.API_QUOTA_LIMIT;
-			const remaining = ApiService.getRemainingQuota();
-			const percentage = Math.min(used / limit * 100, 100);
+			const used = Number(snapshot?.used || 0);
+			const limit = Number(snapshot?.limit || CONFIG.API_QUOTA_LIMIT || 0);
+			const remaining = Number(snapshot?.remaining || 0);
+			const percentage = Number(snapshot?.percentage || 0);
 			const usageText = this.element.querySelector("#aifengyue-usage-text");
 			const usageBar = this.element.querySelector("#aifengyue-usage-bar");
 			const usageRemaining = this.element.querySelector("#aifengyue-usage-remaining");
@@ -2754,31 +2839,43 @@
 				}
 			}
 			if (usageRemaining) usageRemaining.textContent = `剩余: ${remaining} 次`;
-		},
-		toggle() {
-			this.isOpen ? this.close() : this.open();
-		},
-		open() {
-			if (!this.element) return;
-			this.element.classList.add("open");
-			const toggle = document.getElementById("aifengyue-sidebar-toggle");
-			if (toggle) {
-				toggle.classList.add("is-open");
-				toggle.textContent = "收起助手";
+		}
+	};
+
+//#endregion
+//#region src/ui/sidebar/sidebar-state.js
+	const sidebarStateMethods = {
+		loadSavedData() {
+			const apiKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, "");
+			if (apiKey) {
+				this.element.querySelector("#aifengyue-api-key").value = apiKey;
 			}
-			this.isOpen = true;
-			this.syncInlineSpaceClass();
-		},
-		close() {
-			if (!this.element) return;
-			this.element.classList.remove("open");
-			const toggle = document.getElementById("aifengyue-sidebar-toggle");
-			if (toggle) {
-				toggle.classList.remove("is-open");
-				toggle.textContent = "打开助手";
+			const layoutModeInput = this.element.querySelector("#aifengyue-layout-mode");
+			if (layoutModeInput) {
+				layoutModeInput.value = this.layoutMode;
 			}
-			this.isOpen = false;
-			this.syncInlineSpaceClass();
+			const defaultTabInput = this.element.querySelector("#aifengyue-default-tab");
+			if (defaultTabInput) {
+				defaultTabInput.value = this.getDefaultTab();
+			}
+			const defaultOpenInput = this.element.querySelector("#aifengyue-default-open");
+			if (defaultOpenInput) {
+				defaultOpenInput.value = this.getDefaultOpen() ? "open" : "closed";
+			}
+			const debugToggle = this.element.querySelector("#aifengyue-debug-toggle");
+			if (debugToggle) {
+				debugToggle.checked = isDebugEnabled();
+			}
+			const autoReloadToggle = this.element.querySelector("#aifengyue-auto-reload-toggle");
+			if (autoReloadToggle) {
+				autoReloadToggle.checked = this.getAutoReloadEnabled();
+			}
+			const chatTimeoutInput = this.element.querySelector("#aifengyue-chat-timeout-seconds");
+			if (chatTimeoutInput) {
+				chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
+			}
+			this.updateUsageDisplay();
+			this.render();
 		},
 		resetState() {
 			Object.assign(this.state, SIDEBAR_INITIAL_STATE);
@@ -2841,55 +2938,118 @@
 			if (autoReloadToggle) autoReloadToggle.checked = this.getAutoReloadEnabled();
 			if (chatTimeoutInput) chatTimeoutInput.value = String(this.getChatMessagesTimeoutSeconds());
 			this.updateToolPanel();
-		},
-		updateToolPanel() {
-			if (!this.element) return;
-			const autoRegister = getAutoRegister();
-			const extractor = getIframeExtractor();
-			const sorter = getModelPopupSorter();
-			const startBtn = this.element.querySelector("#aifengyue-start");
-			const manualGroup = this.element.querySelector("#aifengyue-manual-group");
-			const registerHint = this.element.querySelector("#aifengyue-register-hint");
-			const onRegisterPage = !!autoRegister?.isRegisterPage();
-			if (startBtn) {
-				startBtn.textContent = onRegisterPage ? "📝 开始辅助填表" : "🚀 开始注册（自动模式）";
-			}
-			if (manualGroup) {
-				manualGroup.style.display = onRegisterPage ? "" : "none";
-			}
-			if (registerHint) {
-				registerHint.textContent = onRegisterPage ? "当前注册页：可辅助填表，验证码需手动完成。" : "非注册页：可用一键注册或更换账号。";
-			}
-			const isDetail = !!extractor?.checkDetailPage();
-			const canExtract = !!extractor?.isExtractAvailable();
-			const extractWrap = this.element.querySelector("#aifengyue-extract-html-wrap");
-			const sortWrap = this.element.querySelector("#aifengyue-sort-wrap");
-			const toolsEmpty = this.element.querySelector("#aifengyue-tools-empty");
-			const sortToggle = this.element.querySelector("#aifengyue-sort-toggle");
-			if (extractWrap) {
-				extractWrap.style.display = canExtract ? "" : "none";
-			}
-			if (sortWrap) {
-				sortWrap.style.display = isDetail ? "" : "none";
-			}
-			if (toolsEmpty) {
-				toolsEmpty.style.display = !canExtract && !isDetail ? "" : "none";
-			}
-			if (sortToggle) {
-				sortToggle.checked = sorter?.isSortEnabled?.() ?? true;
-			}
-			if (this.activeTab === "conversation" && !this.conversation.loading) {
-				const currentAppId = autoRegister?.extractInstalledAppId?.() || "";
-				if (currentAppId !== this.conversation.appId) {
-					this.refreshConversationPanel({
-						showToast: false,
-						keepSelection: false
-					}).catch((error) => {
-						this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
-					});
-				}
+		}
+	};
+
+//#endregion
+//#region src/ui/sidebar/sidebar-tools.js
+	const sidebarToolMethods = { updateToolPanel() {
+		if (!this.element) return;
+		const autoRegister = getAutoRegister();
+		const extractor = getIframeExtractor();
+		const sorter = getModelPopupSorter();
+		const startBtn = this.element.querySelector("#aifengyue-start");
+		const manualGroup = this.element.querySelector("#aifengyue-manual-group");
+		const registerHint = this.element.querySelector("#aifengyue-register-hint");
+		const onRegisterPage = !!autoRegister?.isRegisterPage();
+		if (startBtn) {
+			startBtn.textContent = onRegisterPage ? "📝 开始辅助填表" : "🚀 开始注册（自动模式）";
+		}
+		if (manualGroup) {
+			manualGroup.style.display = onRegisterPage ? "" : "none";
+		}
+		if (registerHint) {
+			registerHint.textContent = onRegisterPage ? "当前注册页：可辅助填表，验证码需手动完成。" : "非注册页：可用一键注册或更换账号。";
+		}
+		const isDetail = !!extractor?.checkDetailPage();
+		const canExtract = !!extractor?.isExtractAvailable();
+		const extractWrap = this.element.querySelector("#aifengyue-extract-html-wrap");
+		const sortWrap = this.element.querySelector("#aifengyue-sort-wrap");
+		const toolsEmpty = this.element.querySelector("#aifengyue-tools-empty");
+		const sortToggle = this.element.querySelector("#aifengyue-sort-toggle");
+		if (extractWrap) {
+			extractWrap.style.display = canExtract ? "" : "none";
+		}
+		if (sortWrap) {
+			sortWrap.style.display = isDetail ? "" : "none";
+		}
+		if (toolsEmpty) {
+			toolsEmpty.style.display = !canExtract && !isDetail ? "" : "none";
+		}
+		if (sortToggle) {
+			sortToggle.checked = sorter?.isSortEnabled?.() ?? true;
+		}
+		if (this.activeTab === "conversation" && !this.conversation.loading) {
+			const currentAppId = autoRegister?.extractInstalledAppId?.() || "";
+			if (currentAppId !== this.conversation.appId) {
+				this.refreshConversationPanel({
+					showToast: false,
+					keepSelection: false
+				}).catch((error) => {
+					this.setConversationStatus(`会话面板刷新失败: ${error.message}`);
+				});
 			}
 		}
+	} };
+
+//#endregion
+//#region src/ui/sidebar.js
+	const Sidebar = {
+		element: null,
+		conversationModal: null,
+		conversationModalOpen: false,
+		conversationModalEscHandler: null,
+		usageUnsubscribe: null,
+		isOpen: false,
+		layoutMode: "inline",
+		activeTab: "register",
+		theme: "light",
+		state: APP_STATE.sidebar.state,
+		conversation: {
+			appId: "",
+			chains: [],
+			activeChainId: "",
+			globalChains: [],
+			activeGlobalChainId: "",
+			loading: false
+		},
+		init() {
+			if (this.element && document.body.contains(this.element) && document.getElementById("aifengyue-sidebar-toggle")) {
+				this.bindUsageSubscription();
+				return;
+			}
+			this.activeTab = this.getDefaultTab();
+			this.layoutMode = this.getLayoutMode();
+			this.theme = this.getTheme();
+			this.createSidebar();
+			this.createConversationModal();
+			this.createToggleButton();
+			this.loadSavedData();
+			this.bindUsageSubscription();
+			this.applyLayoutModeClass();
+			this.applyTheme();
+			this.setActiveTab(this.activeTab);
+			if (this.getDefaultOpen()) {
+				this.open();
+			} else {
+				this.close();
+			}
+		},
+		bindUsageSubscription() {
+			if (typeof this.usageUnsubscribe === "function") {
+				this.usageUnsubscribe();
+				this.usageUnsubscribe = null;
+			}
+			this.usageUnsubscribe = ApiService.subscribeUsageChange((snapshot) => {
+				this.updateUsageDisplay(snapshot);
+			});
+		},
+		...sidebarViewMethods,
+		...sidebarEventsMethods,
+		...sidebarConversationMethods,
+		...sidebarSettingsMethods,
+		...sidebarStateMethods,
+		...sidebarToolMethods
 	};
 
 //#endregion
@@ -3096,7 +3256,7 @@
 	}
 
 //#endregion
-//#region src/features/auto-register.js
+//#region src/features/auto-register/shared.js
 	const X_LANGUAGE$1 = "zh-Hans";
 	const SITE_ENDPOINTS = {
 		SEND_CODE: "/console/api/register/email",
@@ -3122,37 +3282,10 @@
 		return message;
 	}
 	function normalizeTimestamp(value) {
-		if (typeof value === "number" && Number.isFinite(value)) {
-			return value;
-		}
-		if (typeof value === "string" && value.trim()) {
-			const parsedNumber = Number(value);
-			if (Number.isFinite(parsedNumber)) {
-				return parsedNumber;
-			}
-			const parsedDate = Date.parse(value);
-			if (Number.isFinite(parsedDate)) {
-				return parsedDate;
-			}
-		}
-		return 0;
+		return normalizeTimestamp$1(value);
 	}
-	function decodeEscapedText$1(raw) {
-		if (typeof raw !== "string") return "";
-		let value = raw;
-		for (let i = 0; i < 3; i++) {
-			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-				break;
-			}
-			try {
-				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
-				if (next === value) break;
-				value = next;
-			} catch {
-				break;
-			}
-		}
-		return value;
+	function decodeEscapedText(raw) {
+		return decodeEscapedText$1(raw);
 	}
 	function isAnswerEmpty(raw) {
 		if (raw === null || raw === undefined) return true;
@@ -3162,7 +3295,7 @@
 		if (source === "null" || source === "undefined" || source === "\"\"" || source === "''") {
 			return true;
 		}
-		const decoded = decodeEscapedText$1(raw).trim().toLowerCase();
+		const decoded = decodeEscapedText(raw).trim().toLowerCase();
 		if (!decoded) return true;
 		if (decoded === "null" || decoded === "undefined" || decoded === "\"\"" || decoded === "''") {
 			return true;
@@ -3216,15 +3349,12 @@
 		}
 		return error;
 	}
-	const AutoRegister = {
-		registrationStartTime: null,
-		switchingAccount: false,
+
+//#endregion
+//#region src/features/auto-register/runtime-methods.js
+	const RuntimeMethods = {
 		resolveRetryAttempts(maxAttempts) {
-			const parsed = Number(maxAttempts);
-			if (Number.isInteger(parsed) && parsed >= 1) {
-				return parsed;
-			}
-			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1;
+			return resolveRetryAttempts(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1);
 		},
 		isAutoReloadEnabled() {
 			const saved = gmGetValue(CONFIG.STORAGE_KEYS.AUTO_RELOAD_ENABLED, true);
@@ -3251,13 +3381,7 @@
 			return true;
 		},
 		isObjectiveRetryError(error) {
-			const status = Number(error?.httpStatus || 0);
-			if (status === 408 || status === 429 || status >= 500) {
-				return true;
-			}
-			const message = String(error?.message || "").toLowerCase();
-			if (!message) return false;
-			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("gm 请求失败") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+			return isRetryableNetworkError(error, { includeHttpStatus: true });
 		},
 		async runWithObjectiveRetries(task, { runCtx, step = "RETRY", actionName = "请求", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1, baseDelayMs = 800 } = {}) {
 			const attempts = this.resolveRetryAttempts(maxAttempts);
@@ -3281,7 +3405,12 @@
 				}
 			}
 			throw lastError || new Error(`${actionName} 执行失败`);
-		},
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/form-methods.js
+	const FormMethods = {
 		isRegisterPage() {
 			return !!document.querySelector("input#name") && !!document.querySelector("input#email") && !!document.querySelector("input#password");
 		},
@@ -3317,6 +3446,17 @@
 				element: null
 			};
 		},
+		fillForm(email, username, password) {
+			const { usernameInput, emailInput, passwordInput } = this.getFormElements();
+			if (usernameInput) this.simulateInput(usernameInput, username);
+			if (emailInput) this.simulateInput(emailInput, email);
+			if (passwordInput) this.simulateInput(passwordInput, password);
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/site-api-methods.js
+	const SiteApiMethods = {
 		async requestSiteApi(path, options = {}, runCtx, step = "SITE_API") {
 			const attempts = this.resolveRetryAttempts(options.maxAttempts);
 			return this.runWithObjectiveRetries(() => this.requestSiteApiOnce(path, options, runCtx, step), {
@@ -3605,242 +3745,12 @@
 			logInfo$1(runCtx, "SKIP_GUIDE", "开始跳过首次引导（快速模式：不请求 /profile 校验）");
 			await this.skipFirstGuideOnce(token, runCtx);
 			logInfo$1(runCtx, "SKIP_GUIDE", "首次引导跳过请求已提交（快速模式）");
-		},
-		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
-			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-				Sidebar.updateState({
-					status: "fetching",
-					statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
-				});
-				logInfo$1(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
-				const emails = await ApiService.getEmails(email);
-				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-				logDebug(runCtx, "POLL_CODE", "邮件列表详情", {
-					count: sortedEmails.length,
-					emails: sortedEmails
-				});
-				for (const mail of sortedEmails) {
-					const mailTime = mail.timestamp || 0;
-					if (startTime && mailTime < startTime - 60) {
-						continue;
-					}
-					const content = mail.content || mail.html_content || "";
-					const subject = mail.subject || "";
-					const code = extractVerificationCode(content) || extractVerificationCode(subject);
-					if (code) {
-						logInfo$1(runCtx, "POLL_CODE", `提取到验证码（第 ${attempt} 次轮询）`);
-						logDebug(runCtx, "POLL_CODE", "验证码完整值", { code });
-						return code;
-					}
-				}
-				if (attempt < maxAttempts) {
-					logWarn$1(runCtx, "POLL_CODE", `本轮未获取到验证码，${intervalMs}ms 后重试`);
-					await delay(intervalMs);
-				}
-			}
-			logError(runCtx, "POLL_CODE", "轮询窗口结束，仍未获取验证码");
-			return null;
-		},
-		async startLegacyRegisterAssist() {
-			const runCtx = createRunContext("LEGACY");
-			let currentStep = "初始化";
-			logInfo$1(runCtx, "START", "注册页模式：填表辅助 + 用户手动过验证码");
-			try {
-				if (!this.isRegisterPage()) {
-					throw new Error("当前不在注册页，请使用一键注册（接口）");
-				}
-				currentStep = "生成临时邮箱";
-				Sidebar.updateState({
-					status: "generating",
-					statusMessage: "正在生成临时邮箱..."
-				});
-				this.registrationStartTime = Math.floor(Date.now() / 1e3);
-				gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-				const email = await ApiService.generateEmail();
-				const username = generateUsername();
-				const password = generatePassword();
-				logInfo$1(runCtx, "GENERATE", "生成注册信息完成", {
-					email,
-					username,
-					password
-				});
-				Sidebar.updateState({
-					email,
-					username,
-					password,
-					statusMessage: "正在填充表单..."
-				});
-				gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
-				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
-				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
-				this.fillForm(email, username, password);
-				currentStep = "触发发送验证码";
-				const sendResult = this.findAndClickSendCodeButton();
-				if (sendResult.clicked) {
-					sendResult.element?.click();
-					Sidebar.updateState({
-						status: "waiting",
-						statusMessage: "表单已填充并触发发送验证码，请完成人机验证后点击页面注册",
-						verificationCode: ""
-					});
-					Toast.info("已填表并尝试发送验证码，请你完成人机验证后提交注册", 5e3);
-					logInfo$1(runCtx, "SEND_CODE", "已触发页面发送验证码按钮", { text: sendResult.text });
-				} else {
-					Sidebar.updateState({
-						status: "waiting",
-						statusMessage: "表单已填充，请手动点击发送验证码并完成人机验证",
-						verificationCode: ""
-					});
-					Toast.warning("已填表，但未找到发送验证码按钮，请手动操作", 5e3);
-					logWarn$1(runCtx, "SEND_CODE", "未找到发送验证码按钮");
-				}
-			} catch (error) {
-				const message = `${currentStep}失败: ${error.message}`;
-				Sidebar.updateState({
-					status: "error",
-					statusMessage: message
-				});
-				Toast.error(message);
-				logError(runCtx, "FAIL", message, {
-					errorName: error?.name,
-					stack: error?.stack
-				});
-			}
-		},
-		async registerByApi(runCtx, options = {}) {
-			const flowName = options.flowName || "一键注册";
-			const showStepToasts = options.showStepToasts !== false;
-			const markSuccess = options.markSuccess !== false;
-			let currentStep = "初始化";
-			currentStep = "生成临时邮箱";
-			Sidebar.updateState({
-				status: "generating",
-				statusMessage: `${flowName}：正在生成临时邮箱...`
-			});
-			if (showStepToasts) {
-				Toast.info(`${flowName}：正在生成临时邮箱`, 2200);
-			}
-			this.registrationStartTime = Math.floor(Date.now() / 1e3);
-			gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-			const email = await ApiService.generateEmail();
-			const username = generateUsername();
-			const password = generatePassword();
-			logInfo$1(runCtx, "GENERATE", `${flowName} 生成注册信息完成`, {
-				email,
-				username,
-				password
-			});
-			Sidebar.updateState({
-				email,
-				username,
-				password,
-				statusMessage: `${flowName}：正在填充表单...`
-			});
-			gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
-			gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
-			gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
-			this.fillForm(email, username, password);
-			currentStep = "发送验证码";
-			Sidebar.updateState({
-				status: "fetching",
-				statusMessage: `${flowName}：正在发送验证码...`,
-				verificationCode: ""
-			});
-			await this.sendRegisterEmailCode(email, runCtx);
-			if (showStepToasts) {
-				Toast.info(`${flowName}：验证码已发送，正在轮询邮箱`, 2200);
-			}
-			currentStep = "轮询邮箱验证码";
-			Sidebar.updateState({
-				status: "fetching",
-				statusMessage: `${flowName}：验证码已发送，正在自动轮询邮箱...`
-			});
-			const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2e3, runCtx);
-			if (!code) {
-				throw new Error("未在轮询窗口内获取到验证码");
-			}
-			if (showStepToasts) {
-				Toast.success(`${flowName}：已获取验证码`, 1800);
-			}
-			Sidebar.updateState({
-				verificationCode: code,
-				statusMessage: `${flowName}：验证码已获取: ${code}`
-			});
-			const { codeInput } = this.getFormElements();
-			if (codeInput) {
-				this.simulateInput(codeInput, code);
-				logInfo$1(runCtx, "FORM", `${flowName} 验证码已自动填充到输入框`);
-			} else {
-				logWarn$1(runCtx, "FORM", `${flowName} 未找到验证码输入框，跳过自动填充`);
-			}
-			currentStep = "获取注册令牌";
-			Sidebar.updateState({
-				status: "fetching",
-				statusMessage: `${flowName}：正在获取注册令牌...`
-			});
-			const regToken = await this.getRegToken(runCtx);
-			currentStep = "提交注册";
-			Sidebar.updateState({
-				status: "fetching",
-				statusMessage: `${flowName}：正在提交注册...`
-			});
-			const token = await this.registerWithCode({
-				username,
-				email,
-				password,
-				code,
-				regToken
-			}, runCtx);
-			localStorage.setItem("console_token", token);
-			logInfo$1(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
-			logDebug(runCtx, "AUTH", `${flowName} localStorage 写入 token 完整值`, { token });
-			if (showStepToasts) {
-				Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
-			}
-			currentStep = "跳过首次引导";
-			Sidebar.updateState({
-				status: "fetching",
-				statusMessage: `${flowName}：注册成功，正在跳过首次引导...`
-			});
-			if (showStepToasts) {
-				Toast.info(`${flowName}：正在跳过首次引导（快速模式）`, 2600);
-			}
-			let guideSkipped = true;
-			try {
-				await this.skipFirstGuide(token, runCtx);
-				if (showStepToasts) {
-					Toast.success(`${flowName}：首次引导已跳过`, 1800);
-				}
-			} catch (guideError) {
-				guideSkipped = false;
-				logError(runCtx, "SKIP_GUIDE", `${flowName} 首次引导跳过失败`, {
-					errorName: guideError?.name,
-					message: guideError?.message,
-					stack: guideError?.stack
-				});
-				Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6e3);
-			}
-			if (markSuccess) {
-				Sidebar.updateState({
-					status: "success",
-					statusMessage: guideSkipped ? `${flowName}成功，已写入 console_token 并跳过首次引导` : `${flowName}成功，已写入 console_token（首次引导跳过失败）`
-				});
-				Toast.success(guideSkipped ? `${flowName}完成：已自动跳过首次引导并写入登录态` : `${flowName}完成：已写入登录态；首次引导跳过失败`, 5e3);
-			} else {
-				Sidebar.updateState({
-					status: "fetching",
-					statusMessage: `${flowName}已完成注册，准备执行后续操作...`
-				});
-			}
-			return {
-				token,
-				guideSkipped,
-				email,
-				username,
-				password,
-				code
-			};
-		},
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/conversation-methods.js
+	const ConversationMethods = {
 		extractInstalledAppId() {
 			const matched = window.location.pathname.match(/\/(?:test-)?installed\/([0-9a-f-]+)/i);
 			return matched?.[1] || "";
@@ -3944,91 +3854,6 @@
 			}
 			throw new Error("messages 中所有 answer 均为空，已停止更换账号流程");
 		},
-		resolveSwitchTriggerWordFromWorldBook(worldBook) {
-			if (!Array.isArray(worldBook)) return "";
-			for (const entry of worldBook) {
-				const key = typeof entry?.key === "string" ? entry.key : "";
-				const triggerWord = normalizeSwitchTriggerWord(key);
-				if (triggerWord) {
-					return triggerWord;
-				}
-			}
-			return "";
-		},
-		prepareWorldBookConfigForSwitch({ baseConfig, answer, runCtx, explicitTriggerWord = "" }) {
-			const normalizedAnswer = decodeEscapedText$1(typeof answer === "string" ? answer : String(answer ?? "")).trim();
-			if (!normalizedAnswer) {
-				throw new Error("旧会话 answer 为空，无法写入 world_book");
-			}
-			const clonedConfig = cloneJsonSafe(baseConfig);
-			if (!clonedConfig || typeof clonedConfig !== "object" || Array.isArray(clonedConfig)) {
-				throw new Error("user_app_model_config 结构异常，无法写入 world_book");
-			}
-			const existingWorldBook = Array.isArray(clonedConfig.world_book) ? [...clonedConfig.world_book] : [];
-			const triggerWord = normalizeSwitchTriggerWord(explicitTriggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook);
-			const matchedIndex = existingWorldBook.findIndex((entry) => {
-				if (!entry || typeof entry !== "object") return false;
-				const key = typeof entry?.key === "string" ? entry.key : "";
-				return normalizeSwitchTriggerWord(key) === triggerWord;
-			});
-			const entryBase = matchedIndex >= 0 && existingWorldBook[matchedIndex] && typeof existingWorldBook[matchedIndex] === "object" ? { ...existingWorldBook[matchedIndex] } : {};
-			const entryKey = normalizeSwitchTriggerWord(entryBase.key) ? String(entryBase.key).trim() : `_or_${triggerWord}`;
-			const worldBookEntry = {
-				...entryBase,
-				key: entryKey,
-				value: normalizedAnswer,
-				group: typeof entryBase.group === "string" ? entryBase.group : "",
-				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 7,
-				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 2
-			};
-			const nextWorldBook = [...existingWorldBook];
-			if (matchedIndex >= 0) {
-				nextWorldBook[matchedIndex] = worldBookEntry;
-			} else {
-				nextWorldBook.unshift(worldBookEntry);
-			}
-			clonedConfig.world_book = nextWorldBook;
-			logInfo$1(runCtx, "SWITCH_WORLD_BOOK", matchedIndex >= 0 ? "已替换 world_book 触发词条目" : "已新增 world_book 触发词条目", {
-				triggerWord,
-				worldBookCount: nextWorldBook.length,
-				entryKey: worldBookEntry.key,
-				answerLength: normalizedAnswer.length
-			});
-			logDebug(runCtx, "SWITCH_WORLD_BOOK", "world_book 写入后的配置", { worldBook: nextWorldBook });
-			return {
-				config: clonedConfig,
-				triggerWord,
-				worldBookEntry,
-				replaced: matchedIndex >= 0
-			};
-		},
-		buildSwitchQuery({ triggerWord, appendText }) {
-			const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
-			const normalizedAppendText = typeof appendText === "string" ? appendText.trim() : "";
-			if (!normalizedAppendText) {
-				return normalizedTrigger;
-			}
-			if (normalizedAppendText.startsWith(normalizedTrigger)) {
-				return normalizedAppendText;
-			}
-			return `${normalizedTrigger}${normalizedAppendText}`;
-		},
-		extractWorldBookFromModelConfigPayload(payload) {
-			const candidates = [];
-			const data = payload?.data;
-			if (data && typeof data === "object" && !Array.isArray(data)) {
-				candidates.push(data);
-			}
-			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-				candidates.push(payload);
-			}
-			for (const item of candidates) {
-				if (Array.isArray(item.world_book)) {
-					return item.world_book;
-				}
-			}
-			return null;
-		},
 		async fetchConversationMessages({ appId, conversationId, token, runCtx, step = "SWITCH_FETCH_MESSAGES", limit = 100, type = "recent", maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$1 }) {
 			const path = `${SITE_ENDPOINTS.INSTALLED_MESSAGES}/${appId}/messages?conversation_id=${encodeURIComponent(conversationId)}&limit=${encodeURIComponent(limit)}&type=${encodeURIComponent(type)}`;
 			const payload = await this.requestSiteApi(path, {
@@ -4107,9 +3932,9 @@
 			const modelConfig = data?.model_config && typeof data.model_config === "object" ? data.model_config : data?.modelConfig && typeof data.modelConfig === "object" ? data.modelConfig : {};
 			return {
 				appId,
-				name: decodeEscapedText$1(typeof appInfo?.name === "string" ? appInfo.name : ""),
-				description: decodeEscapedText$1(typeof appInfo?.description === "string" ? appInfo.description : ""),
-				builtInCss: decodeEscapedText$1(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : ""),
+				name: decodeEscapedText(typeof appInfo?.name === "string" ? appInfo.name : ""),
+				description: decodeEscapedText(typeof appInfo?.description === "string" ? appInfo.description : ""),
+				builtInCss: decodeEscapedText(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : ""),
 				raw: payload
 			};
 		},
@@ -4148,6 +3973,276 @@
 				throw new Error("messages 接口未返回可用 data");
 			}
 			return this.extractLatestAnswerFromMessages(messages, runCtx, "SWITCH_FETCH_MESSAGES");
+		},
+		async loadConversationChainsForCurrentApp({ appId = "" } = {}) {
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
+			if (!resolvedAppId) {
+				return {
+					appId: "",
+					chains: [],
+					activeChainId: "",
+					currentConversationId: ""
+				};
+			}
+			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+			const currentTokenSignature = buildTokenSignature(localStorage.getItem("console_token") || "");
+			if (currentConversationId) {
+				await ChatHistoryService.bindConversation({
+					appId: resolvedAppId,
+					conversationId: currentConversationId,
+					tokenSignature: currentTokenSignature
+				});
+			}
+			const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
+			const chainsWithStats = await Promise.all(chains.map(async (chain) => {
+				const stats = await ChatHistoryService.getChainStats(chain.chainId);
+				return {
+					...chain,
+					...stats
+				};
+			}));
+			let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+			if (!activeChainId && chainsWithStats[0]?.chainId) {
+				activeChainId = chainsWithStats[0].chainId;
+				ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
+			}
+			return {
+				appId: resolvedAppId,
+				chains: chainsWithStats,
+				activeChainId,
+				currentConversationId
+			};
+		},
+		async getConversationViewerHtml({ appId, chainId }) {
+			const resolvedAppId = typeof appId === "string" ? appId.trim() : "";
+			if (!resolvedAppId) {
+				return "<html><body><p>当前页面未识别到 appId。</p></body></html>";
+			}
+			const resolvedChainId = (typeof chainId === "string" ? chainId.trim() : "") || ChatHistoryService.getActiveChainId(resolvedAppId);
+			if (!resolvedChainId) {
+				return "<html><body><p>当前应用暂无本地会话链。</p></body></html>";
+			}
+			return ChatHistoryService.buildChainViewerHtml({
+				appId: resolvedAppId,
+				chainId: resolvedChainId
+			});
+		},
+		async manualSyncConversationChain({ appId = "", chainId = "" } = {}) {
+			const runCtx = createRunContext("SYNC");
+			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
+			if (!resolvedAppId) {
+				throw new Error("当前页面不是 installed/test-installed 详情页");
+			}
+			const token = (localStorage.getItem("console_token") || "").trim();
+			if (!token) {
+				throw new Error("未找到 console_token，请先登录后再同步");
+			}
+			const tokenSignature = buildTokenSignature(token);
+			await this.syncAppMetaToLocalHistory({
+				appId: resolvedAppId,
+				token,
+				runCtx,
+				step: "SYNC_APP_META"
+			});
+			let resolvedChainId = typeof chainId === "string" ? chainId.trim() : "";
+			if (!resolvedChainId) {
+				resolvedChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
+			}
+			if (!resolvedChainId) {
+				const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+				if (currentConversationId) {
+					const binding = await ChatHistoryService.bindConversation({
+						appId: resolvedAppId,
+						conversationId: currentConversationId,
+						tokenSignature
+					});
+					resolvedChainId = binding.chainId;
+				}
+			}
+			if (!resolvedChainId) {
+				throw new Error("未找到可同步的会话链");
+			}
+			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
+			if (currentConversationId) {
+				await ChatHistoryService.bindConversation({
+					appId: resolvedAppId,
+					conversationId: currentConversationId,
+					preferredChainId: resolvedChainId,
+					tokenSignature
+				});
+			}
+			const chain = await ChatHistoryService.getChain(resolvedChainId);
+			if (!chain) {
+				throw new Error(`会话链不存在: ${resolvedChainId}`);
+			}
+			const conversationIds = Array.isArray(chain.conversationIds) ? chain.conversationIds.filter((item) => typeof item === "string" && item.trim()) : [];
+			if (conversationIds.length === 0) {
+				throw new Error("当前会话链无 conversation_id，无法同步");
+			}
+			const allowedConversationIds = [];
+			const skippedNoPermissionConversationIds = [];
+			for (const conversationId of conversationIds) {
+				const bindingToken = ChatHistoryService.getConversationTokenSignature(resolvedAppId, conversationId);
+				if (!bindingToken || bindingToken !== tokenSignature) {
+					skippedNoPermissionConversationIds.push(conversationId);
+					continue;
+				}
+				allowedConversationIds.push(conversationId);
+			}
+			logInfo$1(runCtx, "SYNC", "会话同步过滤结果（按 token 绑定）", {
+				chainId: resolvedChainId,
+				totalConversationCount: conversationIds.length,
+				allowedConversationCount: allowedConversationIds.length,
+				skippedNoPermissionCount: skippedNoPermissionConversationIds.length
+			});
+			if (allowedConversationIds.length === 0) {
+				throw new Error("当前链路会话均不属于当前账号 token，已跳过无权限同步");
+			}
+			let totalFetched = 0;
+			let totalSaved = 0;
+			let hasIncomplete = false;
+			let successCount = 0;
+			const failedConversationIds = [];
+			for (const conversationId of allowedConversationIds) {
+				try {
+					const result = await this.fetchConversationMessages({
+						appId: resolvedAppId,
+						conversationId,
+						token,
+						runCtx,
+						step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
+						limit: 100,
+						type: "recent"
+					});
+					totalFetched += result.messages.length;
+					if (result.hasPastRecord || result.isEarliestDataPage === false) {
+						hasIncomplete = true;
+					}
+					const storeResult = await ChatHistoryService.saveConversationMessages({
+						appId: resolvedAppId,
+						conversationId,
+						chainId: resolvedChainId,
+						tokenSignature,
+						messages: result.messages
+					});
+					totalSaved += storeResult.savedCount;
+					successCount++;
+				} catch (error) {
+					failedConversationIds.push(conversationId);
+					logWarn$1(runCtx, "SYNC", "单个会话同步失败，继续同步其他会话", {
+						conversationId,
+						message: error?.message || String(error)
+					});
+				}
+			}
+			if (successCount === 0) {
+				throw new Error("会话同步失败：所有 conversation_id 均同步失败");
+			}
+			ChatHistoryService.markChainSynced(resolvedChainId, Date.now());
+			ChatHistoryService.setActiveChainId(resolvedAppId, resolvedChainId);
+			return {
+				appId: resolvedAppId,
+				chainId: resolvedChainId,
+				conversationIds: allowedConversationIds,
+				skippedNoPermissionConversationIds,
+				skippedNoPermissionCount: skippedNoPermissionConversationIds.length,
+				successCount,
+				failedCount: failedConversationIds.length,
+				failedConversationIds,
+				totalFetched,
+				totalSaved,
+				hasIncomplete
+			};
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/model-config-methods.js
+	const ModelConfigMethods = {
+		resolveSwitchTriggerWordFromWorldBook(worldBook) {
+			if (!Array.isArray(worldBook)) return "";
+			for (const entry of worldBook) {
+				const key = typeof entry?.key === "string" ? entry.key : "";
+				const triggerWord = normalizeSwitchTriggerWord(key);
+				if (triggerWord) {
+					return triggerWord;
+				}
+			}
+			return "";
+		},
+		prepareWorldBookConfigForSwitch({ baseConfig, answer, runCtx, explicitTriggerWord = "" }) {
+			const normalizedAnswer = decodeEscapedText(typeof answer === "string" ? answer : String(answer ?? "")).trim();
+			if (!normalizedAnswer) {
+				throw new Error("旧会话 answer 为空，无法写入 world_book");
+			}
+			const clonedConfig = cloneJsonSafe(baseConfig);
+			if (!clonedConfig || typeof clonedConfig !== "object" || Array.isArray(clonedConfig)) {
+				throw new Error("user_app_model_config 结构异常，无法写入 world_book");
+			}
+			const existingWorldBook = Array.isArray(clonedConfig.world_book) ? [...clonedConfig.world_book] : [];
+			const triggerWord = normalizeSwitchTriggerWord(explicitTriggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER || this.resolveSwitchTriggerWordFromWorldBook(existingWorldBook);
+			const matchedIndex = existingWorldBook.findIndex((entry) => {
+				if (!entry || typeof entry !== "object") return false;
+				const key = typeof entry?.key === "string" ? entry.key : "";
+				return normalizeSwitchTriggerWord(key) === triggerWord;
+			});
+			const entryBase = matchedIndex >= 0 && existingWorldBook[matchedIndex] && typeof existingWorldBook[matchedIndex] === "object" ? { ...existingWorldBook[matchedIndex] } : {};
+			const entryKey = normalizeSwitchTriggerWord(entryBase.key) ? String(entryBase.key).trim() : `_or_${triggerWord}`;
+			const worldBookEntry = {
+				...entryBase,
+				key: entryKey,
+				value: normalizedAnswer,
+				group: typeof entryBase.group === "string" ? entryBase.group : "",
+				key_region: Number.isFinite(Number(entryBase.key_region)) ? Number(entryBase.key_region) : 7,
+				value_region: Number.isFinite(Number(entryBase.value_region)) ? Number(entryBase.value_region) : 2
+			};
+			const nextWorldBook = [...existingWorldBook];
+			if (matchedIndex >= 0) {
+				nextWorldBook[matchedIndex] = worldBookEntry;
+			} else {
+				nextWorldBook.unshift(worldBookEntry);
+			}
+			clonedConfig.world_book = nextWorldBook;
+			logInfo$1(runCtx, "SWITCH_WORLD_BOOK", matchedIndex >= 0 ? "已替换 world_book 触发词条目" : "已新增 world_book 触发词条目", {
+				triggerWord,
+				worldBookCount: nextWorldBook.length,
+				entryKey: worldBookEntry.key,
+				answerLength: normalizedAnswer.length
+			});
+			logDebug(runCtx, "SWITCH_WORLD_BOOK", "world_book 写入后的配置", { worldBook: nextWorldBook });
+			return {
+				config: clonedConfig,
+				triggerWord,
+				worldBookEntry,
+				replaced: matchedIndex >= 0
+			};
+		},
+		buildSwitchQuery({ triggerWord, appendText }) {
+			const normalizedTrigger = normalizeSwitchTriggerWord(triggerWord) || DEFAULT_SWITCH_WORLD_BOOK_TRIGGER;
+			const normalizedAppendText = typeof appendText === "string" ? appendText.trim() : "";
+			if (!normalizedAppendText) {
+				return normalizedTrigger;
+			}
+			if (normalizedAppendText.startsWith(normalizedTrigger)) {
+				return normalizedAppendText;
+			}
+			return `${normalizedTrigger}${normalizedAppendText}`;
+		},
+		extractWorldBookFromModelConfigPayload(payload) {
+			const candidates = [];
+			const data = payload?.data;
+			if (data && typeof data === "object" && !Array.isArray(data)) {
+				candidates.push(data);
+			}
+			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+				candidates.push(payload);
+			}
+			for (const item of candidates) {
+				if (Array.isArray(item.world_book)) {
+					return item.world_book;
+				}
+			}
+			return null;
 		},
 		async fetchUserAppModelConfig({ appId, token, runCtx }) {
 			const path = `${SITE_ENDPOINTS.APPS}/${appId}/user_app_model_config`;
@@ -4206,7 +4301,12 @@
 				return lastPayload;
 			}
 			return lastPayload;
-		},
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/chat-messages-methods.js
+	const ChatMessagesMethods = {
 		async sendChatMessagesAndReload({ appId, token, query, conversationName, runCtx }) {
 			const path = `${SITE_ENDPOINTS.CHAT_MESSAGES}/${appId}/chat-messages`;
 			const url = `${window.location.origin}${path}`;
@@ -4572,6 +4672,246 @@
 					}
 				})();
 			});
+		}
+	};
+
+//#endregion
+//#region src/features/auto-register/flow-methods.js
+	const FlowMethods = {
+		async pollVerificationCode(email, startTime, maxAttempts = 10, intervalMs = 2e3, runCtx) {
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: `正在轮询验证码邮件... (${attempt}/${maxAttempts})`
+				});
+				logInfo$1(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
+				const emails = await ApiService.getEmails(email);
+				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+				logDebug(runCtx, "POLL_CODE", "邮件列表详情", {
+					count: sortedEmails.length,
+					emails: sortedEmails
+				});
+				for (const mail of sortedEmails) {
+					const mailTime = mail.timestamp || 0;
+					if (startTime && mailTime < startTime - 60) {
+						continue;
+					}
+					const content = mail.content || mail.html_content || "";
+					const subject = mail.subject || "";
+					const code = extractVerificationCode(content) || extractVerificationCode(subject);
+					if (code) {
+						logInfo$1(runCtx, "POLL_CODE", `提取到验证码（第 ${attempt} 次轮询）`);
+						logDebug(runCtx, "POLL_CODE", "验证码完整值", { code });
+						return code;
+					}
+				}
+				if (attempt < maxAttempts) {
+					logWarn$1(runCtx, "POLL_CODE", `本轮未获取到验证码，${intervalMs}ms 后重试`);
+					await delay(intervalMs);
+				}
+			}
+			logError(runCtx, "POLL_CODE", "轮询窗口结束，仍未获取验证码");
+			return null;
+		},
+		async startLegacyRegisterAssist() {
+			const runCtx = createRunContext("LEGACY");
+			let currentStep = "初始化";
+			logInfo$1(runCtx, "START", "注册页模式：填表辅助 + 用户手动过验证码");
+			try {
+				if (!this.isRegisterPage()) {
+					throw new Error("当前不在注册页，请使用一键注册（接口）");
+				}
+				currentStep = "生成临时邮箱";
+				Sidebar.updateState({
+					status: "generating",
+					statusMessage: "正在生成临时邮箱..."
+				});
+				this.registrationStartTime = Math.floor(Date.now() / 1e3);
+				gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
+				const email = await ApiService.generateEmail();
+				const username = generateUsername();
+				const password = generatePassword();
+				logInfo$1(runCtx, "GENERATE", "生成注册信息完成", {
+					email,
+					username,
+					password
+				});
+				Sidebar.updateState({
+					email,
+					username,
+					password,
+					statusMessage: "正在填充表单..."
+				});
+				gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
+				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
+				gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
+				this.fillForm(email, username, password);
+				currentStep = "触发发送验证码";
+				const sendResult = this.findAndClickSendCodeButton();
+				if (sendResult.clicked) {
+					sendResult.element?.click();
+					Sidebar.updateState({
+						status: "waiting",
+						statusMessage: "表单已填充并触发发送验证码，请完成人机验证后点击页面注册",
+						verificationCode: ""
+					});
+					Toast.info("已填表并尝试发送验证码，请你完成人机验证后提交注册", 5e3);
+					logInfo$1(runCtx, "SEND_CODE", "已触发页面发送验证码按钮", { text: sendResult.text });
+				} else {
+					Sidebar.updateState({
+						status: "waiting",
+						statusMessage: "表单已填充，请手动点击发送验证码并完成人机验证",
+						verificationCode: ""
+					});
+					Toast.warning("已填表，但未找到发送验证码按钮，请手动操作", 5e3);
+					logWarn$1(runCtx, "SEND_CODE", "未找到发送验证码按钮");
+				}
+			} catch (error) {
+				const message = `${currentStep}失败: ${error.message}`;
+				Sidebar.updateState({
+					status: "error",
+					statusMessage: message
+				});
+				Toast.error(message);
+				logError(runCtx, "FAIL", message, {
+					errorName: error?.name,
+					stack: error?.stack
+				});
+			}
+		},
+		async registerByApi(runCtx, options = {}) {
+			const flowName = options.flowName || "一键注册";
+			const showStepToasts = options.showStepToasts !== false;
+			const markSuccess = options.markSuccess !== false;
+			let currentStep = "初始化";
+			currentStep = "生成临时邮箱";
+			Sidebar.updateState({
+				status: "generating",
+				statusMessage: `${flowName}：正在生成临时邮箱...`
+			});
+			if (showStepToasts) {
+				Toast.info(`${flowName}：正在生成临时邮箱`, 2200);
+			}
+			this.registrationStartTime = Math.floor(Date.now() / 1e3);
+			gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
+			const email = await ApiService.generateEmail();
+			const username = generateUsername();
+			const password = generatePassword();
+			logInfo$1(runCtx, "GENERATE", `${flowName} 生成注册信息完成`, {
+				email,
+				username,
+				password
+			});
+			Sidebar.updateState({
+				email,
+				username,
+				password,
+				statusMessage: `${flowName}：正在填充表单...`
+			});
+			gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, email);
+			gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_USERNAME, username);
+			gmSetValue(CONFIG.STORAGE_KEYS.GENERATED_PASSWORD, password);
+			this.fillForm(email, username, password);
+			currentStep = "发送验证码";
+			Sidebar.updateState({
+				status: "fetching",
+				statusMessage: `${flowName}：正在发送验证码...`,
+				verificationCode: ""
+			});
+			await this.sendRegisterEmailCode(email, runCtx);
+			if (showStepToasts) {
+				Toast.info(`${flowName}：验证码已发送，正在轮询邮箱`, 2200);
+			}
+			currentStep = "轮询邮箱验证码";
+			Sidebar.updateState({
+				status: "fetching",
+				statusMessage: `${flowName}：验证码已发送，正在自动轮询邮箱...`
+			});
+			const code = await this.pollVerificationCode(email, this.registrationStartTime, 10, 2e3, runCtx);
+			if (!code) {
+				throw new Error("未在轮询窗口内获取到验证码");
+			}
+			if (showStepToasts) {
+				Toast.success(`${flowName}：已获取验证码`, 1800);
+			}
+			Sidebar.updateState({
+				verificationCode: code,
+				statusMessage: `${flowName}：验证码已获取: ${code}`
+			});
+			const { codeInput } = this.getFormElements();
+			if (codeInput) {
+				this.simulateInput(codeInput, code);
+				logInfo$1(runCtx, "FORM", `${flowName} 验证码已自动填充到输入框`);
+			} else {
+				logWarn$1(runCtx, "FORM", `${flowName} 未找到验证码输入框，跳过自动填充`);
+			}
+			currentStep = "获取注册令牌";
+			Sidebar.updateState({
+				status: "fetching",
+				statusMessage: `${flowName}：正在获取注册令牌...`
+			});
+			const regToken = await this.getRegToken(runCtx);
+			currentStep = "提交注册";
+			Sidebar.updateState({
+				status: "fetching",
+				statusMessage: `${flowName}：正在提交注册...`
+			});
+			const token = await this.registerWithCode({
+				username,
+				email,
+				password,
+				code,
+				regToken
+			}, runCtx);
+			localStorage.setItem("console_token", token);
+			logInfo$1(runCtx, "AUTH", `${flowName} 已写入 localStorage.console_token`);
+			logDebug(runCtx, "AUTH", `${flowName} localStorage 写入 token 完整值`, { token });
+			if (showStepToasts) {
+				Toast.success(`${flowName}：注册成功，已写入 console_token`, 2400);
+			}
+			currentStep = "跳过首次引导";
+			Sidebar.updateState({
+				status: "fetching",
+				statusMessage: `${flowName}：注册成功，正在跳过首次引导...`
+			});
+			if (showStepToasts) {
+				Toast.info(`${flowName}：正在跳过首次引导（快速模式）`, 2600);
+			}
+			let guideSkipped = true;
+			try {
+				await this.skipFirstGuide(token, runCtx);
+				if (showStepToasts) {
+					Toast.success(`${flowName}：首次引导已跳过`, 1800);
+				}
+			} catch (guideError) {
+				guideSkipped = false;
+				logError(runCtx, "SKIP_GUIDE", `${flowName} 首次引导跳过失败`, {
+					errorName: guideError?.name,
+					message: guideError?.message,
+					stack: guideError?.stack
+				});
+				Toast.warning(`${flowName}：注册成功，但跳过首次引导失败: ${guideError.message}`, 6e3);
+			}
+			if (markSuccess) {
+				Sidebar.updateState({
+					status: "success",
+					statusMessage: guideSkipped ? `${flowName}成功，已写入 console_token 并跳过首次引导` : `${flowName}成功，已写入 console_token（首次引导跳过失败）`
+				});
+				Toast.success(guideSkipped ? `${flowName}完成：已自动跳过首次引导并写入登录态` : `${flowName}完成：已写入登录态；首次引导跳过失败`, 5e3);
+			} else {
+				Sidebar.updateState({
+					status: "fetching",
+					statusMessage: `${flowName}已完成注册，准备执行后续操作...`
+				});
+			}
+			return {
+				token,
+				guideSkipped,
+				email,
+				username,
+				password,
+				code
+			};
 		},
 		async startOneClickRegister() {
 			const runCtx = createRunContext("REG");
@@ -4732,7 +5072,7 @@
 					throw new Error("旧会话消息为空，无法继续更换账号");
 				}
 				const latest = this.extractLatestAnswerFromMessages(oldConversation.messages, runCtx, "SWITCH_FETCH_MESSAGES");
-				const decodedAnswer = decodeEscapedText$1(latest.answer);
+				const decodedAnswer = decodeEscapedText(latest.answer);
 				if (!decodedAnswer.trim()) {
 					throw new Error("最新消息 answer 解码后为空");
 				}
@@ -4878,186 +5218,6 @@
 				}
 			}
 		},
-		async loadConversationChainsForCurrentApp({ appId = "" } = {}) {
-			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
-			if (!resolvedAppId) {
-				return {
-					appId: "",
-					chains: [],
-					activeChainId: "",
-					currentConversationId: ""
-				};
-			}
-			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
-			const currentTokenSignature = buildTokenSignature(localStorage.getItem("console_token") || "");
-			if (currentConversationId) {
-				await ChatHistoryService.bindConversation({
-					appId: resolvedAppId,
-					conversationId: currentConversationId,
-					tokenSignature: currentTokenSignature
-				});
-			}
-			const chains = await ChatHistoryService.listChainsForApp(resolvedAppId);
-			const chainsWithStats = await Promise.all(chains.map(async (chain) => {
-				const stats = await ChatHistoryService.getChainStats(chain.chainId);
-				return {
-					...chain,
-					...stats
-				};
-			}));
-			let activeChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
-			if (!activeChainId && chainsWithStats[0]?.chainId) {
-				activeChainId = chainsWithStats[0].chainId;
-				ChatHistoryService.setActiveChainId(resolvedAppId, activeChainId);
-			}
-			return {
-				appId: resolvedAppId,
-				chains: chainsWithStats,
-				activeChainId,
-				currentConversationId
-			};
-		},
-		async getConversationViewerHtml({ appId, chainId }) {
-			const resolvedAppId = typeof appId === "string" ? appId.trim() : "";
-			if (!resolvedAppId) {
-				return "<html><body><p>当前页面未识别到 appId。</p></body></html>";
-			}
-			const resolvedChainId = (typeof chainId === "string" ? chainId.trim() : "") || ChatHistoryService.getActiveChainId(resolvedAppId);
-			if (!resolvedChainId) {
-				return "<html><body><p>当前应用暂无本地会话链。</p></body></html>";
-			}
-			return ChatHistoryService.buildChainViewerHtml({
-				appId: resolvedAppId,
-				chainId: resolvedChainId
-			});
-		},
-		async manualSyncConversationChain({ appId = "", chainId = "" } = {}) {
-			const runCtx = createRunContext("SYNC");
-			const resolvedAppId = (typeof appId === "string" ? appId.trim() : "") || this.extractInstalledAppId();
-			if (!resolvedAppId) {
-				throw new Error("当前页面不是 installed/test-installed 详情页");
-			}
-			const token = (localStorage.getItem("console_token") || "").trim();
-			if (!token) {
-				throw new Error("未找到 console_token，请先登录后再同步");
-			}
-			const tokenSignature = buildTokenSignature(token);
-			await this.syncAppMetaToLocalHistory({
-				appId: resolvedAppId,
-				token,
-				runCtx,
-				step: "SYNC_APP_META"
-			});
-			let resolvedChainId = typeof chainId === "string" ? chainId.trim() : "";
-			if (!resolvedChainId) {
-				resolvedChainId = ChatHistoryService.getActiveChainId(resolvedAppId);
-			}
-			if (!resolvedChainId) {
-				const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
-				if (currentConversationId) {
-					const binding = await ChatHistoryService.bindConversation({
-						appId: resolvedAppId,
-						conversationId: currentConversationId,
-						tokenSignature
-					});
-					resolvedChainId = binding.chainId;
-				}
-			}
-			if (!resolvedChainId) {
-				throw new Error("未找到可同步的会话链");
-			}
-			const currentConversationId = this.readConversationIdByAppIdSafe(resolvedAppId);
-			if (currentConversationId) {
-				await ChatHistoryService.bindConversation({
-					appId: resolvedAppId,
-					conversationId: currentConversationId,
-					preferredChainId: resolvedChainId,
-					tokenSignature
-				});
-			}
-			const chain = await ChatHistoryService.getChain(resolvedChainId);
-			if (!chain) {
-				throw new Error(`会话链不存在: ${resolvedChainId}`);
-			}
-			const conversationIds = Array.isArray(chain.conversationIds) ? chain.conversationIds.filter((item) => typeof item === "string" && item.trim()) : [];
-			if (conversationIds.length === 0) {
-				throw new Error("当前会话链无 conversation_id，无法同步");
-			}
-			const allowedConversationIds = [];
-			const skippedNoPermissionConversationIds = [];
-			for (const conversationId of conversationIds) {
-				const bindingToken = ChatHistoryService.getConversationTokenSignature(resolvedAppId, conversationId);
-				if (!bindingToken || bindingToken !== tokenSignature) {
-					skippedNoPermissionConversationIds.push(conversationId);
-					continue;
-				}
-				allowedConversationIds.push(conversationId);
-			}
-			logInfo$1(runCtx, "SYNC", "会话同步过滤结果（按 token 绑定）", {
-				chainId: resolvedChainId,
-				totalConversationCount: conversationIds.length,
-				allowedConversationCount: allowedConversationIds.length,
-				skippedNoPermissionCount: skippedNoPermissionConversationIds.length
-			});
-			if (allowedConversationIds.length === 0) {
-				throw new Error("当前链路会话均不属于当前账号 token，已跳过无权限同步");
-			}
-			let totalFetched = 0;
-			let totalSaved = 0;
-			let hasIncomplete = false;
-			let successCount = 0;
-			const failedConversationIds = [];
-			for (const conversationId of allowedConversationIds) {
-				try {
-					const result = await this.fetchConversationMessages({
-						appId: resolvedAppId,
-						conversationId,
-						token,
-						runCtx,
-						step: `SYNC_MESSAGES_${successCount + failedConversationIds.length + 1}`,
-						limit: 100,
-						type: "recent"
-					});
-					totalFetched += result.messages.length;
-					if (result.hasPastRecord || result.isEarliestDataPage === false) {
-						hasIncomplete = true;
-					}
-					const storeResult = await ChatHistoryService.saveConversationMessages({
-						appId: resolvedAppId,
-						conversationId,
-						chainId: resolvedChainId,
-						tokenSignature,
-						messages: result.messages
-					});
-					totalSaved += storeResult.savedCount;
-					successCount++;
-				} catch (error) {
-					failedConversationIds.push(conversationId);
-					logWarn$1(runCtx, "SYNC", "单个会话同步失败，继续同步其他会话", {
-						conversationId,
-						message: error?.message || String(error)
-					});
-				}
-			}
-			if (successCount === 0) {
-				throw new Error("会话同步失败：所有 conversation_id 均同步失败");
-			}
-			ChatHistoryService.markChainSynced(resolvedChainId, Date.now());
-			ChatHistoryService.setActiveChainId(resolvedAppId, resolvedChainId);
-			return {
-				appId: resolvedAppId,
-				chainId: resolvedChainId,
-				conversationIds: allowedConversationIds,
-				skippedNoPermissionConversationIds,
-				skippedNoPermissionCount: skippedNoPermissionConversationIds.length,
-				successCount,
-				failedCount: failedConversationIds.length,
-				failedConversationIds,
-				totalFetched,
-				totalSaved,
-				hasIncomplete
-			};
-		},
 		async start() {
 			if (this.isRegisterPage()) {
 				await this.startLegacyRegisterAssist();
@@ -5099,12 +5259,6 @@
 					stack: error?.stack
 				});
 			}
-		},
-		fillForm(email, username, password) {
-			const { usernameInput, emailInput, passwordInput } = this.getFormElements();
-			if (usernameInput) this.simulateInput(usernameInput, username);
-			if (emailInput) this.simulateInput(emailInput, email);
-			if (passwordInput) this.simulateInput(passwordInput, password);
 		},
 		async fetchVerificationCode() {
 			const runCtx = createRunContext("CODE");
@@ -5165,26 +5319,23 @@
 	};
 
 //#endregion
+//#region src/features/auto-register.js
+	const AutoRegister = {
+		registrationStartTime: null,
+		switchingAccount: false,
+		...RuntimeMethods,
+		...FormMethods,
+		...SiteApiMethods,
+		...ConversationMethods,
+		...ModelConfigMethods,
+		...ChatMessagesMethods,
+		...FlowMethods
+	};
+
+//#endregion
 //#region src/features/iframe-extractor.js
 	const X_LANGUAGE = "zh-Hans";
 	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
-	function decodeEscapedText(raw) {
-		if (typeof raw !== "string") return "";
-		let value = raw;
-		for (let i = 0; i < 3; i++) {
-			if (!/\\u[0-9a-fA-F]{4}|\\[nrt"\\/]/.test(value)) {
-				break;
-			}
-			try {
-				const next = JSON.parse(`"${value.replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
-				if (next === value) break;
-				value = next;
-			} catch {
-				break;
-			}
-		}
-		return value;
-	}
 	function sanitizeFilename(value) {
 		const normalized = String(value || "").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
 		return normalized || "aifengyue-app";
@@ -5258,20 +5409,10 @@
 			return title.replace(/\s*-\s*Powered by AI风月\s*$/i, "").trim();
 		},
 		resolveRetryAttempts(maxAttempts) {
-			const parsed = Number(maxAttempts);
-			if (Number.isInteger(parsed) && parsed >= 1) {
-				return parsed;
-			}
-			return DEFAULT_OBJECTIVE_RETRY_ATTEMPTS;
+			return resolveRetryAttempts(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS);
 		},
 		isObjectiveRetryError(error) {
-			const status = Number(error?.httpStatus || 0);
-			if (status === 408 || status === 429 || status >= 500) {
-				return true;
-			}
-			const message = String(error?.message || "").toLowerCase();
-			if (!message) return false;
-			return message.includes("timeout") || message.includes("超时") || message.includes("network") || message.includes("网络") || message.includes("failed") || message.includes("中止") || message.includes("abort");
+			return isRetryableNetworkError(error, { includeHttpStatus: true });
 		},
 		async requestAppDetail({ appId, token, maxAttempts = DEFAULT_OBJECTIVE_RETRY_ATTEMPTS }) {
 			const attempts = this.resolveRetryAttempts(maxAttempts);
@@ -5315,9 +5456,9 @@
 			const appInfo = data?.apps && typeof data.apps === "object" ? data.apps : data?.app && typeof data.app === "object" ? data.app : {};
 			const modelConfig = data?.model_config && typeof data.model_config === "object" ? data.model_config : data?.modelConfig && typeof data.modelConfig === "object" ? data.modelConfig : {};
 			return {
-				name: decodeEscapedText(typeof appInfo?.name === "string" ? appInfo.name : "") || fallbackTitle,
-				description: decodeEscapedText(typeof appInfo?.description === "string" ? appInfo.description : ""),
-				builtInCss: decodeEscapedText(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : "")
+				name: decodeEscapedText$1(typeof appInfo?.name === "string" ? appInfo.name : "") || fallbackTitle,
+				description: decodeEscapedText$1(typeof appInfo?.description === "string" ? appInfo.description : ""),
+				builtInCss: decodeEscapedText$1(typeof modelConfig?.built_in_css === "string" ? modelConfig.built_in_css : "")
 			};
 		},
 		buildHtmlDocument({ name, description, builtInCss }) {
@@ -5825,22 +5966,14 @@
 	};
 
 //#endregion
-//#region src/runtime/chat-messages-monitor.js
+//#region src/runtime/chat-monitor/constants.js
 	const CHAT_MESSAGES_PATH = "/chat-messages";
-	const LOG_PREFIX = "[AI风月注册助手][CHAT_MONITOR]";
 	const DEFAULT_TIMEOUT_SECONDS = 0;
 	const MAX_TIMEOUT_SECONDS = 300;
-	function normalizeTimeoutSeconds(value) {
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) return 0;
-		const normalized = Math.floor(parsed);
-		if (normalized <= 0) return 0;
-		return Math.min(normalized, MAX_TIMEOUT_SECONDS);
-	}
-	function getChatMessagesTimeoutSeconds() {
-		const saved = gmGetValue(CONFIG.STORAGE_KEYS.CHAT_MESSAGES_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS);
-		return normalizeTimeoutSeconds(saved);
-	}
+
+//#endregion
+//#region src/runtime/chat-monitor/logger.js
+	const LOG_PREFIX = "[AI风月注册助手][CHAT_MONITOR]";
 	function logInfo(message, meta) {
 		if (meta === undefined) {
 			console.log(`${LOG_PREFIX} ${message}`);
@@ -5855,6 +5988,9 @@
 		}
 		console.warn(`${LOG_PREFIX} ${message}`, meta);
 	}
+
+//#endregion
+//#region src/runtime/chat-monitor/state-publisher.js
 	function getUnsafeWindow() {
 		const candidate = globalThis && globalThis.unsafeWindow;
 		if (!candidate) return null;
@@ -5873,38 +6009,28 @@
 			targetWindow.__AF_CHAT_MONITOR__ = state;
 		} catch {}
 	}
-	function toAbsoluteUrl(input, baseOrigin = window.location.origin) {
-		if (input instanceof URL) {
-			return input.href;
-		}
-		if (typeof input === "string") {
-			try {
-				return new URL(input, baseOrigin).href;
-			} catch {
-				return "";
-			}
-		}
-		if (input && typeof input.url === "string") {
-			try {
-				return new URL(input.url, baseOrigin).href;
-			} catch {
-				return "";
-			}
-		}
-		return "";
+	function appendMonitorState(targetWindow, patch) {
+		const prev = targetWindow && targetWindow.__AF_CHAT_MONITOR__ || window.__AF_CHAT_MONITOR__ || {};
+		const next = {
+			...prev,
+			...patch,
+			updatedAt: new Date().toISOString()
+		};
+		publishMonitorState(targetWindow, next);
 	}
-	function normalizeMethod(value) {
-		const method = typeof value === "string" ? value.trim().toUpperCase() : "";
-		return method || "GET";
+
+//#endregion
+//#region src/runtime/chat-monitor/timeout-context.js
+	function normalizeTimeoutSeconds(value) {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) return 0;
+		const normalized = Math.floor(parsed);
+		if (normalized <= 0) return 0;
+		return Math.min(normalized, MAX_TIMEOUT_SECONDS);
 	}
-	function isChatMessagesUrl(url) {
-		if (!url) return false;
-		try {
-			const parsed = new URL(url, window.location.origin);
-			return parsed.pathname.includes(CHAT_MESSAGES_PATH);
-		} catch {
-			return url.includes(CHAT_MESSAGES_PATH);
-		}
+	function getChatMessagesTimeoutSeconds() {
+		const saved = gmGetValue(CONFIG.STORAGE_KEYS.CHAT_MESSAGES_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS);
+		return normalizeTimeoutSeconds(saved);
 	}
 	function isAbortSignalLike(signal) {
 		return !!signal && typeof signal === "object" && typeof signal.aborted === "boolean" && typeof signal.addEventListener === "function" && typeof signal.removeEventListener === "function";
@@ -6031,6 +6157,60 @@
 			getTimeoutMode: () => timeoutMode
 		};
 	}
+	function buildTimeoutInfo({ timeoutSeconds = 0, reason = "" } = {}) {
+		if (reason === "chat-messages-waiting-timeout") {
+			return {
+				code: "waiting_timeout",
+				message: `等待中超过 ${timeoutSeconds} 秒`
+			};
+		}
+		if (reason === "chat-messages-inactive-timeout") {
+			return {
+				code: "inactive_timeout",
+				message: `超过 ${timeoutSeconds} 秒未收到事件`
+			};
+		}
+		return {
+			code: "timeout",
+			message: `超过 ${timeoutSeconds} 秒未完成`
+		};
+	}
+
+//#endregion
+//#region src/runtime/chat-monitor/sse-parser.js
+	function toAbsoluteUrl(input, baseOrigin = window.location.origin) {
+		if (input instanceof URL) {
+			return input.href;
+		}
+		if (typeof input === "string") {
+			try {
+				return new URL(input, baseOrigin).href;
+			} catch {
+				return "";
+			}
+		}
+		if (input && typeof input.url === "string") {
+			try {
+				return new URL(input.url, baseOrigin).href;
+			} catch {
+				return "";
+			}
+		}
+		return "";
+	}
+	function normalizeMethod(value) {
+		const method = typeof value === "string" ? value.trim().toUpperCase() : "";
+		return method || "GET";
+	}
+	function isChatMessagesUrl(url) {
+		if (!url) return false;
+		try {
+			const parsed = new URL(url, window.location.origin);
+			return parsed.pathname.includes(CHAT_MESSAGES_PATH);
+		} catch {
+			return url.includes(CHAT_MESSAGES_PATH);
+		}
+	}
 	function shouldTrack(url, method) {
 		if (!isChatMessagesUrl(url)) return false;
 		return normalizeMethod(method) === "POST";
@@ -6055,24 +6235,6 @@
 		if (normalized.length <= maxLen) return normalized;
 		return `${normalized.slice(0, maxLen - 1)}…`;
 	}
-	function buildTimeoutInfo({ timeoutSeconds = 0, reason = "" } = {}) {
-		if (reason === "chat-messages-waiting-timeout") {
-			return {
-				code: "waiting_timeout",
-				message: `等待中超过 ${timeoutSeconds} 秒`
-			};
-		}
-		if (reason === "chat-messages-inactive-timeout") {
-			return {
-				code: "inactive_timeout",
-				message: `超过 ${timeoutSeconds} 秒未收到事件`
-			};
-		}
-		return {
-			code: "timeout",
-			message: `超过 ${timeoutSeconds} 秒未完成`
-		};
-	}
 	function showResultToast({ status = 0, ok = false, elapsedText = "-", channel = "fetch", sseError = null }) {
 		const statusText = Number.isFinite(Number(status)) && Number(status) > 0 ? `HTTP ${Number(status)}` : "未知状态";
 		const errorCode = sseError?.code ? `, ${sseError.code}` : "";
@@ -6085,15 +6247,6 @@
 		} else {
 			Toast.warning(text, 3200);
 		}
-	}
-	function appendMonitorState(targetWindow, patch) {
-		const prev = targetWindow && targetWindow.__AF_CHAT_MONITOR__ || window.__AF_CHAT_MONITOR__ || {};
-		const next = {
-			...prev,
-			...patch,
-			updatedAt: new Date().toISOString()
-		};
-		publishMonitorState(targetWindow, next);
 	}
 	function findSseSeparator(buffer) {
 		const idxCrLf = buffer.indexOf("\r\n\r\n");
@@ -6214,6 +6367,364 @@
 			emitBlock(buffer);
 		}
 	}
+
+//#endregion
+//#region src/runtime/chat-monitor/fetch-hook.js
+	const chatMonitorFetchMethods = { hookFetch(targetWindow, baseOrigin) {
+		if (!targetWindow || typeof targetWindow.fetch !== "function") {
+			logWarn("fetch 不可用，跳过 fetch hook");
+			return;
+		}
+		if (this.originalFetch) return;
+		this.originalFetch = targetWindow.fetch;
+		logInfo("fetch hook 已安装");
+		targetWindow.fetch = (...args) => {
+			const first = args[0];
+			const secondRaw = args[1];
+			const second = secondRaw || {};
+			const url = toAbsoluteUrl(first, baseOrigin);
+			const method = normalizeMethod(second.method || (first && typeof first === "object" ? first.method : "GET"));
+			const startedAt = Date.now();
+			const tracked = shouldTrack(url, method);
+			if (!tracked) {
+				return this.originalFetch.apply(targetWindow, args);
+			}
+			const timeoutSeconds = getChatMessagesTimeoutSeconds();
+			const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1e3 : 0;
+			const requestState = {
+				sseError: null,
+				timeoutReported: false,
+				firstMessageToastAt: 0
+			};
+			const abortContext = createTimeoutAbortContext({
+				first,
+				second: secondRaw,
+				timeoutMs
+			});
+			const requestArgs = abortContext.args;
+			const promise = this.originalFetch.apply(targetWindow, requestArgs);
+			ChatStreamCapsule.onRequestStart();
+			appendMonitorState(this.targetWindow, {
+				timeoutSeconds,
+				timeoutMode: abortContext.getTimeoutMode()
+			});
+			logInfo("命中 fetch /chat-messages 请求", {
+				method,
+				url,
+				timeoutSeconds
+			});
+			let cleanedUp = false;
+			const cleanupAbortContext = () => {
+				if (cleanedUp) return;
+				cleanedUp = true;
+				abortContext.cleanup();
+			};
+			promise.then((response) => {
+				let finalized = false;
+				const done = () => {
+					if (finalized) return;
+					finalized = true;
+					cleanupAbortContext();
+					const timedOut = abortContext.isTimeoutTriggered();
+					const timeoutReason = abortContext.getTimeoutReason();
+					if (timedOut && !requestState.timeoutReported) {
+						requestState.timeoutReported = true;
+						const timeoutInfo = buildTimeoutInfo({
+							timeoutSeconds,
+							reason: timeoutReason
+						});
+						logWarn("fetch /chat-messages 超时，已主动中止", {
+							method,
+							url,
+							timeoutSeconds,
+							timeoutReason
+						});
+						appendMonitorState(this.targetWindow, { lastTimeout: {
+							channel: "fetch",
+							method,
+							url,
+							timeoutSeconds,
+							timeoutReason,
+							at: Date.now()
+						} });
+						ChatStreamCapsule.onSseError({
+							status: 408,
+							code: timeoutInfo.code,
+							message: timeoutInfo.message
+						});
+					}
+					const finalStatus = Number(requestState.sseError?.status || (timedOut ? 408 : 0) || response?.status || 0);
+					const finalOk = !!response?.ok && !requestState.sseError && !timedOut;
+					const elapsedText = formatElapsedMs(startedAt);
+					logInfo("fetch /chat-messages 请求完成", {
+						method,
+						url,
+						status: finalStatus,
+						sseErrorCode: requestState.sseError?.code || "",
+						timedOut
+					});
+					showResultToast({
+						status: finalStatus,
+						ok: finalOk,
+						elapsedText,
+						channel: "fetch",
+						sseError: requestState.sseError
+					});
+					ChatStreamCapsule.onRequestDone({
+						status: finalStatus,
+						ok: finalOk,
+						elapsedText
+					});
+				};
+				try {
+					const cloned = response?.clone?.();
+					if (!cloned) {
+						done();
+						return;
+					}
+					observeSseResponse(cloned, { onEvent: (sseEvent) => {
+						const eventName = sseEvent.event || sseEvent.eventName || "";
+						ChatStreamCapsule.onSseEvent(eventName);
+						if (eventName === "message" || eventName === "msg") {
+							if (!requestState.firstMessageToastAt) {
+								const firstAt = Date.now();
+								requestState.firstMessageToastAt = firstAt;
+								const clockText = formatClockTimestamp(firstAt);
+								const elapsedText = formatElapsedMs(startedAt);
+								Toast.info(`首个 ${eventName} 事件: ${clockText} (+${elapsedText})`, 3600);
+								logInfo("已收到首个输出事件", {
+									method,
+									url,
+									event: eventName,
+									firstAt,
+									elapsedText
+								});
+								appendMonitorState(this.targetWindow, { firstMessageEvent: {
+									event: eventName,
+									at: firstAt,
+									clockText,
+									elapsedText
+								} });
+							}
+							abortContext.setOutputMode();
+						} else if (eventName === "ping" || eventName === "waiting") {
+							abortContext.setWaitingMode();
+						} else {
+							abortContext.notifyEvent();
+						}
+						appendMonitorState(this.targetWindow, {
+							timeoutMode: abortContext.getTimeoutMode(),
+							lastSseEvent: {
+								event: sseEvent.event || "",
+								eventName: sseEvent.eventName || "",
+								at: Date.now()
+							}
+						});
+						if (sseEvent.event && sseEvent.event !== "message") {
+							logInfo("捕获 SSE 事件", {
+								method,
+								url,
+								event: sseEvent.event
+							});
+						}
+						const sseError = toSseError(sseEvent);
+						if (!sseError || requestState.sseError) return;
+						requestState.sseError = sseError;
+						const briefMessage = compactInlineText(sseError.message, 88);
+						const codeText = sseError.code || "unknown_error";
+						logWarn("捕获 SSE error 事件", {
+							method,
+							url,
+							code: codeText,
+							status: sseError.status,
+							message: briefMessage,
+							conversationId: sseError.conversationId || "",
+							messageId: sseError.messageId || ""
+						});
+						appendMonitorState(this.targetWindow, { lastSseError: {
+							code: codeText,
+							status: sseError.status,
+							message: briefMessage,
+							conversationId: sseError.conversationId || "",
+							messageId: sseError.messageId || ""
+						} });
+						ChatStreamCapsule.onSseError({
+							status: sseError.status,
+							code: codeText,
+							message: briefMessage
+						});
+						Toast.error(`SSE 错误: ${codeText}${briefMessage ? ` · ${briefMessage}` : ""}`, 5200);
+					} }).catch((streamError) => {
+						logWarn("SSE 解析失败", {
+							method,
+							url,
+							message: streamError?.message || String(streamError)
+						});
+					}).finally(() => done());
+				} catch {
+					done();
+				}
+			}).catch(() => {
+				cleanupAbortContext();
+				const elapsedText = formatElapsedMs(startedAt);
+				const timedOut = abortContext.isTimeoutTriggered();
+				const timeoutReason = abortContext.getTimeoutReason();
+				const status = timedOut ? 408 : 0;
+				if (timedOut && !requestState.timeoutReported) {
+					requestState.timeoutReported = true;
+					const timeoutInfo = buildTimeoutInfo({
+						timeoutSeconds,
+						reason: timeoutReason
+					});
+					logWarn("fetch /chat-messages 超时，已主动中止", {
+						method,
+						url,
+						timeoutSeconds,
+						timeoutReason
+					});
+					appendMonitorState(this.targetWindow, { lastTimeout: {
+						channel: "fetch",
+						method,
+						url,
+						timeoutSeconds,
+						timeoutReason,
+						at: Date.now()
+					} });
+					ChatStreamCapsule.onSseError({
+						status: 408,
+						code: timeoutInfo.code,
+						message: timeoutInfo.message
+					});
+				} else {
+					logWarn("fetch /chat-messages 请求失败", {
+						method,
+						url
+					});
+				}
+				showResultToast({
+					status,
+					ok: false,
+					elapsedText,
+					channel: "fetch",
+					sseError: requestState.sseError
+				});
+				ChatStreamCapsule.onRequestDone({
+					status,
+					ok: false,
+					elapsedText
+				});
+			});
+			return promise;
+		};
+	} };
+
+//#endregion
+//#region src/runtime/chat-monitor/xhr-hook.js
+	const chatMonitorXhrMethods = { hookXhr(targetWindow, baseOrigin) {
+		if (!targetWindow || typeof targetWindow.XMLHttpRequest !== "function") {
+			logWarn("XMLHttpRequest 不可用，跳过 xhr hook");
+			return;
+		}
+		if (this.xhrOpen || this.xhrSend) return;
+		const monitor = this;
+		monitor.xhrOpen = targetWindow.XMLHttpRequest.prototype.open;
+		monitor.xhrSend = targetWindow.XMLHttpRequest.prototype.send;
+		logInfo("xhr hook 已安装");
+		targetWindow.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+			const absoluteUrl = toAbsoluteUrl(url, baseOrigin);
+			this.__afChatMonitorMeta = {
+				method: normalizeMethod(method),
+				url: absoluteUrl,
+				startedAt: 0,
+				tracked: shouldTrack(absoluteUrl, method),
+				timeoutSeconds: 0,
+				timeoutTimer: null,
+				timeoutTriggered: false
+			};
+			return monitor.xhrOpen.call(this, method, url, ...rest);
+		};
+		targetWindow.XMLHttpRequest.prototype.send = function(...args) {
+			const meta = this.__afChatMonitorMeta;
+			if (meta && meta.tracked) {
+				meta.startedAt = Date.now();
+				meta.timeoutSeconds = getChatMessagesTimeoutSeconds();
+				meta.timeoutTriggered = false;
+				ChatStreamCapsule.onRequestStart();
+				appendMonitorState(monitor.targetWindow, { timeoutSeconds: meta.timeoutSeconds });
+				logInfo("命中 xhr /chat-messages 请求", {
+					method: meta.method,
+					url: meta.url,
+					timeoutSeconds: meta.timeoutSeconds
+				});
+				let reported = false;
+				if (meta.timeoutSeconds > 0) {
+					meta.timeoutTimer = setTimeout(() => {
+						meta.timeoutTriggered = true;
+						logWarn("xhr /chat-messages 超时，已主动中止", {
+							method: meta.method,
+							url: meta.url,
+							timeoutSeconds: meta.timeoutSeconds
+						});
+						appendMonitorState(monitor.targetWindow, { lastTimeout: {
+							channel: "xhr",
+							method: meta.method,
+							url: meta.url,
+							timeoutSeconds: meta.timeoutSeconds,
+							at: Date.now()
+						} });
+						ChatStreamCapsule.onSseError({
+							status: 408,
+							code: "timeout",
+							message: `超过 ${meta.timeoutSeconds} 秒未完成`
+						});
+						try {
+							this.abort();
+						} catch (abortError) {
+							logWarn("xhr /chat-messages 超时后 abort 失败", {
+								method: meta.method,
+								url: meta.url,
+								message: abortError?.message || String(abortError)
+							});
+						}
+					}, meta.timeoutSeconds * 1e3);
+				}
+				const onLoadEnd = () => {
+					if (reported) return;
+					reported = true;
+					if (meta.timeoutTimer) {
+						clearTimeout(meta.timeoutTimer);
+						meta.timeoutTimer = null;
+					}
+					const elapsedText = formatElapsedMs(meta.startedAt);
+					const timedOut = !!meta.timeoutTriggered;
+					const status = timedOut ? 408 : Number(this.status || 0);
+					const ok = !timedOut && status >= 200 && status < 300;
+					logInfo("xhr /chat-messages 请求完成", {
+						method: meta.method,
+						url: meta.url,
+						status,
+						timedOut
+					});
+					showResultToast({
+						status,
+						ok,
+						elapsedText,
+						channel: "xhr"
+					});
+					ChatStreamCapsule.onRequestDone({
+						status,
+						ok,
+						elapsedText
+					});
+				};
+				this.addEventListener("loadend", onLoadEnd, { once: true });
+			}
+			return monitor.xhrSend.call(this, ...args);
+		};
+	} };
+
+//#endregion
+//#region src/runtime/chat-messages-monitor.js
 	const ChatMessagesMonitor = {
 		started: false,
 		targetWindow: null,
@@ -6248,359 +6759,45 @@
 				xhrHooked: !!this.xhrOpen && !!this.xhrSend
 			});
 		},
-		hookFetch(targetWindow, baseOrigin) {
-			if (!targetWindow || typeof targetWindow.fetch !== "function") {
-				logWarn("fetch 不可用，跳过 fetch hook");
-				return;
-			}
-			if (this.originalFetch) return;
-			this.originalFetch = targetWindow.fetch;
-			logInfo("fetch hook 已安装");
-			targetWindow.fetch = (...args) => {
-				const first = args[0];
-				const secondRaw = args[1];
-				const second = secondRaw || {};
-				const url = toAbsoluteUrl(first, baseOrigin);
-				const method = normalizeMethod(second.method || (first && typeof first === "object" ? first.method : "GET"));
-				const startedAt = Date.now();
-				const tracked = shouldTrack(url, method);
-				if (!tracked) {
-					return this.originalFetch.apply(targetWindow, args);
+		stop() {
+			if (!this.started && !this.originalFetch && !this.xhrOpen && !this.xhrSend) return;
+			const targetWindow = this.targetWindow || getTargetWindow();
+			if (targetWindow) {
+				if (this.originalFetch && typeof targetWindow.fetch === "function") {
+					targetWindow.fetch = this.originalFetch;
 				}
-				const timeoutSeconds = getChatMessagesTimeoutSeconds();
-				const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1e3 : 0;
-				const requestState = {
-					sseError: null,
-					timeoutReported: false,
-					firstMessageToastAt: 0
-				};
-				const abortContext = createTimeoutAbortContext({
-					first,
-					second: secondRaw,
-					timeoutMs
-				});
-				const requestArgs = abortContext.args;
-				const promise = this.originalFetch.apply(targetWindow, requestArgs);
-				ChatStreamCapsule.onRequestStart();
-				appendMonitorState(this.targetWindow, {
-					timeoutSeconds,
-					timeoutMode: abortContext.getTimeoutMode()
-				});
-				logInfo("命中 fetch /chat-messages 请求", {
-					method,
-					url,
-					timeoutSeconds
-				});
-				let cleanedUp = false;
-				const cleanupAbortContext = () => {
-					if (cleanedUp) return;
-					cleanedUp = true;
-					abortContext.cleanup();
-				};
-				promise.then((response) => {
-					let finalized = false;
-					const done = () => {
-						if (finalized) return;
-						finalized = true;
-						cleanupAbortContext();
-						const timedOut = abortContext.isTimeoutTriggered();
-						const timeoutReason = abortContext.getTimeoutReason();
-						if (timedOut && !requestState.timeoutReported) {
-							requestState.timeoutReported = true;
-							const timeoutInfo = buildTimeoutInfo({
-								timeoutSeconds,
-								reason: timeoutReason
-							});
-							logWarn("fetch /chat-messages 超时，已主动中止", {
-								method,
-								url,
-								timeoutSeconds,
-								timeoutReason
-							});
-							appendMonitorState(this.targetWindow, { lastTimeout: {
-								channel: "fetch",
-								method,
-								url,
-								timeoutSeconds,
-								timeoutReason,
-								at: Date.now()
-							} });
-							ChatStreamCapsule.onSseError({
-								status: 408,
-								code: timeoutInfo.code,
-								message: timeoutInfo.message
-							});
-						}
-						const finalStatus = Number(requestState.sseError?.status || (timedOut ? 408 : 0) || response?.status || 0);
-						const finalOk = !!response?.ok && !requestState.sseError && !timedOut;
-						const elapsedText = formatElapsedMs(startedAt);
-						logInfo("fetch /chat-messages 请求完成", {
-							method,
-							url,
-							status: finalStatus,
-							sseErrorCode: requestState.sseError?.code || "",
-							timedOut
-						});
-						showResultToast({
-							status: finalStatus,
-							ok: finalOk,
-							elapsedText,
-							channel: "fetch",
-							sseError: requestState.sseError
-						});
-						ChatStreamCapsule.onRequestDone({
-							status: finalStatus,
-							ok: finalOk,
-							elapsedText
-						});
-					};
-					try {
-						const cloned = response?.clone?.();
-						if (!cloned) {
-							done();
-							return;
-						}
-						observeSseResponse(cloned, { onEvent: (sseEvent) => {
-							const eventName = sseEvent.event || sseEvent.eventName || "";
-							ChatStreamCapsule.onSseEvent(eventName);
-							if (eventName === "message" || eventName === "msg") {
-								if (!requestState.firstMessageToastAt) {
-									const firstAt = Date.now();
-									requestState.firstMessageToastAt = firstAt;
-									const clockText = formatClockTimestamp(firstAt);
-									const elapsedText = formatElapsedMs(startedAt);
-									Toast.info(`首个 ${eventName} 事件: ${clockText} (+${elapsedText})`, 3600);
-									logInfo("已收到首个输出事件", {
-										method,
-										url,
-										event: eventName,
-										firstAt,
-										elapsedText
-									});
-									appendMonitorState(this.targetWindow, { firstMessageEvent: {
-										event: eventName,
-										at: firstAt,
-										clockText,
-										elapsedText
-									} });
-								}
-								abortContext.setOutputMode();
-							} else if (eventName === "ping" || eventName === "waiting") {
-								abortContext.setWaitingMode();
-							} else {
-								abortContext.notifyEvent();
-							}
-							appendMonitorState(this.targetWindow, {
-								timeoutMode: abortContext.getTimeoutMode(),
-								lastSseEvent: {
-									event: sseEvent.event || "",
-									eventName: sseEvent.eventName || "",
-									at: Date.now()
-								}
-							});
-							if (sseEvent.event && sseEvent.event !== "message") {
-								logInfo("捕获 SSE 事件", {
-									method,
-									url,
-									event: sseEvent.event
-								});
-							}
-							const sseError = toSseError(sseEvent);
-							if (!sseError || requestState.sseError) return;
-							requestState.sseError = sseError;
-							const briefMessage = compactInlineText(sseError.message, 88);
-							const codeText = sseError.code || "unknown_error";
-							logWarn("捕获 SSE error 事件", {
-								method,
-								url,
-								code: codeText,
-								status: sseError.status,
-								message: briefMessage,
-								conversationId: sseError.conversationId || "",
-								messageId: sseError.messageId || ""
-							});
-							appendMonitorState(this.targetWindow, { lastSseError: {
-								code: codeText,
-								status: sseError.status,
-								message: briefMessage,
-								conversationId: sseError.conversationId || "",
-								messageId: sseError.messageId || ""
-							} });
-							ChatStreamCapsule.onSseError({
-								status: sseError.status,
-								code: codeText,
-								message: briefMessage
-							});
-							Toast.error(`SSE 错误: ${codeText}${briefMessage ? ` · ${briefMessage}` : ""}`, 5200);
-						} }).catch((streamError) => {
-							logWarn("SSE 解析失败", {
-								method,
-								url,
-								message: streamError?.message || String(streamError)
-							});
-						}).finally(() => done());
-					} catch {
-						done();
-					}
-				}).catch(() => {
-					cleanupAbortContext();
-					const elapsedText = formatElapsedMs(startedAt);
-					const timedOut = abortContext.isTimeoutTriggered();
-					const timeoutReason = abortContext.getTimeoutReason();
-					const status = timedOut ? 408 : 0;
-					if (timedOut && !requestState.timeoutReported) {
-						requestState.timeoutReported = true;
-						const timeoutInfo = buildTimeoutInfo({
-							timeoutSeconds,
-							reason: timeoutReason
-						});
-						logWarn("fetch /chat-messages 超时，已主动中止", {
-							method,
-							url,
-							timeoutSeconds,
-							timeoutReason
-						});
-						appendMonitorState(this.targetWindow, { lastTimeout: {
-							channel: "fetch",
-							method,
-							url,
-							timeoutSeconds,
-							timeoutReason,
-							at: Date.now()
-						} });
-						ChatStreamCapsule.onSseError({
-							status: 408,
-							code: timeoutInfo.code,
-							message: timeoutInfo.message
-						});
-					} else {
-						logWarn("fetch /chat-messages 请求失败", {
-							method,
-							url
-						});
-					}
-					showResultToast({
-						status,
-						ok: false,
-						elapsedText,
-						channel: "fetch",
-						sseError: requestState.sseError
-					});
-					ChatStreamCapsule.onRequestDone({
-						status,
-						ok: false,
-						elapsedText
-					});
-				});
-				return promise;
-			};
+				if (this.xhrOpen && targetWindow.XMLHttpRequest?.prototype) {
+					targetWindow.XMLHttpRequest.prototype.open = this.xhrOpen;
+				}
+				if (this.xhrSend && targetWindow.XMLHttpRequest?.prototype) {
+					targetWindow.XMLHttpRequest.prototype.send = this.xhrSend;
+				}
+			}
+			this.started = false;
+			this.targetWindow = null;
+			this.originalFetch = null;
+			this.xhrOpen = null;
+			this.xhrSend = null;
+			publishMonitorState(targetWindow, {
+				started: false,
+				path: CHAT_MESSAGES_PATH,
+				fetchHooked: false,
+				xhrHooked: false,
+				timeoutSeconds: getChatMessagesTimeoutSeconds(),
+				stoppedAt: new Date().toISOString()
+			});
+			logInfo("网络监听已停止");
 		},
-		hookXhr(targetWindow, baseOrigin) {
-			if (!targetWindow || typeof targetWindow.XMLHttpRequest !== "function") {
-				logWarn("XMLHttpRequest 不可用，跳过 xhr hook");
-				return;
-			}
-			if (this.xhrOpen || this.xhrSend) return;
-			this.xhrOpen = targetWindow.XMLHttpRequest.prototype.open;
-			this.xhrSend = targetWindow.XMLHttpRequest.prototype.send;
-			logInfo("xhr hook 已安装");
-			targetWindow.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-				const absoluteUrl = toAbsoluteUrl(url, baseOrigin);
-				this.__afChatMonitorMeta = {
-					method: normalizeMethod(method),
-					url: absoluteUrl,
-					startedAt: 0,
-					tracked: shouldTrack(absoluteUrl, method),
-					timeoutSeconds: 0,
-					timeoutTimer: null,
-					timeoutTriggered: false
-				};
-				return ChatMessagesMonitor.xhrOpen.call(this, method, url, ...rest);
-			};
-			targetWindow.XMLHttpRequest.prototype.send = function(...args) {
-				const meta = this.__afChatMonitorMeta;
-				if (meta && meta.tracked) {
-					meta.startedAt = Date.now();
-					meta.timeoutSeconds = getChatMessagesTimeoutSeconds();
-					meta.timeoutTriggered = false;
-					ChatStreamCapsule.onRequestStart();
-					appendMonitorState(ChatMessagesMonitor.targetWindow, { timeoutSeconds: meta.timeoutSeconds });
-					logInfo("命中 xhr /chat-messages 请求", {
-						method: meta.method,
-						url: meta.url,
-						timeoutSeconds: meta.timeoutSeconds
-					});
-					let reported = false;
-					if (meta.timeoutSeconds > 0) {
-						meta.timeoutTimer = setTimeout(() => {
-							meta.timeoutTriggered = true;
-							logWarn("xhr /chat-messages 超时，已主动中止", {
-								method: meta.method,
-								url: meta.url,
-								timeoutSeconds: meta.timeoutSeconds
-							});
-							appendMonitorState(ChatMessagesMonitor.targetWindow, { lastTimeout: {
-								channel: "xhr",
-								method: meta.method,
-								url: meta.url,
-								timeoutSeconds: meta.timeoutSeconds,
-								at: Date.now()
-							} });
-							ChatStreamCapsule.onSseError({
-								status: 408,
-								code: "timeout",
-								message: `超过 ${meta.timeoutSeconds} 秒未完成`
-							});
-							try {
-								this.abort();
-							} catch (abortError) {
-								logWarn("xhr /chat-messages 超时后 abort 失败", {
-									method: meta.method,
-									url: meta.url,
-									message: abortError?.message || String(abortError)
-								});
-							}
-						}, meta.timeoutSeconds * 1e3);
-					}
-					const onLoadEnd = () => {
-						if (reported) return;
-						reported = true;
-						if (meta.timeoutTimer) {
-							clearTimeout(meta.timeoutTimer);
-							meta.timeoutTimer = null;
-						}
-						const elapsedText = formatElapsedMs(meta.startedAt);
-						const timedOut = !!meta.timeoutTriggered;
-						const status = timedOut ? 408 : Number(this.status || 0);
-						const ok = !timedOut && status >= 200 && status < 300;
-						logInfo("xhr /chat-messages 请求完成", {
-							method: meta.method,
-							url: meta.url,
-							status,
-							timedOut
-						});
-						showResultToast({
-							status,
-							ok,
-							elapsedText,
-							channel: "xhr"
-						});
-						ChatStreamCapsule.onRequestDone({
-							status,
-							ok,
-							elapsedText
-						});
-					};
-					this.addEventListener("loadend", onLoadEnd, { once: true });
-				}
-				return ChatMessagesMonitor.xhrSend.call(this, ...args);
-			};
-		}
+		...chatMonitorFetchMethods,
+		...chatMonitorXhrMethods
 	};
 
 //#endregion
 //#region src/runtime/spa-watcher.js
 	const SPAWatcher = {
+		originalPushState: null,
+		originalReplaceState: null,
+		popstateHandler: null,
 		isSignupPage() {
 			if (window.location.pathname.includes("/signup") || window.location.pathname.includes("/register")) {
 				return true;
@@ -6667,24 +6864,41 @@
 			console.log("[AI风月注册助手] SPA 监听器已启动");
 		},
 		hookHistoryAPI() {
-			const originalPushState = history.pushState;
-			const originalReplaceState = history.replaceState;
+			if (this.originalPushState || this.originalReplaceState) {
+				return;
+			}
+			this.originalPushState = history.pushState;
+			this.originalReplaceState = history.replaceState;
 			history.pushState = (...args) => {
-				originalPushState.apply(history, args);
+				this.originalPushState.apply(history, args);
 				this.handlePageChange();
 			};
 			history.replaceState = (...args) => {
-				originalReplaceState.apply(history, args);
+				this.originalReplaceState.apply(history, args);
 				this.handlePageChange();
 			};
-			window.addEventListener("popstate", () => {
+			this.popstateHandler = () => {
 				this.handlePageChange();
-			});
+			};
+			window.addEventListener("popstate", this.popstateHandler);
 		},
 		stopObserver() {
 			if (APP_STATE.spa.observer) {
 				APP_STATE.spa.observer.disconnect();
 				APP_STATE.spa.observer = null;
+			}
+			APP_STATE.spa.checkScheduled = false;
+			if (this.originalPushState) {
+				history.pushState = this.originalPushState;
+				this.originalPushState = null;
+			}
+			if (this.originalReplaceState) {
+				history.replaceState = this.originalReplaceState;
+				this.originalReplaceState = null;
+			}
+			if (this.popstateHandler) {
+				window.removeEventListener("popstate", this.popstateHandler);
+				this.popstateHandler = null;
 			}
 		}
 	};
