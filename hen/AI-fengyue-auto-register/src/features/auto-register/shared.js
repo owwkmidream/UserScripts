@@ -19,7 +19,7 @@ export const SITE_ENDPOINTS = {
     CHAT_MESSAGES: '/console/api/installed-apps',
 };
 export const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS = 3;
-export const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = '--==';
+export const DEFAULT_SWITCH_WORLD_BOOK_TRIGGER = '-=';
 
 export function readErrorMessage(payload, fallback) {
     if (!payload || typeof payload !== 'object') return fallback;
