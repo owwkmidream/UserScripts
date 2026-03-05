@@ -30,6 +30,7 @@ export const sidebarToolMethods = {
 
         const extractWrap = this.element.querySelector('#aifengyue-extract-html-wrap');
         const sortWrap = this.element.querySelector('#aifengyue-sort-wrap');
+        const modelFamilyWrap = this.element.querySelector('#aifengyue-model-family-wrap');
         const toolsEmpty = this.element.querySelector('#aifengyue-tools-empty');
         const sortToggle = this.element.querySelector('#aifengyue-sort-toggle');
 
@@ -39,8 +40,11 @@ export const sidebarToolMethods = {
         if (sortWrap) {
             sortWrap.style.display = isDetail ? '' : 'none';
         }
+        if (modelFamilyWrap) {
+            modelFamilyWrap.style.display = '';
+        }
         if (toolsEmpty) {
-            toolsEmpty.style.display = (!canExtract && !isDetail) ? '' : 'none';
+            toolsEmpty.style.display = (!canExtract && !isDetail && !modelFamilyWrap) ? '' : 'none';
         }
         if (sortToggle) {
             sortToggle.checked = sorter?.isSortEnabled?.() ?? true;

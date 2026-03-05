@@ -12,6 +12,9 @@ export const sidebarEventsMethods = {
         this.element.querySelectorAll('.aifengyue-tab-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
                 this.setActiveTab(btn.dataset.tab);
+                if (btn.dataset.tab === 'tools') {
+                    this.refreshModelFamilyMappingEditor();
+                }
             });
         });
 
@@ -194,6 +197,7 @@ export const sidebarEventsMethods = {
             const sorter = getModelPopupSorter();
             if (!sorter) return;
             sorter.sortPopup();
+            this.refreshModelFamilyMappingEditor();
             getToast()?.info('已触发一次模型排序');
         });
 
@@ -202,6 +206,44 @@ export const sidebarEventsMethods = {
             if (!sorter) return;
             sorter.setSortEnabled(!!e.target.checked);
             getToast()?.info(`自动排序已${e.target.checked ? '开启' : '关闭'}`);
+        });
+
+        this.element.querySelector('#aifengyue-model-family-save').addEventListener('click', () => {
+            const sorter = getModelPopupSorter();
+            if (!sorter) return;
+            const input = this.element.querySelector('#aifengyue-model-family-rules');
+            const text = typeof input?.value === 'string' ? input.value : '';
+            sorter.setModelFamilyRulesText(text);
+            this.refreshModelFamilyMappingEditor();
+            getToast()?.success('模型映射规则已保存并生效');
+        });
+
+        this.element.querySelector('#aifengyue-model-family-reset').addEventListener('click', () => {
+            const sorter = getModelPopupSorter();
+            if (!sorter) return;
+            sorter.resetModelFamilyRulesText();
+            this.refreshModelFamilyMappingEditor();
+            getToast()?.info('已恢复默认映射规则');
+        });
+
+        this.element.querySelector('#aifengyue-model-family-fill-unknown').addEventListener('click', () => {
+            const sorter = getModelPopupSorter();
+            if (!sorter) return;
+            const draft = sorter.getUnknownModelFamilySuggestionText(80);
+            if (!draft) {
+                getToast()?.warning('暂无未映射前缀，请先打开模型弹窗触发扫描');
+                return;
+            }
+            const input = this.element.querySelector('#aifengyue-model-family-rules');
+            if (!input) return;
+            const current = String(input.value || '').trim();
+            const lines = new Set(current ? current.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : []);
+            draft.split(/\r?\n/).forEach((line) => {
+                const normalized = line.trim();
+                if (normalized) lines.add(normalized);
+            });
+            input.value = [...lines].join('\n');
+            getToast()?.info('已追加未映射前缀草案，请检查后点击“保存规则”');
         });
 
         this.element.querySelector('#aifengyue-conversation-chain').addEventListener('change', async (e) => {

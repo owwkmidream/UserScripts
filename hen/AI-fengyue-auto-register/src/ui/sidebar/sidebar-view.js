@@ -110,6 +110,41 @@ export const sidebarViewMethods = {
                             📊 立即排序
                         </button>
                     </div>
+
+                    <div class="aifengyue-tool-block" id="aifengyue-model-family-wrap">
+                        <div class="aifengyue-section-title">模型映射规则</div>
+                        <div class="aifengyue-input-group">
+                            <label>自定义规则（每行一条）</label>
+                            <textarea
+                                id="aifengyue-model-family-rules"
+                                class="aifengyue-model-rules-textarea"
+                                placeholder="格式：prefix|标签|定位&#10;示例：gemini-2.5-pro|Gemini 2.5 Pro|高智"
+                            ></textarea>
+                        </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-model-family-save">
+                                💾 保存规则
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-model-family-reset">
+                                ♻ 重置自定义
+                            </button>
+                        </div>
+                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-model-family-fill-unknown" style="margin-top:8px;">
+                            ✨ 追加未映射前缀
+                        </button>
+                        <div class="aifengyue-input-group" style="margin-top:10px;">
+                            <label>当前未映射前缀（只读）</label>
+                            <textarea
+                                id="aifengyue-model-family-unknowns"
+                                class="aifengyue-model-rules-textarea"
+                                readonly
+                                placeholder="先打开模型弹窗触发一次扫描，这里会显示可补录的前缀建议"
+                            ></textarea>
+                        </div>
+                        <div class="aifengyue-hint">
+                            默认规则会直接显示在输入框里，可按需修改并保存。建议先点一次“立即排序”再补录未映射前缀。
+                        </div>
+                    </div>
                 </div>
 
                 <div class="aifengyue-panel" data-panel="conversation">
@@ -337,6 +372,7 @@ export const sidebarViewMethods = {
                             </div>
                         </div>
                     </div>
+
                 </div>
             </div>
 

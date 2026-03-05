@@ -1,7 +1,7 @@
 import { CONFIG } from '../../constants.js';
 import { gmGetValue, gmSetValue } from '../../gm.js';
 import { ApiService } from '../../services/api-service.js';
-import { getAutoRegister, VALID_TABS } from './sidebar-context.js';
+import { getAutoRegister, getModelPopupSorter, VALID_TABS } from './sidebar-context.js';
 
 export const sidebarSettingsMethods = {
     getLayoutMode() {
@@ -229,5 +229,20 @@ export const sidebarSettingsMethods = {
             }
         }
         if (usageRemaining) usageRemaining.textContent = `剩余: ${remaining} 次`;
+    },
+
+    refreshModelFamilyMappingEditor() {
+        if (!this.element) return;
+        const sorter = getModelPopupSorter();
+        if (!sorter) return;
+
+        const rulesInput = this.element.querySelector('#aifengyue-model-family-rules');
+        const unknownInput = this.element.querySelector('#aifengyue-model-family-unknowns');
+        if (rulesInput) {
+            rulesInput.value = sorter.getModelFamilyRulesText();
+        }
+        if (unknownInput) {
+            unknownInput.value = sorter.getUnknownModelFamilySuggestionText(80);
+        }
     },
 };

@@ -68,7 +68,7 @@
 | `src/features/auto-register/chat-messages-methods.js` | `/chat-messages` 请求与 SSE 解析流程 | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/flow-methods.js` | 注册与换号高层流程编排 | 聚合进 `src/features/auto-register.js` |
 | `src/features/iframe-extractor.js` | 详情页 HTML 提取与导出 | 依赖 `gmRequestJson` 与 `Toast` |
-| `src/features/model-popup-sorter.js` | 模型弹窗排序（近期出字率优先，其次价格系数） | 依赖 `IframeExtractor`、`gm`、`constants` |
+| `src/features/model-popup-sorter.js` | 模型弹窗排序与模型类型 Tag 筛选（内置映射 + 自定义前缀映射） | 依赖 `gm`、`constants` |
 | `src/services/api-service.js` | GPTMail API 调用与配额统计（含用量订阅发布） | 依赖 `gm`、`constants` |
 | `src/services/chat-history-store.js` | IndexedDB 会话链存储基础层 | 被 `chat-history-service` 依赖 |
 | `src/services/chat-history-service.js` | 会话链兼容门面（聚合 `chat-history/*` 子模块） | 被 `features`、`ui` 调用 |
@@ -88,7 +88,7 @@
 | `src/ui/sidebar/sidebar-view.js` | 侧边栏视图创建与开关、Tab 切换 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-events.js` | 侧边栏事件绑定与剪贴板交互 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-conversation.js` | 会话面板交互、预览、导入导出 | 聚合进 `sidebar` |
-| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额/号池摘要显示 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额/号池摘要显示、模型映射编辑器刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-state.js` | 侧边栏状态加载与渲染 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-tools.js` | 侧边栏工具面板可用性刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar.css.js` | 侧边栏样式注入 | 由 `src/index.js` 调用 |
@@ -146,3 +146,5 @@
 - `2026-03-05`：新增 `token-pool-methods` 号池模块，更换账号流程改为“优先号池 token，池空回退注册”，并加入全站定时补池与设置摘要。
 - `2026-03-05`：新增 `preview-host-css.js` 固化主站样式快照，预览页改为“兜底样式 + 固化主站 CSS + builtInCss”，并精简为仅保留会话内容与复制操作。
 - `2026-03-05`：`model-popup-sorter.js` 排序策略由“价格优先”调整为“近期出字率优先，价格兜底”。
+- `2026-03-05`：`model-popup-sorter.js` 新增模型类型 Tag 筛选，支持同类型模型一键聚合查看（`Low/High/Preview` 归并）。
+- `2026-03-05`：模型类型改为“内置映射规则 + 侧边栏可编辑自定义前缀映射”，并新增未映射前缀补录入口。

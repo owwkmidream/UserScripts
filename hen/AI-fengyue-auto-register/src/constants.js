@@ -20,6 +20,7 @@ export const CONFIG = {
         TOKEN_POOL_BACKOFF_LEVEL: 'aifengyue_token_pool_backoff_level',
         TOKEN_POOL_LAST_ERROR: 'aifengyue_token_pool_last_error',
         MODEL_SORT_ENABLED: 'aifengyue_model_sort_enabled',
+        MODEL_FAMILY_CUSTOM_RULES: 'aifengyue_model_family_custom_rules',
         SIDEBAR_LAYOUT_MODE: 'aifengyue_sidebar_layout_mode',
         SIDEBAR_THEME: 'aifengyue_sidebar_theme',
         SIDEBAR_DEFAULT_TAB: 'aifengyue_sidebar_default_tab',

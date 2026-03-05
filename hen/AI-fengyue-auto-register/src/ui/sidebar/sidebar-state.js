@@ -44,6 +44,7 @@ export const sidebarStateMethods = {
 
         this.updateUsageDisplay();
         this.refreshTokenPoolSummary();
+        this.refreshModelFamilyMappingEditor();
         this.render();
     },
 

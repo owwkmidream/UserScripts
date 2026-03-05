@@ -1,11 +1,86 @@
-import { IframeExtractor } from './iframe-extractor.js';
 import { CONFIG } from '../constants.js';
 import { gmGetValue, gmSetValue } from '../gm.js';
+
+const FAMILY_QUALIFIERS = new Set([
+    'low',
+    'high',
+    'preview',
+    'thinking',
+    'nothinking',
+    'non',
+    'reasoning',
+    'nonreasoning',
+    'latest',
+    'exp',
+]);
+
+const DEFAULT_MODEL_FAMILY_RULES_TEXT = [
+    'gemini-3.1-pro|Gemini 3.1 Pro|高智',
+    'gemini-3-pro|Gemini 3 Pro|高智',
+    'gemini-2.5-pro|Gemini 2.5 Pro|高智',
+    'gemini-3-flash|Gemini 3 Flash|速度',
+    'gemini-2.5-flash|Gemini 2.5 Flash|速度',
+].join('\n');
+
+function normalizeRulePrefix(prefix) {
+    return String(prefix || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+function normalizeFamilyKey(raw) {
+    return normalizeRulePrefix(raw).replace(/\./g, '-');
+}
+
+function normalizeFamilyLabel(raw) {
+    return String(raw || '')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+function parseRuleLine(line) {
+    const raw = String(line || '').trim();
+    if (!raw || raw.startsWith('#')) return null;
+
+    let prefix = '';
+    let label = '';
+    let position = '';
+
+    if (raw.includes('=>')) {
+        const [left, right] = raw.split('=>', 2).map((part) => part.trim());
+        prefix = left || '';
+        const rightParts = (right || '').split('|').map((part) => part.trim());
+        label = rightParts[0] || '';
+        position = rightParts[1] || '';
+    } else {
+        const parts = raw.split('|').map((part) => part.trim());
+        prefix = parts[0] || '';
+        label = parts[1] || '';
+        position = parts[2] || '';
+    }
+
+    const normalizedPrefix = normalizeRulePrefix(prefix);
+    if (!normalizedPrefix) return null;
+
+    return {
+        prefix: normalizedPrefix,
+        key: normalizeFamilyKey(normalizedPrefix),
+        label: normalizeFamilyLabel(label || normalizedPrefix),
+        position: normalizeFamilyLabel(position),
+        source: 'custom',
+    };
+}
 
 export const ModelPopupSorter = {
     sortScheduled: false,
     popupObserver: null,
     observedPopup: null,
+    activeModelFamilyKey: '',
+    familyTagRenderSignature: '',
+    unknownPrefixStats: new Map(),
 
     isSortEnabled() {
         return gmGetValue(CONFIG.STORAGE_KEYS.MODEL_SORT_ENABLED, true);
@@ -16,16 +91,58 @@ export const ModelPopupSorter = {
     },
 
     isEnabled() {
-        return this.isSortEnabled() && IframeExtractor.checkDetailPage();
+        return this.isSortEnabled();
+    },
+
+    getDefaultModelFamilyRulesText() {
+        return DEFAULT_MODEL_FAMILY_RULES_TEXT;
+    },
+
+    getModelFamilyRulesText() {
+        return String(
+            gmGetValue(CONFIG.STORAGE_KEYS.MODEL_FAMILY_CUSTOM_RULES, this.getDefaultModelFamilyRulesText()) || ''
+        );
+    },
+
+    setModelFamilyRulesText(text) {
+        const normalized = String(text || '')
+            .replace(/\r\n/g, '\n')
+            .trim();
+        gmSetValue(CONFIG.STORAGE_KEYS.MODEL_FAMILY_CUSTOM_RULES, normalized);
+        this.activeModelFamilyKey = '';
+        this.familyTagRenderSignature = '';
+        this.scheduleSort();
+    },
+
+    resetModelFamilyRulesText() {
+        this.setModelFamilyRulesText(this.getDefaultModelFamilyRulesText());
+    },
+
+    // backward compatibility for existing callers
+    getCustomModelFamilyRulesText() {
+        return this.getModelFamilyRulesText();
+    },
+
+    // backward compatibility for existing callers
+    setCustomModelFamilyRulesText(text) {
+        this.setModelFamilyRulesText(text);
+    },
+
+    resetPopupState() {
+        if (this.popupObserver) {
+            this.popupObserver.disconnect();
+            this.popupObserver = null;
+        }
+        this.observedPopup = null;
+        const existingTagBar = document.getElementById('aifengyue-model-family-tags');
+        if (existingTagBar) existingTagBar.remove();
+        this.activeModelFamilyKey = '';
+        this.familyTagRenderSignature = '';
     },
 
     scheduleSort() {
         if (!this.isEnabled()) {
-            if (this.popupObserver) {
-                this.popupObserver.disconnect();
-                this.popupObserver = null;
-            }
-            this.observedPopup = null;
+            this.resetPopupState();
             return;
         }
         if (this.sortScheduled) return;
@@ -56,12 +173,10 @@ export const ModelPopupSorter = {
             attributes: true,
             attributeFilter: ['class', 'aria-selected', 'aria-expanded'],
         });
+        this.familyTagRenderSignature = '';
     },
 
     findPopup() {
-        let popup = document.querySelector('div[id=":rb0:"][data-floating-ui-portal]');
-        if (popup) return popup;
-
         const portals = document.querySelectorAll('div[data-floating-ui-portal]');
         for (const portal of portals) {
             const hasTabs = portal.querySelector('[role="tablist"]');
@@ -71,6 +186,25 @@ export const ModelPopupSorter = {
             }
         }
         return null;
+    },
+
+    parseRulesText() {
+        const text = this.getModelFamilyRulesText();
+        if (!text.trim()) return [];
+        const rules = [];
+        const lines = text.split(/\r?\n/);
+        for (const line of lines) {
+            const parsed = parseRuleLine(line);
+            if (!parsed) continue;
+            rules.push(parsed);
+        }
+        return rules;
+    },
+
+    getActiveFamilyRules() {
+        const combined = this.parseRulesText().filter((rule) => !!rule.prefix);
+        combined.sort((a, b) => b.prefix.length - a.prefix.length);
+        return combined;
     },
 
     extractPrice(itemEl) {
@@ -101,8 +235,112 @@ export const ModelPopupSorter = {
             const value = parseFloat(textMatch[1]);
             if (Number.isFinite(value)) return value;
         }
-
         return -1;
+    },
+
+    extractModelName(itemEl) {
+        if (!itemEl) return '';
+
+        const titleRow = itemEl.querySelector('.text-xs.font-medium');
+        if (titleRow) {
+            const spans = Array.from(titleRow.querySelectorAll('span'));
+            for (const span of spans) {
+                const text = (span.textContent || '').trim();
+                if (!text) continue;
+                if (text === '当前模型' || text === '推荐模型' || text === '作者设置') continue;
+                return text;
+            }
+        }
+
+        const text = (itemEl.textContent || '').replace(/\s+/g, ' ');
+        const textMatch = text.match(/([A-Za-z0-9._-]+)\s+价格系数[：:]/);
+        if (textMatch) return textMatch[1].trim();
+        return '';
+    },
+
+    normalizeHeuristicFamily(modelName) {
+        const raw = String(modelName || '').trim().toLowerCase();
+        if (!raw) return { key: '', label: '' };
+
+        const tokens = raw.split(/[\s_-]+/).map((token) => token.trim()).filter(Boolean);
+        const filtered = tokens.filter((token) => !FAMILY_QUALIFIERS.has(token));
+        const keyTokens = filtered.length ? filtered : tokens;
+        const key = normalizeFamilyKey(keyTokens.join('-'));
+        const label = keyTokens.join(' ').trim();
+        return { key, label };
+    },
+
+    deriveUnknownPrefix(modelName) {
+        const value = normalizeRulePrefix(String(modelName || ''));
+        if (!value) return '';
+        const gemini = value.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)/);
+        if (gemini) return gemini[0];
+        const gpt = value.match(/^gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|chat-latest))?/);
+        if (gpt) return gpt[0];
+        const claude = value.match(/^claude-(?:opus|sonnet|haiku)-\d+(?:-\d+)?/);
+        if (claude) return claude[0];
+        const grok = value.match(/^grok-\d+(?:\.\d+)?(?:-fast)?/);
+        if (grok) return grok[0];
+        const deepseek = value.match(/^deepseek-[a-z0-9.]+/);
+        if (deepseek) return deepseek[0];
+        const fallbackTokens = value.split('-').filter(Boolean);
+        return fallbackTokens.slice(0, Math.min(3, fallbackTokens.length)).join('-');
+    },
+
+    prettifyPrefixLabel(prefix) {
+        return String(prefix || '')
+            .replace(/[-_]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    },
+
+    recordUnknownPrefix(prefix, sampleName = '') {
+        const normalized = normalizeRulePrefix(prefix);
+        if (!normalized) return;
+        const current = this.unknownPrefixStats.get(normalized) || {
+            count: 0,
+            sample: '',
+        };
+        current.count += 1;
+        if (!current.sample && sampleName) {
+            current.sample = sampleName;
+        }
+        this.unknownPrefixStats.set(normalized, current);
+    },
+
+    buildUnknownMappingDraft(limit = 50) {
+        const rows = [...this.unknownPrefixStats.entries()]
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, Math.max(1, Number(limit) || 50))
+            .map(([prefix]) => `${prefix}|${this.prettifyPrefixLabel(prefix)}|未分类`);
+        return rows.join('\n');
+    },
+
+    getUnknownModelFamilySuggestionText(limit = 50) {
+        return this.buildUnknownMappingDraft(limit);
+    },
+
+    resolveModelFamily(modelName, rules) {
+        const normalized = normalizeRulePrefix(modelName);
+        for (const rule of rules) {
+            if (!rule.prefix || !normalized.startsWith(rule.prefix)) continue;
+            const label = rule.position
+                ? `${rule.label}（${rule.position}）`
+                : rule.label;
+            return {
+                key: `rule:${rule.key}`,
+                label,
+                mapped: true,
+            };
+        }
+
+        const unknownPrefix = this.deriveUnknownPrefix(modelName);
+        this.recordUnknownPrefix(unknownPrefix, modelName);
+        return {
+            key: 'unknown:others',
+            label: '未映射',
+            mapped: false,
+        };
     },
 
     findCategoryBlocks(popup) {
@@ -114,7 +352,7 @@ export const ModelPopupSorter = {
         ));
     },
 
-    buildCategoryMeta(block, blockIndex) {
+    buildCategoryMeta(block, blockIndex, rules) {
         const details = block.querySelector('.MuiAccordionDetails-root');
         if (!details) return null;
 
@@ -123,23 +361,26 @@ export const ModelPopupSorter = {
         });
         if (items.length === 0) return null;
 
-        const itemMetas = items.map((item, index) => ({
-            item,
-            index,
-            price: this.extractPrice(item),
-            outputRate: this.extractOutputRate(item),
-        }));
-
-        const minPrice = itemMetas.reduce((min, meta) => Math.min(min, meta.price), Number.POSITIVE_INFINITY);
-        const maxOutputRate = itemMetas.reduce((max, meta) => Math.max(max, meta.outputRate), -1);
+        const itemMetas = items.map((item, index) => {
+            const modelName = this.extractModelName(item);
+            const family = this.resolveModelFamily(modelName, rules);
+            return {
+                item,
+                index,
+                modelName,
+                price: this.extractPrice(item),
+                outputRate: this.extractOutputRate(item),
+                familyKey: family.key,
+                familyLabel: family.label,
+                mapped: family.mapped,
+            };
+        });
 
         return {
             block,
             blockIndex,
             details,
             itemMetas,
-            minPrice,
-            maxOutputRate,
         };
     },
 
@@ -156,45 +397,193 @@ export const ModelPopupSorter = {
         const frag = document.createDocumentFragment();
         sorted.forEach((entry) => frag.appendChild(entry.item));
         meta.details.appendChild(frag);
+        meta.itemMetas = sorted;
+    },
+
+    buildFamilyTagGroups(metas) {
+        const groupMap = new Map();
+        metas.forEach((meta) => {
+            meta.itemMetas.forEach((itemMeta) => {
+                if (!itemMeta.familyKey) return;
+                if (!groupMap.has(itemMeta.familyKey)) {
+                    groupMap.set(itemMeta.familyKey, {
+                        key: itemMeta.familyKey,
+                        label: itemMeta.familyLabel || '未分类',
+                        count: 0,
+                    });
+                }
+                const group = groupMap.get(itemMeta.familyKey);
+                group.count += 1;
+            });
+        });
+        return [...groupMap.values()].sort((a, b) => {
+            if (a.count !== b.count) return b.count - a.count;
+            return a.label.localeCompare(b.label);
+        });
+    },
+
+    ensureFamilyTagBar(popup, listContainer) {
+        if (!popup || !listContainer) return null;
+        let bar = popup.querySelector('#aifengyue-model-family-tags');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'aifengyue-model-family-tags';
+            bar.style.cssText = [
+                'margin:6px 0 10px',
+                'padding:8px 10px',
+                'border:1px solid #e2e8f0',
+                'border-radius:10px',
+                'background:#f8fafc',
+                'display:flex',
+                'flex-wrap:wrap',
+                'gap:6px',
+                'align-items:center',
+                'position:relative',
+                'z-index:2',
+            ].join(';');
+            bar.addEventListener('click', (event) => {
+                const target = event.target;
+                if (!(target instanceof Element)) return;
+                const btn = target.closest('button[data-family-key]');
+                if (!btn) return;
+                const nextKey = (btn.getAttribute('data-family-key') || '').trim();
+                if (nextKey === this.activeModelFamilyKey) return;
+                this.activeModelFamilyKey = nextKey;
+                this.sortPopup();
+            });
+        }
+
+        const parent = listContainer.parentElement;
+        if (!parent) return bar;
+        if (bar.parentElement !== parent || bar.nextElementSibling !== listContainer) {
+            parent.insertBefore(bar, listContainer);
+        }
+        return bar;
+    },
+
+    renderFamilyTagBar(bar, groups, activeKey) {
+        if (!bar) return;
+        const normalizedActive = String(activeKey || '').trim();
+        const signature = JSON.stringify({
+            active: normalizedActive,
+            groups: groups.map((group) => [group.key, group.count]),
+        });
+        if (signature === this.familyTagRenderSignature) return;
+        this.familyTagRenderSignature = signature;
+
+        const buildBtn = (key, label, count, active) => {
+            const background = active ? '#0f766e' : '#f1f5f9';
+            const color = active ? '#ffffff' : '#334155';
+            const border = active ? '#0f766e' : '#cbd5e1';
+            return [
+                `<button type="button" data-family-key="${key}"`,
+                ` style="border:1px solid ${border};background:${background};color:${color};`,
+                'height:26px;padding:0 10px;border-radius:999px;font-size:12px;line-height:1;',
+                'display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;">',
+                `<span>${label}</span><span style="opacity:0.85;">${count}</span></button>`,
+            ].join('');
+        };
+
+        const total = groups.reduce((sum, group) => sum + group.count, 0);
+        const allBtn = buildBtn('', '全部', total, !normalizedActive);
+        const groupBtns = groups.map((group) => buildBtn(group.key, group.label, group.count, normalizedActive === group.key)).join('');
+        bar.innerHTML = `<span style="font-size:12px;font-weight:700;color:#334155;margin-right:2px;">模型类型</span>${allBtn}${groupBtns}`;
+    },
+
+    applyFamilyFilter(metas, familyKey) {
+        const target = String(familyKey || '').trim();
+        metas.forEach((meta) => {
+            let visibleCount = 0;
+            meta.itemMetas.forEach((itemMeta) => {
+                const visible = !target || itemMeta.familyKey === target;
+                itemMeta.item.style.display = visible ? '' : 'none';
+                if (visible) visibleCount += 1;
+            });
+            meta.block.style.display = visibleCount > 0 ? '' : 'none';
+        });
+    },
+
+    resolveCategorySortMetrics(meta, familyKey) {
+        const target = String(familyKey || '').trim();
+        const source = target
+            ? meta.itemMetas.filter((itemMeta) => itemMeta.familyKey === target)
+            : meta.itemMetas;
+        if (source.length === 0) {
+            return {
+                hasVisible: false,
+                maxOutputRate: -1,
+                minPrice: Number.POSITIVE_INFINITY,
+            };
+        }
+        return {
+            hasVisible: true,
+            maxOutputRate: source.reduce((max, itemMeta) => Math.max(max, itemMeta.outputRate), -1),
+            minPrice: source.reduce((min, itemMeta) => Math.min(min, itemMeta.price), Number.POSITIVE_INFINITY),
+        };
     },
 
     sortPopup() {
         const popup = this.findPopup();
         if (!popup) {
-            if (this.popupObserver) {
-                this.popupObserver.disconnect();
-                this.popupObserver = null;
-            }
-            this.observedPopup = null;
+            this.resetPopupState();
             return;
         }
         this.observePopup(popup);
 
         const blocks = this.findCategoryBlocks(popup);
-        if (blocks.length === 0) return;
+        if (blocks.length === 0) {
+            const existingTagBar = popup.querySelector('#aifengyue-model-family-tags');
+            if (existingTagBar) existingTagBar.remove();
+            this.familyTagRenderSignature = '';
+            return;
+        }
 
         const parent = blocks[0].parentElement;
         if (!parent) return;
 
+        this.unknownPrefixStats = new Map();
+        const rules = this.getActiveFamilyRules();
         const metas = blocks
-            .map((block, index) => this.buildCategoryMeta(block, index))
+            .map((block, index) => this.buildCategoryMeta(block, index, rules))
             .filter(Boolean);
-
         if (metas.length === 0) return;
 
         metas.forEach((meta) => this.sortItemsInCategory(meta));
 
+        const groups = this.buildFamilyTagGroups(metas);
+        if (!groups.some((group) => group.key === this.activeModelFamilyKey)) {
+            this.activeModelFamilyKey = '';
+        }
+
+        const tagBar = this.ensureFamilyTagBar(popup, parent);
+        this.renderFamilyTagBar(tagBar, groups, this.activeModelFamilyKey);
+        this.applyFamilyFilter(metas, this.activeModelFamilyKey);
+
+        const metricsMap = new Map();
+        metas.forEach((meta) => {
+            metricsMap.set(meta, this.resolveCategorySortMetrics(meta, this.activeModelFamilyKey));
+        });
+
         const sortedCategories = [...metas].sort((a, b) => {
-            if (a.maxOutputRate !== b.maxOutputRate) return b.maxOutputRate - a.maxOutputRate;
-            if (a.minPrice !== b.minPrice) return a.minPrice - b.minPrice;
+            const aMetrics = metricsMap.get(a);
+            const bMetrics = metricsMap.get(b);
+            if (aMetrics.hasVisible !== bMetrics.hasVisible) {
+                return aMetrics.hasVisible ? -1 : 1;
+            }
+            if (aMetrics.maxOutputRate !== bMetrics.maxOutputRate) {
+                return bMetrics.maxOutputRate - aMetrics.maxOutputRate;
+            }
+            if (aMetrics.minPrice !== bMetrics.minPrice) {
+                return aMetrics.minPrice - bMetrics.minPrice;
+            }
             return a.blockIndex - b.blockIndex;
         });
 
-        const needReorderCategory = sortedCategories.some((entry, index) => entry.block !== metas[index].block);
-        if (!needReorderCategory) return;
+        const needReorder = sortedCategories.some((meta, index) => meta.block !== metas[index].block);
+        if (!needReorder) return;
 
         const frag = document.createDocumentFragment();
-        sortedCategories.forEach((entry) => frag.appendChild(entry.block));
+        sortedCategories.forEach((meta) => frag.appendChild(meta.block));
         parent.appendChild(frag);
     },
 };

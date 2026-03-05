@@ -465,6 +465,13 @@ const SIDEBAR_STYLES = `
         min-height: 150px !important;
         max-height: 420px !important;
     }
+    .aifengyue-model-rules-textarea {
+        min-height: 130px !important;
+        max-height: 340px !important;
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace !important;
+        font-size: 12px !important;
+        line-height: 1.5 !important;
+    }
     .aifengyue-input-group input:focus,
     .aifengyue-input-group select:focus,
     .aifengyue-input-group textarea:focus {
