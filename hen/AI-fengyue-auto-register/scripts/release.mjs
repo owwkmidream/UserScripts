@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const META_PATH = new URL('../src/meta.user.js', import.meta.url);
 const OUTPUT_PATH = new URL('../../AI fengyue auto register.user.js', import.meta.url);
+const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 function printHelp() {
     console.log([
@@ -10,12 +12,16 @@ function printHelp() {
         '  pnpm run release',
         '  pnpm run release -- --bump patch|minor|major',
         '  pnpm run release -- --version X.Y.Z',
+        '  pnpm run release -- --no-git',
         '  pnpm run release -- --dry-run',
         '',
         'Options:',
         '  --bump <type>    版本递增类型，默认 patch',
         '  --version <ver>  直接指定目标版本（X.Y.Z）',
         '  --no-build       仅更新版本，不执行构建',
+        '  --no-git         跳过 git commit/push',
+        '  --no-push        commit 但不 push',
+        '  --allow-dirty    允许在非干净工作区执行（默认禁止）',
         '  --dry-run        仅预览，不写文件不构建',
         '  --help           显示帮助',
     ].join('\n'));
@@ -26,6 +32,9 @@ function parseArgs(argv) {
         bump: 'patch',
         version: '',
         noBuild: false,
+        noGit: false,
+        noPush: false,
+        allowDirty: false,
         dryRun: false,
         help: false,
     };
@@ -40,6 +49,18 @@ function parseArgs(argv) {
         }
         if (arg === '--no-build') {
             options.noBuild = true;
+            continue;
+        }
+        if (arg === '--no-git') {
+            options.noGit = true;
+            continue;
+        }
+        if (arg === '--no-push') {
+            options.noPush = true;
+            continue;
+        }
+        if (arg === '--allow-dirty') {
+            options.allowDirty = true;
             continue;
         }
         if (arg === '--dry-run') {
@@ -130,11 +151,68 @@ function runBuild() {
     }
 }
 
+function runGit(args, options = {}) {
+    const result = spawnSync('git', args, {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        ...options,
+    });
+    if (result.error) {
+        throw new Error(`git ${args.join(' ')} 执行失败: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+        const stdout = String(result.stdout || '').trim();
+        const stderr = String(result.stderr || '').trim();
+        const details = [stdout, stderr].filter(Boolean).join('\n');
+        throw new Error(`git ${args.join(' ')} 失败（退出码 ${result.status}）${details ? `\n${details}` : ''}`);
+    }
+    return result;
+}
+
+function ensureCleanWorktree() {
+    const result = runGit(['status', '--porcelain']);
+    const output = String(result.stdout || '').trim();
+    if (output) {
+        throw new Error('工作区不干净，请先提交或清理后再执行 release（或使用 --allow-dirty）');
+    }
+}
+
+function commitAndPush(nextVersion, options) {
+    const statusResult = runGit(['status', '--porcelain']);
+    const statusOutput = String(statusResult.stdout || '').trim();
+    if (!statusOutput) {
+        console.log('[release] 没有可提交改动，跳过 commit/push');
+        return;
+    }
+
+    runGit(['add', '-A']);
+    runGit(['commit', '-m', `chore: release v${nextVersion}`, '-m', 'Index: N/A（索引无变更）'], {
+        stdio: 'inherit',
+    });
+    console.log('[release] 已完成 git commit');
+
+    if (options.noPush) {
+        console.log('[release] --no-push：跳过 push');
+        return;
+    }
+
+    const branchResult = runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const branch = String(branchResult.stdout || '').trim();
+    if (!branch || branch === 'HEAD') {
+        throw new Error('当前不在分支上，无法自动 push');
+    }
+    runGit(['push', 'origin', branch], { stdio: 'inherit' });
+    console.log(`[release] 已推送 origin/${branch}`);
+}
+
 function main() {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
         printHelp();
         return;
+    }
+    if (!options.allowDirty && !options.dryRun) {
+        ensureCleanWorktree();
     }
 
     const metaText = readFileSync(META_PATH, 'utf8');
@@ -184,6 +262,12 @@ function main() {
         throw new Error('构建完成但未找到 userscript 产物文件');
     }
     console.log('[release] 构建成功，产物已更新');
+
+    if (options.noGit) {
+        console.log('[release] --no-git：跳过 commit/push');
+        return;
+    }
+    commitAndPush(nextVersion, options);
 }
 
 try {

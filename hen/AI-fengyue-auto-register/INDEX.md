@@ -49,7 +49,7 @@
 | `README.md` | 项目说明、构建命令与发布约束 | 面向维护者入口文档 |
 | `AGENTS.md` | 协作规范，定义读取与维护索引规则 | 约束所有后续改动流程 |
 | `package.json` | 构建、postbuild 与 release 命令定义 | 调用 `rolldown`、`scripts/open-userscript.mjs`、`scripts/release.mjs` |
-| `scripts/release.mjs` | 发布脚本：更新 `src/meta.user.js` 版本号并执行构建 | 被 `package.json` 的 `release*` 脚本调用 |
+| `scripts/release.mjs` | 发布脚本：更新版本、执行构建并自动 `git commit/push`（可参数关闭） | 被 `package.json` 的 `release*` 脚本调用 |
 | `rolldown.config.mjs` | 打包配置与输出路径声明 | 读取 `src/meta.user.js` 与 `src/index.js` |
 | `scripts/open-userscript.mjs` | postbuild 启动浏览器 bridge | 依赖 Node `http/fs/child_process` |
 | `src/meta.user.js` | userscript 元数据头部 | 被 `rolldown.config.mjs` 注入 banner |
@@ -151,3 +151,4 @@
 - `2026-03-05`：模型类型改为“内置映射规则 + 侧边栏可编辑自定义前缀映射”，并新增未映射前缀补录入口。
 - `2026-03-05`：`model-popup-sorter.js` 新增 DOM 排序按钮，支持按价格/近期出字率切换升序或降序（分类内与分类块同步生效）。
 - `2026-03-05`：新增 `scripts/release.mjs` 与 `package.json release*` 命令，支持版本号更新与发布构建自动化。
+- `2026-03-05`：`scripts/release.mjs` 增加 git 发布流程，默认执行 `commit + push`，并支持 `--no-git/--no-push`。

@@ -25,7 +25,7 @@ pnpm run release
 ## 发布命令
 
 ```bash
-# 默认 patch（会更新 src/meta.user.js 的 @version 并执行构建）
+# 默认 patch（更新版本 + 构建 + git commit + git push）
 pnpm run release
 
 # 指定递增类型
@@ -35,6 +35,10 @@ pnpm run release:major
 
 # 直接指定版本号
 pnpm run release -- --version 2.1.0
+
+# 只发布不推送 / 跳过 git
+pnpm run release -- --no-push
+pnpm run release -- --no-git
 ```
 
 ## 发布约束
