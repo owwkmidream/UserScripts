@@ -33,6 +33,20 @@ import {
 } from './shared.js';
 
 export const ModelConfigMethods = {
+    buildWorldBookValueWithUserSeparator(answerText) {
+        const baseText = typeof answerText === 'string'
+            ? answerText.replace(/\s+$/g, '')
+            : String(answerText ?? '').replace(/\s+$/g, '');
+        const separator = '\n---continue with\nuser:\n';
+
+        if (!baseText) return separator;
+        if (baseText.endsWith(separator.trimEnd())) {
+            return `${baseText.replace(/\s*$/g, '')}\n`;
+        }
+        return `${baseText}${separator}`;
+    },
+
+
     resolveSwitchTriggerWordFromWorldBook(worldBook) {
         if (!Array.isArray(worldBook)) return '';
 
@@ -59,6 +73,7 @@ export const ModelConfigMethods = {
         if (!normalizedAnswer) {
             throw new Error('旧会话 answer 为空，无法写入 world_book');
         }
+        const worldBookValue = this.buildWorldBookValueWithUserSeparator(normalizedAnswer);
 
         const clonedConfig = cloneJsonSafe(baseConfig);
         if (!clonedConfig || typeof clonedConfig !== 'object' || Array.isArray(clonedConfig)) {
@@ -87,7 +102,7 @@ export const ModelConfigMethods = {
         const worldBookEntry = {
             ...entryBase,
             key: entryKey,
-            value: normalizedAnswer,
+            value: worldBookValue,
             group: typeof entryBase.group === 'string' ? entryBase.group : '',
             key_region: Number.isFinite(Number(entryBase.key_region))
                 ? Number(entryBase.key_region)
@@ -114,6 +129,7 @@ export const ModelConfigMethods = {
                 worldBookCount: nextWorldBook.length,
                 entryKey: worldBookEntry.key,
                 answerLength: normalizedAnswer.length,
+                valueLength: worldBookValue.length,
             }
         );
         logDebug(runCtx, 'SWITCH_WORLD_BOOK', 'world_book 写入后的配置', {
