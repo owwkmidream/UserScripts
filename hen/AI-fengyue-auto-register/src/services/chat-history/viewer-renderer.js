@@ -386,21 +386,74 @@ export const chatHistoryViewerMethods = {
         .af-message-bubble .markdown-body summary {
             margin: 0 !important;
         }
-        .af-message-bubble .markdown-body pre {
+        :where(.af-markdown-body) pre {
             margin: 0 !important;
-            border-radius: 10px !important;
-            border: 1px solid rgba(0,0,0,.08) !important;
-            background: #fff !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: transparent !important;
             overflow: auto !important;
         }
-        .af-message-bubble .markdown-body pre code {
-            display: block !important;
-            padding: 10px 12px !important;
-            font-size: 13px !important;
-            line-height: 1.6 !important;
-            white-space: pre-wrap !important;
-            word-break: break-word !important;
-            background: transparent !important;
+        :where(.af-markdown-body) pre > div,
+        :where(.af-markdown-body) pre > code[node] {
+            display: block;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,.08);
+            background: #fff;
+        }
+        :where(.af-markdown-body) pre > div {
+            overflow: hidden;
+        }
+        :where(.af-markdown-body) pre > div > div.border-b {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(0,0,0,.08);
+            background: rgba(248,250,252,.92);
+        }
+        :where(.af-markdown-body) pre > div > div.flex.justify-between > div:first-child {
+            min-width: 0;
+            font-size: 12px;
+            line-height: 1.2;
+            font-weight: 600;
+            color: #64748b;
+        }
+        :where(.af-markdown-body) pre > div > div[node] {
+            background: transparent;
+            overflow: auto;
+        }
+        :where(.af-markdown-body) pre > div > div[node] > code[node],
+        :where(.af-markdown-body) pre > code[node] {
+            display: block;
+            padding: 10px 12px;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre;
+            word-break: normal;
+            overflow-wrap: normal;
+            background: transparent;
+            tab-size: 4;
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"] {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            padding: 4px;
+            border-radius: 6px;
+            cursor: pointer;
+            user-select: none;
+            outline: none;
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"]:focus-visible {
+            box-shadow: 0 0 0 2px rgba(59,130,246,.24);
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"] > div {
+            width: 16px;
+            height: 16px;
+            background-size: 16px 16px;
         }
         .af-message-bubble .markdown-body :not(pre) > code {
             display: inline !important;

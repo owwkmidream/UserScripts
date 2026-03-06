@@ -90,6 +90,11 @@ const BLOCKED_RENDER_TAGS = new Set([
     'textarea',
 ]);
 
+const MARKDOWN_CODE_COPY_ICON_CLASS = 'style_copyIcon__euyNI';
+const MARKDOWN_CODE_COPIED_CLASS = 'style_copied__SbkhO';
+
+let markdownCodeBlockSerial = 0;
+
 export function normalizeId(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
@@ -590,12 +595,67 @@ function collectMarkdownBlockquote(lines, startIndex) {
     };
 }
 
+function pickCodeLanguageToken(value) {
+    const source = String(value || '').trim();
+    if (!source) return '';
+    return source.split(/\s+/)[0]?.trim() || '';
+}
+
+function normalizeCodeLanguage(value) {
+    return pickCodeLanguageToken(value)
+        .replace(/^[`'"]+|[`'"]+$/g, '')
+        .replace(/[^\w#+.-]/g, '')
+        .toLowerCase();
+}
+
+function getCodeLanguageLabel(rawLanguage, normalizedLanguage) {
+    const displayValue = pickCodeLanguageToken(rawLanguage)
+        .replace(/[^\w#+.-]/g, '');
+    if (displayValue) return displayValue;
+    return normalizedLanguage ? normalizedLanguage.toUpperCase() : '';
+}
+
+function renderMarkdownCodeBlock(token) {
+    const text = typeof token?.text === 'string'
+        ? token.text.replace(/\n$/, '')
+        : '';
+    const language = normalizeCodeLanguage(token?.lang);
+    const codeId = `af-code-content-${++markdownCodeBlockSerial}`;
+    const escapedCode = escapeHtml(text);
+
+    if (!language) {
+        return `<pre><code node id="${codeId}" class="hljs">${escapedCode}</code></pre>`;
+    }
+
+    const languageLabel = getCodeLanguageLabel(token?.lang, language);
+    const tooltipId = `copy-tooltip-${markdownCodeBlockSerial}`;
+
+    return [
+        '<pre>',
+        '<div class="af-code-block">',
+        '<div class="border-b flex justify-between items-center af-code-block-header" data-af-copy-ignore="true">',
+        `<div class="af-code-block-language">${escapeHtml(languageLabel)}</div>`,
+        `<div data-tooltip-id="${tooltipId}" class="af-code-copy-trigger" data-af-copy-target="#${codeId}" data-af-copy-mode="icon" data-af-copy-copied-class="${MARKDOWN_CODE_COPIED_CLASS}" role="button" tabindex="0" title="复制代码" aria-label="复制代码">`,
+        `<div class="af-code-copy-icon ${MARKDOWN_CODE_COPY_ICON_CLASS}"></div>`,
+        '</div>',
+        '</div>',
+        '<div node class="af-code-block-body">',
+        `<code node id="${codeId}" class="hljs language-${escapeHtml(language)}">${escapedCode}</code>`,
+        '</div>',
+        '</div>',
+        '</pre>',
+    ].join('');
+}
+
 function renderMarkdownHtml(text) {
     const normalized = normalizeLineBreakTokens(text);
+    const renderer = new marked.Renderer();
+    renderer.code = (token) => renderMarkdownCodeBlock(token);
     const rendered = marked.parse(normalized, {
         async: false,
         breaks: true,
         gfm: true,
+        renderer,
     });
     return sanitizeRenderedMarkdownHtml(rendered);
 }
