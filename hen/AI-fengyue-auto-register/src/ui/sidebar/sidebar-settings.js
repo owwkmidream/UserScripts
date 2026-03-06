@@ -337,19 +337,64 @@ export const sidebarSettingsMethods = {
         if (!this.element) return;
 
         const providerMeta = ApiService.getCurrentProviderMeta();
+        const providerSelect = this.element.querySelector('#aifengyue-mail-provider');
+        const apiKeyGroup = this.element.querySelector('#aifengyue-api-key-group');
         const apiKeyLabel = this.element.querySelector('#aifengyue-api-key-label');
         const apiKeyInput = this.element.querySelector('#aifengyue-api-key');
+        const providerKeyHint = this.element.querySelector('#aifengyue-mail-provider-key-hint');
         const providerName = this.element.querySelector('#aifengyue-mail-provider-name');
+        const saveKeyButton = this.element.querySelector('#aifengyue-save-key');
+
+        if (providerSelect) {
+            providerSelect.value = providerMeta.id;
+        }
 
         if (apiKeyLabel) {
             apiKeyLabel.textContent = providerMeta.apiKeyLabel;
         }
         if (apiKeyInput) {
             apiKeyInput.placeholder = providerMeta.apiKeyPlaceholder;
-            apiKeyInput.value = ApiService.getApiKey();
+            apiKeyInput.value = providerMeta.requiresApiKey ? ApiService.getApiKey() : '';
+            apiKeyInput.disabled = !providerMeta.requiresApiKey;
+        }
+        if (apiKeyGroup) {
+            apiKeyGroup.style.display = providerMeta.requiresApiKey ? '' : 'none';
+        }
+        if (providerKeyHint) {
+            providerKeyHint.textContent = providerMeta.requiresApiKey
+                ? ''
+                : '当前邮件提供商无需 API Key';
+            providerKeyHint.style.display = providerMeta.requiresApiKey ? 'none' : '';
         }
         if (providerName) {
             providerName.textContent = `当前邮件提供商：${providerMeta.name}`;
+        }
+        if (saveKeyButton) {
+            saveKeyButton.disabled = !providerMeta.requiresApiKey;
+            saveKeyButton.style.display = providerMeta.requiresApiKey ? '' : 'none';
+        }
+    },
+
+    resetMailProviderState(providerMeta = ApiService.getCurrentProviderMeta()) {
+        gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, '');
+        this.updateState({
+            email: '',
+            verificationCode: '',
+            status: 'idle',
+            statusMessage: `已切换到 ${providerMeta.name}，请重新生成邮箱`,
+        });
+
+        const autoRegister = getAutoRegister();
+        if (!autoRegister?.getFormElements || !autoRegister?.simulateInput) {
+            return;
+        }
+
+        const { emailInput, codeInput } = autoRegister.getFormElements();
+        if (emailInput) {
+            autoRegister.simulateInput(emailInput, '');
+        }
+        if (codeInput) {
+            autoRegister.simulateInput(codeInput, '');
         }
     },
 

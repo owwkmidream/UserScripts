@@ -5,6 +5,11 @@ import { VALID_TABS } from './sidebar-context.js';
 export const sidebarViewMethods = {
     createSidebar() {
         const providerMeta = ApiService.getCurrentProviderMeta();
+        const providerOptions = ApiService.listProviders()
+            .map((provider) => `
+                                <option value="${provider.id}"${provider.id === providerMeta.id ? ' selected' : ''}>${provider.name}</option>
+                            `)
+            .join('');
         const existing = document.getElementById('aifengyue-sidebar');
         if (existing) {
             existing.remove();
@@ -246,11 +251,21 @@ export const sidebarViewMethods = {
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">API 配置</div>
                         <div class="aifengyue-input-group">
+                            <label>邮件提供商</label>
+                            <select id="aifengyue-mail-provider">
+${providerOptions}
+                            </select>
+                            <div class="aifengyue-hint">切换后会立即清空当前邮箱与验证码，请重新生成邮箱。</div>
+                        </div>
+                        <div class="aifengyue-input-group" id="aifengyue-api-key-group">
                             <label id="aifengyue-api-key-label">${providerMeta.apiKeyLabel}</label>
                             <input type="text" id="aifengyue-api-key" placeholder="${providerMeta.apiKeyPlaceholder}">
                         </div>
-                        <div class="aifengyue-hint" id="aifengyue-mail-provider-name">当前邮件提供商：${providerMeta.name}</div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
+                        <div class="aifengyue-hint" id="aifengyue-mail-provider-key-hint"></div>
+                        <div class="aifengyue-input-group">
+                            <div class="aifengyue-hint" id="aifengyue-mail-provider-name">当前邮件提供商：${providerMeta.name}</div>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
+                        </div>
                     </div>
 
                     <div class="aifengyue-section">

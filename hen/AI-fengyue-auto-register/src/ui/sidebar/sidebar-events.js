@@ -21,10 +21,30 @@ export const sidebarEventsMethods = {
         this.element.querySelector('#aifengyue-save-key').addEventListener('click', () => {
             const input = this.element.querySelector('#aifengyue-api-key');
             const providerMeta = ApiService.getCurrentProviderMeta();
+            if (!providerMeta.requiresApiKey) {
+                this.refreshMailProviderConfigDisplay();
+                getToast()?.info(`${providerMeta.name} 无需 API Key`);
+                return;
+            }
             const key = input.value.trim() || ApiService.getDefaultApiKey();
             ApiService.setApiKey(key);
             this.refreshMailProviderConfigDisplay();
             getToast()?.success(`${providerMeta.name} API Key 已保存`);
+        });
+
+        this.element.querySelector('#aifengyue-mail-provider').addEventListener('change', (e) => {
+            const providerId = typeof e?.target?.value === 'string' ? e.target.value : '';
+            if (!providerId || providerId === ApiService.getCurrentProviderId()) {
+                this.refreshMailProviderConfigDisplay();
+                return;
+            }
+
+            ApiService.setCurrentProviderId(providerId);
+            const providerMeta = ApiService.getCurrentProviderMeta();
+            this.refreshMailProviderConfigDisplay();
+            this.updateUsageDisplay(ApiService.getUsageSnapshot(providerMeta.id));
+            this.resetMailProviderState(providerMeta);
+            getToast()?.success(`已切换到 ${providerMeta.name}，请重新生成邮箱`);
         });
 
         this.element.querySelector('#aifengyue-layout-mode').addEventListener('change', (e) => {
@@ -383,28 +403,40 @@ export const sidebarEventsMethods = {
 
     bindConversationPreviewCopyButtons(doc) {
         if (!doc) return;
-        const triggers = doc.querySelectorAll('[data-af-copy-target]');
+        const triggers = doc.querySelectorAll('[data-af-copy-target], [data-af-copy-text]');
         const handleCopy = async (trigger) => {
-            const selector = trigger.getAttribute('data-af-copy-target') || '';
-            if (!selector) return;
-
             const mode = trigger.getAttribute('data-af-copy-mode') || 'text';
-            const target = doc.querySelector(selector);
+            const encodedText = trigger.getAttribute('data-af-copy-text');
             let rawText = '';
-            if (mode === 'icon') {
-                rawText = typeof target?.textContent === 'string'
-                    ? target.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
-                    : '';
-            } else if (target) {
-                const copyRoot = target.cloneNode(true);
-                copyRoot.querySelectorAll('[data-af-copy-ignore]').forEach((node) => node.remove());
-                rawText = typeof copyRoot.textContent === 'string'
-                    ? copyRoot.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
-                    : '';
+
+            if (encodedText !== null) {
+                try {
+                    rawText = decodeURIComponent(encodedText);
+                } catch {
+                    rawText = encodedText;
+                }
+            } else {
+                const selector = trigger.getAttribute('data-af-copy-target') || '';
+                if (!selector) return;
+                const target = doc.querySelector(selector);
+                if (mode === 'icon') {
+                    rawText = typeof target?.textContent === 'string'
+                        ? target.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
+                        : '';
+                } else if (target) {
+                    const copyRoot = target.cloneNode(true);
+                    copyRoot.querySelectorAll('[data-af-copy-ignore]').forEach((node) => node.remove());
+                    rawText = typeof copyRoot.textContent === 'string'
+                        ? copyRoot.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
+                        : '';
+                }
             }
-            const text = mode === 'icon'
+
+            const text = encodedText !== null
                 ? rawText
-                : rawText.trim();
+                : mode === 'icon'
+                    ? rawText
+                    : rawText.trim();
             if (!text) {
                 getToast()?.warning(mode === 'icon' ? '当前代码块为空，无法复制' : '当前消息为空，无法复制');
                 return;

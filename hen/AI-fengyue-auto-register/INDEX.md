@@ -75,8 +75,9 @@
 | `src/features/model-popup-sorter.js` | 模型弹窗排序与模型类型 Tag 筛选（内置映射 + 自定义前缀映射 + DOM 排序规则切换） | 依赖 `gm`、`constants` |
 | `src/services/api-service.js` | 邮件服务兼容导出入口（保持旧引用路径不变） | 转发到 `src/services/mail-service.js` |
 | `src/services/mail-service.js` | 邮件服务门面（provider 选择、Key 存储、usage 缓存与订阅） | 依赖 `gm`、`constants`、`mail/provider-registry.js` |
-| `src/services/mail/provider-registry.js` | 邮件 provider 注册表 | 聚合 `mail/providers/*` 并被 `mail-service` 依赖 |
+| `src/services/mail/provider-registry.js` | 邮件 provider 注册表 | 聚合 `gptmail-provider`、`emailnator-provider` 并被 `mail-service` 依赖 |
 | `src/services/mail/providers/gptmail-provider.js` | GPTMail provider 实现（请求头、响应结构、usage 归一化） | 被 `provider-registry.js` 聚合 |
+| `src/services/mail/providers/emailnator-provider.js` | Emailnator provider 实现（XSRF/session cookie bootstrap、邮件列表与正文归一化） | 被 `provider-registry.js` 聚合 |
 | `src/services/chat-history-store.js` | IndexedDB 会话链存储基础层 | 被 `chat-history-service` 依赖 |
 | `src/services/chat-history-service.js` | 会话链兼容门面（聚合 `chat-history/*` 子模块） | 被 `features`、`ui` 调用 |
 | `src/services/chat-history/shared.js` | 会话链共享纯工具与索引读写 helper | 被 `chat-history/*` 子模块复用 |
@@ -166,3 +167,4 @@
 - `2026-03-07`：新增 `src/vendor/marked.esm.js` vendored markdown 解析器，会话预览渲染从自写 parser 切换为 `marked` + 安全清洗。
 - `2026-03-07`：号池设置区新增“立即维护/查看日志”入口，`logger.js` 增加本地运行日志缓冲，支持在侧边栏弹窗查看号池维护明细。
 - `2026-03-07`：邮件服务重构为 `mail-service + provider-registry + gptmail-provider` 结构，usage 改为直接消费邮件接口返回的 `usage` 元数据。
+- `2026-03-07`：新增 `emailnator-provider.js` 第二邮件提供商，侧边栏设置页加入 provider 切换与按 provider 显示 API Key/usage 状态。

@@ -17,13 +17,18 @@ export function registerMenuCommands() {
 
     gmRegisterMenuCommand('⚙️ 设置邮件 API Key', () => {
         const providerMeta = ApiService.getCurrentProviderMeta();
+        if (!providerMeta.requiresApiKey) {
+            Toast.info(`${providerMeta.name} 无需 API Key`);
+            Sidebar.refreshMailProviderConfigDisplay?.();
+            return;
+        }
         const currentKey = ApiService.getApiKey();
         const newKey = prompt(`请输入 ${providerMeta.apiKeyLabel}:`, currentKey);
         if (newKey !== null) {
             ApiService.setApiKey(newKey.trim() || ApiService.getDefaultApiKey());
             Toast.success(`${providerMeta.name} API Key 已更新`);
             Sidebar.refreshMailProviderConfigDisplay?.();
-            Sidebar.updateUsageDisplay?.();
+            Sidebar.updateUsageDisplay?.(ApiService.getUsageSnapshot());
         }
     });
 

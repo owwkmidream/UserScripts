@@ -14,6 +14,7 @@ export const GPTMailProvider = {
     id: 'gptmail',
     name: 'GPTMail',
     supportsUsage: true,
+    requiresApiKey: true,
     baseUrl: CONFIG.API_BASE,
     defaultApiKey: CONFIG.DEFAULT_API_KEY,
     defaultQuotaLimit: CONFIG.API_QUOTA_LIMIT,

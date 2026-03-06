@@ -23,6 +23,10 @@ function clampPercentage(value) {
     return Math.max(0, Math.min(toNumber(value, 0), 100));
 }
 
+function getProviderDefaultApiKey(provider) {
+    return typeof provider?.defaultApiKey === 'string' ? provider.defaultApiKey : '';
+}
+
 function readProviderApiKeys() {
     const stored = gmGetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_API_KEYS, null);
     if (isPlainObject(stored)) {
@@ -131,6 +135,7 @@ export const MailService = {
             id: provider.id,
             name: provider.name,
             supportsUsage: provider.supportsUsage !== false,
+            requiresApiKey: provider.requiresApiKey !== false,
             apiKeyLabel: provider.apiKeyLabel,
             apiKeyPlaceholder: provider.apiKeyPlaceholder,
         }));
@@ -166,9 +171,10 @@ export const MailService = {
             id: provider.id,
             name: provider.name,
             supportsUsage: provider.supportsUsage !== false,
+            requiresApiKey: provider.requiresApiKey !== false,
             apiKeyLabel: provider.apiKeyLabel || '邮件 API Key',
             apiKeyPlaceholder: provider.apiKeyPlaceholder || '输入你的邮件 API Key',
-            defaultApiKey: provider.defaultApiKey || CONFIG.DEFAULT_API_KEY,
+            defaultApiKey: getProviderDefaultApiKey(provider),
         };
     },
 
@@ -187,11 +193,17 @@ export const MailService = {
 
     setApiKey(key, providerId = this.getCurrentProviderId()) {
         const provider = this.resolveProvider(providerId);
-        const normalizedKey = typeof key === 'string' && key.trim()
-            ? key.trim()
-            : this.getDefaultApiKey(provider.id);
+        const normalizedKey = provider.requiresApiKey === false
+            ? ''
+            : (typeof key === 'string' && key.trim()
+                ? key.trim()
+                : this.getDefaultApiKey(provider.id));
         const providerApiKeys = readProviderApiKeys();
-        providerApiKeys[provider.id] = normalizedKey;
+        if (normalizedKey) {
+            providerApiKeys[provider.id] = normalizedKey;
+        } else {
+            delete providerApiKeys[provider.id];
+        }
         writeProviderApiKeys(providerApiKeys);
         this.clearUsageSnapshot(provider.id, {
             emit: provider.id === this.getCurrentProviderId(),
@@ -304,13 +316,16 @@ export const MailService = {
         const response = await gmRequestJson({
             method: options.method || 'GET',
             url: `${provider.baseUrl}${endpoint}`,
-            headers: provider.buildHeaders({
-                apiKey: this.getApiKey(provider.id),
-                headers: options.headers,
-            }),
+            headers: typeof provider.buildHeaders === 'function'
+                ? provider.buildHeaders({
+                    apiKey: this.getApiKey(provider.id),
+                    headers: options.headers,
+                })
+                : (options.headers || {}),
             body: options.body,
+            rawBody: options.rawBody,
             timeout: options.timeout ?? 30000,
-            anonymous: true,
+            anonymous: options.anonymous ?? true,
         });
 
         if (!response.json) {
@@ -322,7 +337,9 @@ export const MailService = {
             status: response.status,
             headers: response.headers,
         });
-        const usageSnapshot = provider.normalizeUsage(parsedResponse.usage);
+        const usageSnapshot = typeof provider.normalizeUsage === 'function'
+            ? provider.normalizeUsage(parsedResponse.usage)
+            : null;
         if (usageSnapshot) {
             this.updateUsageSnapshot(usageSnapshot, provider.id);
         }
@@ -332,26 +349,44 @@ export const MailService = {
 
     async generateEmail() {
         const provider = this.getCurrentProvider();
+        if (typeof provider.generateEmail === 'function') {
+            return provider.generateEmail({
+                mailService: this,
+                provider,
+            });
+        }
+
         const requestConfig = provider.createGenerateEmailRequest();
         const data = await this.request(requestConfig.endpoint, {
             providerId: provider.id,
             method: requestConfig.method,
             headers: requestConfig.headers,
             body: requestConfig.body,
+            rawBody: requestConfig.rawBody,
             timeout: requestConfig.timeout,
+            anonymous: requestConfig.anonymous,
         });
         return provider.extractGeneratedEmail(data);
     },
 
     async getEmails(email) {
         const provider = this.getCurrentProvider();
+        if (typeof provider.getEmails === 'function') {
+            return provider.getEmails(email, {
+                mailService: this,
+                provider,
+            });
+        }
+
         const requestConfig = provider.createGetEmailsRequest(email);
         const data = await this.request(requestConfig.endpoint, {
             providerId: provider.id,
             method: requestConfig.method,
             headers: requestConfig.headers,
             body: requestConfig.body,
+            rawBody: requestConfig.rawBody,
             timeout: requestConfig.timeout,
+            anonymous: requestConfig.anonymous,
         });
         return provider.extractEmails(data);
     },
