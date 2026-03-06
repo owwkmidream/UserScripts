@@ -40,6 +40,7 @@
 | `src/ui/` | 侧边栏、toast、状态胶囊与样式注入 | 由 `src/app.js`、`runtime`、`features` 调用 |
 | `src/ui/sidebar/` | 侧边栏子模块（视图、事件、会话、设置、工具） | 被 `src/ui/sidebar.js` 聚合 |
 | `src/utils/` | 公共工具（日志、随机、DOM 输入、验证码提取） | 被 `features`、`menu`、`ui` 复用 |
+| `src/vendor/` | vendored 第三方前端依赖（无需改锁文件即可随源码打包） | 被 `services/chat-history` 等浏览器端模块直接导入 |
 | `src/menu/` | 油猴菜单命令注册 | 由 `src/app.js` 调用 |
 
 ### 3.2 关键文件索引
@@ -77,8 +78,9 @@
 | `src/services/chat-history/index-store.js` | 会话链索引与存储元数据方法集合 | 聚合进 `chat-history-service` |
 | `src/services/chat-history/chain-service.js` | 会话链绑定、消息写入、统计方法集合 | 聚合进 `chat-history-service` |
 | `src/services/chat-history/bundle-service.js` | 会话链导入/导出方法集合 | 聚合进 `chat-history-service` |
-| `src/services/chat-history/viewer-renderer.js` | 会话链 HTML 预览渲染方法集合 | 聚合进 `chat-history-service` |
+| `src/services/chat-history/viewer-renderer.js` | 会话链 HTML 预览渲染方法集合（字体/气泡/表格等预览样式覆盖） | 聚合进 `chat-history-service` |
 | `src/services/chat-history/preview-host-css.js` | 主站样式快照固化文件（用于预览页离线样式注入） | 被 `viewer-renderer` 注入到预览 HTML |
+| `src/vendor/marked.esm.js` | vendored `marked` ESM 构建文件，用于会话预览 markdown/GFM 解析 | 被 `src/services/chat-history/shared.js` 导入 |
 | `src/runtime/spa-watcher.js` | SPA URL/DOM 变化监听与重注入 | 依赖 `APP_STATE`、`Sidebar`、`features` |
 | `src/runtime/chat-messages-monitor.js` | chat-messages 监控门面（支持 `start/stop` 生命周期） | 聚合 `runtime/chat-monitor/*` 子模块 |
 | `src/runtime/chat-monitor/fetch-hook.js` | fetch hook 安装与 SSE 监听流程 | 聚合进 `chat-messages-monitor` |
@@ -121,6 +123,9 @@
 - 外部 API 边界：
   - `CONFIG.API_BASE` 当前为 `https://mail.chatgpt.org.uk/api`。
   - 业务请求主要通过 `src/services/api-service.js` 发起。
+- 第三方解析器边界：
+  - `src/vendor/marked.esm.js` 当前 vendored 自 `marked` 官方 ESM 构建。
+  - 会话预览 markdown 解析统一经 `src/services/chat-history/shared.js` 调用该解析器完成。
 - 本地持久化边界：
   - `CONFIG.STORAGE_KEYS` 定义 localStorage/GM 存储键名。
   - 会话链主数据存于 IndexedDB（`src/services/chat-history-store.js`）。
@@ -152,3 +157,4 @@
 - `2026-03-05`：`model-popup-sorter.js` 新增 DOM 排序按钮，支持按价格/近期出字率切换升序或降序（分类内与分类块同步生效）。
 - `2026-03-05`：新增 `scripts/release.mjs` 与 `package.json release*` 命令，支持版本号更新与发布构建自动化。
 - `2026-03-05`：`scripts/release.mjs` 增加 git 发布流程，默认执行 `commit + push`，并支持 `--no-git/--no-push`。
+- `2026-03-07`：新增 `src/vendor/marked.esm.js` vendored markdown 解析器，会话预览渲染从自写 parser 切换为 `marked` + 安全清洗。

@@ -8,6 +8,49 @@ import {
 } from './shared.js';
 import { PREVIEW_HOST_CSS } from './preview-host-css.js';
 
+const PREVIEW_FONT_STACK = [
+    '"Microsoft YaHei UI"',
+    'system-ui',
+    '-apple-system',
+    'BlinkMacSystemFont',
+    'sans-serif',
+    '"Apple Color Emoji"',
+    '"Segoe UI Emoji"',
+    '"Noto Color Emoji"',
+    '"Android Emoji"',
+    'EmojiSymbols',
+    '"EmojiOne Mozilla"',
+    '"Twemoji Mozilla"',
+    '"Segoe UI Symbol"',
+    '"Noto Color Emoji Compat"',
+    '"Font Awesome 6 Pro"',
+    '"Font Awesome 5 Pro"',
+    'FontAwesome',
+    'emoji',
+    'codicon',
+    'iconfont',
+    'icomoon',
+    'IcoFont',
+    'bwi-font',
+    'fontello',
+    'themify',
+    'bootstrap-icons',
+    '"Segoe Fluent Icons"',
+    '"Material Icons"',
+    '"Material Icons Extended"',
+    '"Material Icons Outlined"',
+    '"Material Icons Round"',
+    '"Material Icons Sharp"',
+    '"Material Icons Two Tone"',
+    '"Google Material Icons"',
+    '"Google Material Icons Filled"',
+    '"Material Symbols Outlined"',
+    '"Material Symbols Round"',
+    '"Material Symbols Rounded"',
+    '"Material Symbols Sharp"',
+    '"Google Symbols"',
+].join(', ');
+
 function pickText(source, keys, fallback = '') {
     if (!source || typeof source !== 'object') return fallback;
     for (const key of keys) {
@@ -91,7 +134,7 @@ export const chatHistoryViewerMethods = {
         const conversationIds = uniqueStringArray(chain?.conversationIds || []);
         const bgUrl = escapeHtml(resolveAssetUrl({ appMeta, appId: normalizedAppId, kind: 'bg' }));
         const coverUrl = escapeHtml(resolveAssetUrl({ appMeta, appId: normalizedAppId, kind: 'cover' }));
-        const userAvatar = escapeHtml((appNameRaw || 'C').slice(0, 1).toUpperCase() || 'C');
+        const userAvatar = '我';
         const answerHistory = [];
 
         const messageHtml = records.length > 0
@@ -102,8 +145,12 @@ export const chatHistoryViewerMethods = {
                 const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? '');
                 const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? '');
                 const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
-                const renderedQuery = renderMessageBody(dedupResult.text || '(去重后为空)', '(去重后为空)');
-                const renderedAnswer = renderMessageBody(answerText, '(空回复)');
+                const renderedQuery = renderMessageBody(dedupResult.text || '(去重后为空)', '(去重后为空)', {
+                    preferMarkdown: false,
+                });
+                const renderedAnswer = renderMessageBody(answerText, '(空回复)', {
+                    preferMarkdown: true,
+                });
                 const queryContentId = `af-query-content-${index + 1}`;
                 const answerContentId = `af-answer-content-${index + 1}`;
                 if (answerText) {
@@ -159,9 +206,16 @@ export const chatHistoryViewerMethods = {
         * { box-sizing: border-box; }
         html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
         body {
-            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-family: ${PREVIEW_FONT_STACK};
+            font-size: 14px;
+            font-weight: 400;
+            line-height: 21px;
+            letter-spacing: normal;
             background: #f3f6fa;
             color: #111827;
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         .af-root-wrap, .af-root-inner, #installedBuiltInCss {
             width: 100%;
@@ -274,23 +328,23 @@ export const chatHistoryViewerMethods = {
             background: transparent;
             color: #111827;
             font-size: 14px;
-            line-height: 1.7;
+            font-family: inherit;
+            font-weight: 400;
+            line-height: 21px;
+            letter-spacing: normal;
             white-space: pre-wrap !important;
             word-break: break-word;
         }
         .af-message-bubble .markdown-body {
             font-size: 14px !important;
-            line-height: 1.7;
+            font-family: inherit !important;
+            font-weight: 400 !important;
+            line-height: 21px !important;
+            letter-spacing: normal !important;
             color: #111827;
             overflow-wrap: anywhere;
             word-break: break-word;
-        }
-        .af-message-bubble .markdown-body pre {
-            margin: 8px 0 0;
-            border-radius: 10px;
-            border: 1px solid rgba(0,0,0,.08);
-            background: #fff;
-            overflow: hidden;
+            white-space: normal !important;
         }
         .af-copy-row {
             margin-top: 4px;
@@ -358,6 +412,151 @@ export const chatHistoryViewerMethods = {
     </style>
     <style id="aifengyue-built-in-css">
         ${builtInCss}
+    </style>
+    <style id="aifengyue-preview-overrides">
+        .af-message-bubble .markdown-body > :first-child { margin-top: 0 !important; }
+        .af-message-bubble .markdown-body > :last-child { margin-bottom: 0 !important; }
+        .af-message-bubble .markdown-body > * + * { margin-top: 10px !important; }
+        .af-message-bubble .markdown-body p,
+        .af-message-bubble .markdown-body ul,
+        .af-message-bubble .markdown-body ol,
+        .af-message-bubble .markdown-body blockquote,
+        .af-message-bubble .markdown-body pre,
+        .af-message-bubble .markdown-body details,
+        .af-message-bubble .markdown-body table,
+        .af-message-bubble .markdown-body h1,
+        .af-message-bubble .markdown-body h2,
+        .af-message-bubble .markdown-body h3,
+        .af-message-bubble .markdown-body h4,
+        .af-message-bubble .markdown-body h5,
+        .af-message-bubble .markdown-body h6 {
+            margin-bottom: 0 !important;
+        }
+        .af-message-bubble .markdown-body h1,
+        .af-message-bubble .markdown-body h2,
+        .af-message-bubble .markdown-body h3,
+        .af-message-bubble .markdown-body h4,
+        .af-message-bubble .markdown-body h5,
+        .af-message-bubble .markdown-body h6 {
+            line-height: 1.4 !important;
+            font-weight: 700 !important;
+            color: #111827 !important;
+        }
+        .af-message-bubble .markdown-body h1 { font-size: 22px !important; }
+        .af-message-bubble .markdown-body h2 { font-size: 20px !important; }
+        .af-message-bubble .markdown-body h3 { font-size: 18px !important; }
+        .af-message-bubble .markdown-body h4 { font-size: 16px !important; }
+        .af-message-bubble .markdown-body h5,
+        .af-message-bubble .markdown-body h6 { font-size: 14px !important; }
+        .af-message-bubble .markdown-body ul,
+        .af-message-bubble .markdown-body ol {
+            padding-left: 1.4em !important;
+        }
+        .af-message-bubble .markdown-body li + li {
+            margin-top: 4px !important;
+        }
+        .af-message-bubble .markdown-body blockquote {
+            border-left: 3px solid rgba(148, 163, 184, 0.65) !important;
+            padding-left: 12px !important;
+            color: #475569 !important;
+        }
+        .af-message-bubble .markdown-body details {
+            display: block !important;
+        }
+        .af-message-bubble .markdown-body summary {
+            margin: 0 !important;
+        }
+        .af-message-bubble .markdown-body pre {
+            margin: 0 !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(0,0,0,.08) !important;
+            background: #fff !important;
+            overflow: auto !important;
+        }
+        .af-message-bubble .markdown-body pre code {
+            display: block !important;
+            padding: 10px 12px !important;
+            font-size: 13px !important;
+            line-height: 1.6 !important;
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            background: transparent !important;
+        }
+        .af-message-bubble .markdown-body :not(pre) > code {
+            display: inline !important;
+            padding: 0.15em 0.38em !important;
+            border-radius: 6px !important;
+            background: rgba(15, 23, 42, 0.06) !important;
+            font-size: 0.92em !important;
+        }
+        .af-message-bubble .markdown-body img {
+            max-width: 100% !important;
+            height: auto !important;
+            border-radius: 10px !important;
+        }
+        .af-message-bubble .markdown-body table {
+            display: block !important;
+            width: auto !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            overflow: auto !important;
+            border-collapse: collapse !important;
+            border-spacing: 0 !important;
+            border: 1px solid rgb(248, 200, 220) !important;
+            border-radius: 6px !important;
+            background: rgba(255, 250, 245, 0.7) !important;
+            color: rgb(16, 24, 40) !important;
+            font-family: ${PREVIEW_FONT_STACK} !important;
+        }
+        .af-message-bubble .markdown-body thead th {
+            background: transparent !important;
+        }
+        .af-message-bubble .markdown-body th,
+        .af-message-bubble .markdown-body td {
+            padding: 6px 10px !important;
+            border: 1px solid rgb(208, 215, 222) !important;
+            vertical-align: top !important;
+            text-align: left !important;
+            color: rgb(16, 24, 40) !important;
+            font-family: ${PREVIEW_FONT_STACK} !important;
+            word-break: break-word !important;
+            background: transparent !important;
+        }
+        .af-message-bubble .markdown-body th {
+            font-weight: 600 !important;
+            font-size: 12px !important;
+            line-height: 15.6px !important;
+            white-space: nowrap !important;
+        }
+        .af-message-bubble .markdown-body td {
+            font-size: 14px !important;
+            line-height: 21px !important;
+        }
+        .af-message-bubble .markdown-body thead,
+        .af-message-bubble .markdown-body tbody,
+        .af-message-bubble .markdown-body tr,
+        .af-message-bubble .markdown-body th,
+        .af-message-bubble .markdown-body td {
+            color: rgb(16, 24, 40) !important;
+            font-family: ${PREVIEW_FONT_STACK} !important;
+        }
+        .af-message-bubble .markdown-body tr {
+            background: transparent !important;
+        }
+        .af-message-bubble .markdown-body tbody tr:nth-child(2n) td {
+            background: var(--color-canvas-subtle, rgba(246, 248, 250, 0.92)) !important;
+        }
+        .af-message-bubble .markdown-body tbody tr:nth-child(2n + 1) td {
+            background: transparent !important;
+        }
+        .af-message-bubble .markdown-body th[data-align="center"],
+        .af-message-bubble .markdown-body td[data-align="center"] {
+            text-align: center !important;
+        }
+        .af-message-bubble .markdown-body th[data-align="right"],
+        .af-message-bubble .markdown-body td[data-align="right"] {
+            text-align: right !important;
+        }
     </style>
 </head>
 <body>

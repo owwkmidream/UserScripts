@@ -3,8 +3,92 @@ import {
     hasMeaningfulText as hasMeaningfulTextValue,
     normalizeTimestamp,
 } from '../../utils/text-normalize.js';
+import { marked } from '../../vendor/marked.esm.js';
 
 export const INDEX_KEY = 'aifengyue_chat_index_v1';
+
+const RAW_HTML_BLOCK_TAGS = new Set([
+    'article',
+    'aside',
+    'blockquote',
+    'button',
+    'details',
+    'div',
+    'figure',
+    'figcaption',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'hr',
+    'img',
+    'li',
+    'ol',
+    'p',
+    'pre',
+    'section',
+    'summary',
+    'table',
+    'tbody',
+    'td',
+    'tfoot',
+    'th',
+    'thead',
+    'tr',
+    'ul',
+]);
+
+const VOID_HTML_TAGS = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+]);
+
+const SAFE_INLINE_HTML_TAGS = new Set([
+    'b',
+    'br',
+    'code',
+    'del',
+    'em',
+    'font',
+    'i',
+    'kbd',
+    'mark',
+    's',
+    'small',
+    'span',
+    'strong',
+    'sub',
+    'sup',
+    'u',
+]);
+
+const BLOCKED_RENDER_TAGS = new Set([
+    'base',
+    'embed',
+    'form',
+    'iframe',
+    'input',
+    'link',
+    'meta',
+    'object',
+    'script',
+    'style',
+    'textarea',
+]);
 
 export function normalizeId(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -99,6 +183,423 @@ export function looksLikeHtml(value) {
     return /<\/?[a-z][\s\S]*>/i.test(value);
 }
 
+function sanitizeUrlLikeAttr(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    if (/^(?:javascript|vbscript|data:text\/html)/i.test(normalized)) {
+        return '';
+    }
+    return normalized;
+}
+
+function sanitizeRenderedMarkdownHtml(html) {
+    const source = String(html || '');
+    if (!source.trim()) return '';
+
+    if (typeof DOMParser !== 'function') {
+        return source
+            .replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form|input|textarea)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+            .replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form|input|textarea)\b[^>]*\/?\s*>/gi, '')
+            .replace(/\s+on[a-z-]+\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, '')
+            .replace(/\s+(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+)/gi, '');
+    }
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<body>${source}</body>`, 'text/html');
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
+    const nodes = [];
+
+    let current = walker.nextNode();
+    while (current) {
+        nodes.push(current);
+        current = walker.nextNode();
+    }
+
+    for (const node of nodes) {
+        const tagName = String(node.tagName || '').toLowerCase();
+        if (!tagName) continue;
+
+        if (BLOCKED_RENDER_TAGS.has(tagName)) {
+            node.remove();
+            continue;
+        }
+
+        for (const attr of [...node.attributes]) {
+            const attrName = String(attr.name || '').toLowerCase();
+            if (!attrName) continue;
+
+            if (attrName.startsWith('on')) {
+                node.removeAttribute(attr.name);
+                continue;
+            }
+
+            if (attrName === 'href' || attrName === 'src' || attrName === 'xlink:href') {
+                const sanitized = sanitizeUrlLikeAttr(attr.value);
+                if (!sanitized) {
+                    node.removeAttribute(attr.name);
+                } else {
+                    node.setAttribute(attr.name, sanitized);
+                }
+            }
+        }
+    }
+
+    return doc.body.innerHTML;
+}
+
+function isSafeCssColor(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return false;
+    return /^(?:[a-z]+|#[0-9a-f]{3,8}|rgba?\([0-9\s,%.]+\)|hsla?\([0-9\s,%.]+\))$/i.test(normalized);
+}
+
+function isSafeFontSize(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return false;
+    return /^(?:[1-7]|[+-][1-7]|xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)$/i.test(normalized);
+}
+
+function isSafeFontFace(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return false;
+    return /^[\w\s,\-"']{1,80}$/i.test(normalized);
+}
+
+function sanitizeInlineHtmlTag(rawTag) {
+    const source = String(rawTag || '');
+    const matched = source.match(/^<\s*(\/?)\s*([a-z][\w-]*)\b([^>]*)>\s*$/i);
+    if (!matched) return '';
+
+    const isClosing = matched[1] === '/';
+    const tagName = String(matched[2] || '').toLowerCase();
+    const rawAttrs = String(matched[3] || '');
+    const isSelfClosing = /\/\s*$/.test(rawAttrs) || VOID_HTML_TAGS.has(tagName);
+    if (!SAFE_INLINE_HTML_TAGS.has(tagName)) return '';
+
+    if (isClosing) {
+        return `</${tagName}>`;
+    }
+
+    const attrs = [];
+    if (tagName === 'font') {
+        const colorMatched = rawAttrs.match(/\bcolor\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+        const sizeMatched = rawAttrs.match(/\bsize\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+        const faceMatched = rawAttrs.match(/\bface\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+
+        const colorValue = colorMatched?.[2] ?? colorMatched?.[3] ?? colorMatched?.[4] ?? '';
+        const sizeValue = sizeMatched?.[2] ?? sizeMatched?.[3] ?? sizeMatched?.[4] ?? '';
+        const faceValue = faceMatched?.[2] ?? faceMatched?.[3] ?? faceMatched?.[4] ?? '';
+
+        if (isSafeCssColor(colorValue)) {
+            attrs.push(` color="${escapeHtml(colorValue.trim())}"`);
+        }
+        if (isSafeFontSize(sizeValue)) {
+            attrs.push(` size="${escapeHtml(sizeValue.trim())}"`);
+        }
+        if (isSafeFontFace(faceValue)) {
+            attrs.push(` face="${escapeHtml(faceValue.trim())}"`);
+        }
+    }
+
+    return `<${tagName}${attrs.join('')}${isSelfClosing ? ' /' : ''}>`;
+}
+
+function preserveSafeInlineHtml(text) {
+    const htmlTokens = [];
+    const value = String(text ?? '').replace(/<\/?[a-z][^>\n]*>/gi, (rawTag) => {
+        const sanitized = sanitizeInlineHtmlTag(rawTag);
+        if (!sanitized) return rawTag;
+
+        const placeholder = `@@AFHTML${htmlTokens.length}@@`;
+        htmlTokens.push(sanitized);
+        return placeholder;
+    });
+
+    return {
+        value,
+        htmlTokens,
+    };
+}
+
+function renderInlineMarkdown(text) {
+    const codeTokens = [];
+    let value = String(text ?? '').replace(/(`+)([\s\S]*?)\1/g, (_, __, content) => {
+        const placeholder = `__AF_CODE_${codeTokens.length}__`;
+        codeTokens.push(`<code>${escapeHtml(content)}</code>`);
+        return placeholder;
+    });
+
+    const preservedInlineHtml = preserveSafeInlineHtml(value);
+    value = preservedInlineHtml.value;
+
+    value = escapeHtml(value);
+
+    value = value
+        .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, alt, url) => (
+            `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="lazy">`
+        ))
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, label, url) => (
+            `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        ))
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+        .replace(/(^|[^\*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+        .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+
+    for (let i = 0; i < codeTokens.length; i++) {
+        value = value.replace(`__AF_CODE_${i}__`, codeTokens[i]);
+    }
+
+    for (let i = 0; i < preservedInlineHtml.htmlTokens.length; i++) {
+        value = value.replace(`@@AFHTML${i}@@`, preservedInlineHtml.htmlTokens[i]);
+    }
+
+    return value;
+}
+
+function isRawHtmlBlockStart(line) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed.startsWith('<')) return false;
+    if (/^<!--/.test(trimmed)) return true;
+
+    const matched = trimmed.match(/^<\/?([a-z][\w-]*)\b/i);
+    if (!matched?.[1]) return false;
+    return RAW_HTML_BLOCK_TAGS.has(matched[1].toLowerCase());
+}
+
+function updateHtmlTagStack(stack, line) {
+    const tagMatcher = /<\/?([a-z][\w-]*)\b[^>]*>/gi;
+    let matched = tagMatcher.exec(String(line || ''));
+    while (matched) {
+        const rawTag = matched[0];
+        const tagName = String(matched[1] || '').toLowerCase();
+        if (!tagName || VOID_HTML_TAGS.has(tagName) || /^<!--/.test(rawTag) || rawTag.endsWith('/>')) {
+            matched = tagMatcher.exec(String(line || ''));
+            continue;
+        }
+
+        if (rawTag.startsWith('</')) {
+            for (let i = stack.length - 1; i >= 0; i--) {
+                if (stack[i] !== tagName) continue;
+                stack.length = i;
+                break;
+            }
+        } else {
+            stack.push(tagName);
+        }
+
+        matched = tagMatcher.exec(String(line || ''));
+    }
+}
+
+function collectRawHtmlBlock(lines, startIndex) {
+    const collected = [];
+    const stack = [];
+    let index = startIndex;
+    while (index < lines.length) {
+        const line = String(lines[index] ?? '');
+        collected.push(line);
+
+        if (!/^<!--/.test(line.trim())) {
+            updateHtmlTagStack(stack, line);
+        }
+
+        index += 1;
+        if (stack.length === 0) {
+            break;
+        }
+    }
+
+    return {
+        html: collected.join('\n').trim(),
+        nextIndex: index,
+    };
+}
+
+function isMarkdownBlockStart(line) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return false;
+    if (/^(```+|~~~+)/.test(trimmed)) return true;
+    if (/^#{1,6}\s+/.test(trimmed)) return true;
+    if (/^\s*>\s?/.test(trimmed)) return true;
+    if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(trimmed)) return true;
+    if (looksLikeMarkdownTableStart(trimmed)) return true;
+    if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) return true;
+    return isRawHtmlBlockStart(trimmed);
+}
+
+function splitMarkdownTableRow(line) {
+    const source = String(line ?? '')
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '');
+
+    const cells = [];
+    let current = '';
+    let escaped = false;
+    for (let i = 0; i < source.length; i++) {
+        const char = source[i];
+        if (escaped) {
+            current += char;
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            escaped = true;
+            current += char;
+            continue;
+        }
+        if (char === '|') {
+            cells.push(current.trim());
+            current = '';
+            continue;
+        }
+        current += char;
+    }
+    cells.push(current.trim());
+    return cells;
+}
+
+function parseMarkdownTableAlignments(line) {
+    const cells = splitMarkdownTableRow(line);
+    if (!cells.length) return null;
+
+    const alignments = [];
+    for (const cell of cells) {
+        const normalized = cell.replace(/\s+/g, '');
+        if (!/^:?-{3,}:?$/.test(normalized)) {
+            return null;
+        }
+        if (normalized.startsWith(':') && normalized.endsWith(':')) {
+            alignments.push('center');
+        } else if (normalized.endsWith(':')) {
+            alignments.push('right');
+        } else {
+            alignments.push('left');
+        }
+    }
+    return alignments;
+}
+
+function looksLikeMarkdownTableStart(line, nextLine = '') {
+    const headerCells = splitMarkdownTableRow(line);
+    if (headerCells.length < 2) return false;
+    return Array.isArray(parseMarkdownTableAlignments(nextLine));
+}
+
+function collectMarkdownTable(lines, startIndex) {
+    const headerLine = String(lines[startIndex] ?? '');
+    const alignLine = String(lines[startIndex + 1] ?? '');
+    const alignments = parseMarkdownTableAlignments(alignLine);
+    if (!alignments) {
+        return null;
+    }
+
+    const headerCells = splitMarkdownTableRow(headerLine);
+    if (headerCells.length < 2 || headerCells.length !== alignments.length) {
+        return null;
+    }
+
+    const rows = [];
+    let index = startIndex + 2;
+    while (index < lines.length) {
+        const currentLine = String(lines[index] ?? '');
+        const trimmed = currentLine.trim();
+        if (!trimmed) break;
+        if (!trimmed.includes('|')) break;
+
+        const cells = splitMarkdownTableRow(currentLine);
+        if (cells.length !== headerCells.length) break;
+
+        rows.push(cells);
+        index += 1;
+    }
+
+    const renderCells = (cells, cellTag) => `
+        <tr>${cells.map((cell, cellIndex) => {
+        const align = alignments[cellIndex] || 'left';
+        return `<${cellTag} data-align="${align}">${renderInlineMarkdown(cell)}</${cellTag}>`;
+    }).join('')}</tr>
+    `;
+
+    const bodyHtml = rows.length
+        ? `<tbody>${rows.map((cells) => renderCells(cells, 'td')).join('')}</tbody>`
+        : '';
+
+    return {
+        html: `<table><thead>${renderCells(headerCells, 'th')}</thead>${bodyHtml}</table>`,
+        nextIndex: index,
+    };
+}
+
+function collectMarkdownList(lines, startIndex, ordered) {
+    const matcher = ordered
+        ? /^\s*\d+[.)]\s+(.*)$/
+        : /^\s*[-*+]\s+(.*)$/;
+    const tagName = ordered ? 'ol' : 'ul';
+    const items = [];
+    let index = startIndex;
+
+    while (index < lines.length) {
+        const currentLine = String(lines[index] ?? '');
+        if (!currentLine.trim()) break;
+
+        const matched = currentLine.match(matcher);
+        if (matched) {
+            items.push([matched[1]]);
+            index += 1;
+            continue;
+        }
+
+        if (!items.length || isMarkdownBlockStart(currentLine) || !/^\s{2,}\S/.test(currentLine)) {
+            break;
+        }
+
+        items[items.length - 1].push(currentLine.trim());
+        index += 1;
+    }
+
+    return {
+        html: `<${tagName}>${items.map((itemLines) => `<li>${itemLines.map(renderInlineMarkdown).join('<br>')}</li>`).join('')}</${tagName}>`,
+        nextIndex: index,
+    };
+}
+
+function collectMarkdownBlockquote(lines, startIndex) {
+    const quoteLines = [];
+    let index = startIndex;
+    while (index < lines.length) {
+        const currentLine = String(lines[index] ?? '');
+        if (!currentLine.trim()) {
+            quoteLines.push('');
+            index += 1;
+            continue;
+        }
+
+        const matched = currentLine.match(/^\s*>\s?(.*)$/);
+        if (!matched) break;
+
+        quoteLines.push(matched[1]);
+        index += 1;
+    }
+
+    return {
+        html: `<blockquote>${renderMarkdownHtml(quoteLines.join('\n'))}</blockquote>`,
+        nextIndex: index,
+    };
+}
+
+function renderMarkdownHtml(text) {
+    const normalized = normalizeLineBreakTokens(text);
+    const rendered = marked.parse(normalized, {
+        async: false,
+        breaks: true,
+        gfm: true,
+    });
+    return sanitizeRenderedMarkdownHtml(rendered);
+}
+
 export function uniqueTextArray(values) {
     const output = [];
     const seen = new Set();
@@ -155,14 +656,20 @@ export function stripDuplicatedAnswerPrefix(queryText, answerHistory) {
     };
 }
 
-export function renderMessageBody(text, emptyPlaceholder = '(空)') {
+export function renderMessageBody(text, emptyPlaceholder = '(空)', options = {}) {
+    const {
+        preferMarkdown = false,
+    } = options || {};
     const normalized = asDisplayContent(text);
     if (!normalized) {
         return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
     }
+    if (preferMarkdown) {
+        return `<div class="markdown-body af-markdown-body">${renderMarkdownHtml(normalized)}</div>`;
+    }
     if (looksLikeHtml(normalized)) {
-        const normalizedHtml = normalizeLineBreakTokens(normalized);
-        return `<div class="markdown-body false" style="font-size:14px;white-space:pre-wrap;">${normalizedHtml}</div>`;
+        const normalizedHtml = sanitizeRenderedMarkdownHtml(normalizeLineBreakTokens(normalized));
+        return `<div class="markdown-body af-markdown-body">${normalizedHtml}</div>`;
     }
     const plainText = normalizeLineBreakTokens(normalized);
     return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
