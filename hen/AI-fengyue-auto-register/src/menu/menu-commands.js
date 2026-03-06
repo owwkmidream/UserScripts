@@ -1,4 +1,3 @@
-import { CONFIG } from '../constants.js';
 import { gmRegisterMenuCommand } from '../gm.js';
 import { ApiService } from '../services/api-service.js';
 import { AutoRegister } from '../features/auto-register.js';
@@ -16,14 +15,15 @@ export function registerMenuCommands() {
         Toast.info(`当前调试日志: ${isDebugEnabled() ? 'ON' : 'OFF'}`);
     });
 
-    gmRegisterMenuCommand('⚙️ 设置 API Key', () => {
+    gmRegisterMenuCommand('⚙️ 设置邮件 API Key', () => {
+        const providerMeta = ApiService.getCurrentProviderMeta();
         const currentKey = ApiService.getApiKey();
-        const newKey = prompt('请输入 GPTMail API Key:', currentKey);
+        const newKey = prompt(`请输入 ${providerMeta.apiKeyLabel}:`, currentKey);
         if (newKey !== null) {
-            ApiService.setApiKey(newKey.trim() || CONFIG.DEFAULT_API_KEY);
-            Toast.success('API Key 已更新');
-            const input = document.querySelector('#aifengyue-api-key');
-            if (input) input.value = newKey.trim() || CONFIG.DEFAULT_API_KEY;
+            ApiService.setApiKey(newKey.trim() || ApiService.getDefaultApiKey());
+            Toast.success(`${providerMeta.name} API Key 已更新`);
+            Sidebar.refreshMailProviderConfigDisplay?.();
+            Sidebar.updateUsageDisplay?.();
         }
     });
 

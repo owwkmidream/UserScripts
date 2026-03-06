@@ -908,20 +908,6 @@ const SIDEBAR_STYLES = `
         background: var(--af-bar-gradient);
         transition: width 0.4s var(--af-ease);
     }
-    #aifengyue-reset-usage {
-        border: none;
-        background: transparent;
-        color: var(--af-accent);
-        cursor: pointer;
-        font-size: 12px;
-        font-family: var(--af-font);
-        padding: 0;
-        transition: color 0.2s;
-    }
-    #aifengyue-reset-usage:hover {
-        color: var(--af-primary);
-        text-decoration: underline;
-    }
 
     /* --- 脚注 --- */
     .aifengyue-footer {

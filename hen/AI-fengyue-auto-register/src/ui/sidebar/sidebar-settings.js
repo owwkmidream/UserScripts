@@ -333,17 +333,70 @@ export const sidebarSettingsMethods = {
         this.setTheme(this.theme === 'dark' ? 'light' : 'dark');
     },
 
-    updateUsageDisplay(snapshot = ApiService.getUsageSnapshot()) {
+    refreshMailProviderConfigDisplay() {
         if (!this.element) return;
 
-        const used = Number(snapshot?.used || 0);
-        const limit = Number(snapshot?.limit || CONFIG.API_QUOTA_LIMIT || 0);
-        const remaining = Number(snapshot?.remaining || 0);
-        const percentage = Number(snapshot?.percentage || 0);
+        const providerMeta = ApiService.getCurrentProviderMeta();
+        const apiKeyLabel = this.element.querySelector('#aifengyue-api-key-label');
+        const apiKeyInput = this.element.querySelector('#aifengyue-api-key');
+        const providerName = this.element.querySelector('#aifengyue-mail-provider-name');
+
+        if (apiKeyLabel) {
+            apiKeyLabel.textContent = providerMeta.apiKeyLabel;
+        }
+        if (apiKeyInput) {
+            apiKeyInput.placeholder = providerMeta.apiKeyPlaceholder;
+            apiKeyInput.value = ApiService.getApiKey();
+        }
+        if (providerName) {
+            providerName.textContent = `当前邮件提供商：${providerMeta.name}`;
+        }
+    },
+
+    formatUsageSummary(snapshot) {
+        if (snapshot?.usageStatus === 'unsupported' || snapshot?.supportsUsage === false) {
+            return '当前邮件提供商未提供 usage';
+        }
+        if (!snapshot?.hasUsage) {
+            return '等待邮件接口返回 usage...';
+        }
+
+        const totalRemaining = Number(snapshot?.remaining || 0);
+        const totalText = totalRemaining < 0
+            ? `总剩余: 超限 ${Math.abs(totalRemaining)} 次`
+            : `总剩余: ${totalRemaining} 次`;
+        const dailyLimit = Number(snapshot?.dailyLimit || 0);
+        const dailyUsed = Number(snapshot?.dailyUsed || 0);
+
+        if (dailyLimit > 0) {
+            return `${totalText} · 今日: ${dailyUsed} / ${dailyLimit}`;
+        }
+        if (dailyUsed > 0 || Number.isFinite(Number(snapshot?.dailyRemaining))) {
+            return `${totalText} · 今日已用: ${dailyUsed} 次`;
+        }
+        return totalText;
+    },
+
+    updateUsageDisplay(snapshot = ApiService.getUsageSnapshot()) {
+        if (!this.element) return;
 
         const usageText = this.element.querySelector('#aifengyue-usage-text');
         const usageBar = this.element.querySelector('#aifengyue-usage-bar');
         const usageRemaining = this.element.querySelector('#aifengyue-usage-remaining');
+
+        if (!snapshot?.hasUsage) {
+            if (usageText) usageText.textContent = '-- / --';
+            if (usageBar) {
+                usageBar.style.width = '0%';
+                usageBar.style.background = 'linear-gradient(90deg, #64748b, #94a3b8)';
+            }
+            if (usageRemaining) usageRemaining.textContent = this.formatUsageSummary(snapshot);
+            return;
+        }
+
+        const used = Number(snapshot?.used || 0);
+        const limit = Number(snapshot?.limit || CONFIG.API_QUOTA_LIMIT || 0);
+        const percentage = Number(snapshot?.percentage || 0);
 
         if (usageText) usageText.textContent = `${used} / ${limit}`;
         if (usageBar) {
@@ -356,7 +409,7 @@ export const sidebarSettingsMethods = {
                 usageBar.style.background = 'linear-gradient(90deg, #0d9488, #14b8a6)';
             }
         }
-        if (usageRemaining) usageRemaining.textContent = `剩余: ${remaining} 次`;
+        if (usageRemaining) usageRemaining.textContent = this.formatUsageSummary(snapshot);
     },
 
     refreshModelFamilyMappingEditor() {

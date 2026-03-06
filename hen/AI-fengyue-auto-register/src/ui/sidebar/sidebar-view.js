@@ -1,8 +1,10 @@
+import { ApiService } from '../../services/api-service.js';
 import { subscribeRuntimeLogChange } from '../../utils/logger.js';
 import { VALID_TABS } from './sidebar-context.js';
 
 export const sidebarViewMethods = {
     createSidebar() {
+        const providerMeta = ApiService.getCurrentProviderMeta();
         const existing = document.getElementById('aifengyue-sidebar');
         if (existing) {
             existing.remove();
@@ -244,9 +246,10 @@ export const sidebarViewMethods = {
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">API 配置</div>
                         <div class="aifengyue-input-group">
-                            <label>GPTMail API Key</label>
-                            <input type="text" id="aifengyue-api-key" placeholder="输入你的 API Key (默认: gpt-test)">
+                            <label id="aifengyue-api-key-label">${providerMeta.apiKeyLabel}</label>
+                            <input type="text" id="aifengyue-api-key" placeholder="${providerMeta.apiKeyPlaceholder}">
                         </div>
+                        <div class="aifengyue-hint" id="aifengyue-mail-provider-name">当前邮件提供商：${providerMeta.name}</div>
                         <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
                     </div>
 
@@ -261,8 +264,7 @@ export const sidebarViewMethods = {
                                 <div id="aifengyue-usage-bar"></div>
                             </div>
                             <div class="aifengyue-usage-foot">
-                                <span id="aifengyue-usage-remaining">剩余: 1000 次</span>
-                                <button id="aifengyue-reset-usage">重置统计</button>
+                                <span id="aifengyue-usage-remaining">等待邮件接口返回 usage...</span>
                             </div>
                         </div>
                     </div>

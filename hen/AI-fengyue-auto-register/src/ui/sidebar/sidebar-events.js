@@ -20,9 +20,11 @@ export const sidebarEventsMethods = {
 
         this.element.querySelector('#aifengyue-save-key').addEventListener('click', () => {
             const input = this.element.querySelector('#aifengyue-api-key');
-            const key = input.value.trim() || CONFIG.DEFAULT_API_KEY;
+            const providerMeta = ApiService.getCurrentProviderMeta();
+            const key = input.value.trim() || ApiService.getDefaultApiKey();
             ApiService.setApiKey(key);
-            getToast()?.success('API Key 已保存');
+            this.refreshMailProviderConfigDisplay();
+            getToast()?.success(`${providerMeta.name} API Key 已保存`);
         });
 
         this.element.querySelector('#aifengyue-layout-mode').addEventListener('change', (e) => {
@@ -208,13 +210,6 @@ export const sidebarEventsMethods = {
             });
         });
 
-        this.element.querySelector('#aifengyue-reset-usage').addEventListener('click', () => {
-            if (confirm('确定要重置 API 使用统计吗？')) {
-                ApiService.resetUsageCount();
-                getToast()?.success('统计已重置');
-            }
-        });
-
         this.element.querySelector('#aifengyue-extract-html').addEventListener('click', () => {
             const extractor = getIframeExtractor();
             if (!extractor) return;
@@ -388,33 +383,77 @@ export const sidebarEventsMethods = {
 
     bindConversationPreviewCopyButtons(doc) {
         if (!doc) return;
-        const buttons = doc.querySelectorAll('.af-copy-btn[data-af-copy-target]');
-        buttons.forEach((button) => {
-            button.addEventListener('click', async () => {
-                const selector = button.getAttribute('data-af-copy-target') || '';
-                if (!selector) return;
+        const triggers = doc.querySelectorAll('[data-af-copy-target]');
+        const handleCopy = async (trigger) => {
+            const selector = trigger.getAttribute('data-af-copy-target') || '';
+            if (!selector) return;
 
-                const target = doc.querySelector(selector);
-                const text = typeof target?.textContent === 'string'
-                    ? target.textContent.replace(/\u00a0/g, ' ').trim()
+            const mode = trigger.getAttribute('data-af-copy-mode') || 'text';
+            const target = doc.querySelector(selector);
+            let rawText = '';
+            if (mode === 'icon') {
+                rawText = typeof target?.textContent === 'string'
+                    ? target.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
                     : '';
-                if (!text) {
-                    getToast()?.warning('当前消息为空，无法复制');
-                    return;
-                }
+            } else if (target) {
+                const copyRoot = target.cloneNode(true);
+                copyRoot.querySelectorAll('[data-af-copy-ignore]').forEach((node) => node.remove());
+                rawText = typeof copyRoot.textContent === 'string'
+                    ? copyRoot.textContent.replace(/\u00a0/g, ' ').replace(/\u200b/g, '')
+                    : '';
+            }
+            const text = mode === 'icon'
+                ? rawText
+                : rawText.trim();
+            if (!text) {
+                getToast()?.warning(mode === 'icon' ? '当前代码块为空，无法复制' : '当前消息为空，无法复制');
+                return;
+            }
 
-                const copied = await this.copyTextToClipboard(text, {
-                    successMessage: '消息已复制到剪贴板',
-                    errorMessage: '消息复制失败',
-                });
-                if (copied) {
-                    const prev = button.textContent;
-                    button.textContent = '已复制';
-                    setTimeout(() => {
-                        button.textContent = prev || '复制';
-                    }, 900);
-                }
+            const copied = await this.copyTextToClipboard(text, {
+                successMessage: mode === 'icon' ? '代码已复制到剪贴板' : '消息已复制到剪贴板',
+                errorMessage: mode === 'icon' ? '代码复制失败' : '消息复制失败',
             });
+            if (!copied) return;
+
+            if (mode === 'icon') {
+                const icon = trigger.querySelector('.af-code-copy-icon');
+                const copiedClass = trigger.getAttribute('data-af-copy-copied-class') || 'style_copied__SbkhO';
+                if (!icon) return;
+                if (trigger.__afCopyResetTimer) {
+                    clearTimeout(trigger.__afCopyResetTimer);
+                }
+                icon.classList.add(copiedClass, 'af-code-copy-icon-copied');
+                trigger.__afCopyResetTimer = setTimeout(() => {
+                    icon.classList.remove(copiedClass, 'af-code-copy-icon-copied');
+                    trigger.__afCopyResetTimer = null;
+                }, 900);
+                return;
+            }
+
+            const prev = trigger.textContent;
+            trigger.textContent = '已复制';
+            setTimeout(() => {
+                trigger.textContent = prev || '复制';
+            }, 900);
+        };
+
+        triggers.forEach((trigger) => {
+            if (trigger.dataset.afCopyBound === '1') return;
+            trigger.dataset.afCopyBound = '1';
+
+            trigger.addEventListener('click', async (event) => {
+                event.preventDefault();
+                await handleCopy(trigger);
+            });
+
+            if (trigger.getAttribute('data-af-copy-mode') === 'icon') {
+                trigger.addEventListener('keydown', async (event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    await handleCopy(trigger);
+                });
+            }
         });
     },
 };

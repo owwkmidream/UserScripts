@@ -1,13 +1,10 @@
 import { CONFIG, SIDEBAR_INITIAL_STATE } from '../../constants.js';
-import { gmGetValue } from '../../gm.js';
+import { ApiService } from '../../services/api-service.js';
 import { isDebugEnabled } from '../../utils/logger.js';
 
 export const sidebarStateMethods = {
     loadSavedData() {
-        const apiKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, '');
-        if (apiKey) {
-            this.element.querySelector('#aifengyue-api-key').value = apiKey;
-        }
+        this.refreshMailProviderConfigDisplay();
 
         const layoutModeInput = this.element.querySelector('#aifengyue-layout-mode');
         if (layoutModeInput) {
@@ -42,7 +39,7 @@ export const sidebarStateMethods = {
             tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
         }
 
-        this.updateUsageDisplay();
+        this.updateUsageDisplay(ApiService.getUsageSnapshot());
         this.refreshTokenPoolSummary();
         this.refreshModelFamilyMappingEditor();
         this.render();
