@@ -1,7 +1,12 @@
 import { CONFIG } from '../../constants.js';
 import { gmGetValue, gmSetValue } from '../../gm.js';
 import { ApiService } from '../../services/api-service.js';
-import { getAutoRegister, getModelPopupSorter, VALID_TABS } from './sidebar-context.js';
+import {
+    clearRuntimeLogEntries,
+    isDebugEnabled,
+    readRuntimeLogEntries,
+} from '../../utils/logger.js';
+import { getAutoRegister, getModelPopupSorter, getToast, VALID_TABS } from './sidebar-context.js';
 
 export const sidebarSettingsMethods = {
     getLayoutMode() {
@@ -132,6 +137,120 @@ export const sidebarSettingsMethods = {
         }
     },
 
+    getTokenPoolStatusText(summary = {}) {
+        if (summary?.maintaining) return '维护中';
+
+        switch (summary?.status) {
+            case 'ok':
+                return '最近成功';
+            case 'failed':
+                return '最近失败';
+            case 'backoff':
+                return '退避等待';
+            case 'stopped':
+                return '已停止';
+            case 'running':
+                return '定时中';
+            default:
+                return summary?.schedulerEnabled
+                    ? (summary?.schedulerRunning ? '运行中' : '待启动')
+                    : '已关闭';
+        }
+    },
+
+    escapeLogHtml(value) {
+        const text = typeof value === 'string' ? value : String(value ?? '');
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    getTokenPoolLogEntries(limit = 200) {
+        const normalizedLimit = Math.max(1, Math.floor(Number(limit) || 200));
+        const entries = readRuntimeLogEntries({ limit: Math.max(normalizedLimit * 3, normalizedLimit) });
+        return entries
+            .filter((entry) => {
+                const runId = typeof entry?.runId === 'string' ? entry.runId : '';
+                const step = typeof entry?.step === 'string' ? entry.step : '';
+                const message = typeof entry?.message === 'string' ? entry.message : '';
+                return runId.startsWith('POOL-')
+                    || step.includes('TOKEN_POOL')
+                    || step.includes('SWITCH_POOL')
+                    || message.includes('号池');
+            })
+            .slice(-normalizedLimit);
+    },
+
+    renderTokenPoolLogModal() {
+        if (!this.tokenPoolLogModal) return;
+
+        const summaryEl = this.tokenPoolLogModal.querySelector('#aifengyue-token-pool-log-summary');
+        const listEl = this.tokenPoolLogModal.querySelector('#aifengyue-token-pool-log-list');
+        const entries = this.getTokenPoolLogEntries(180);
+        const latestEntry = entries[entries.length - 1] || null;
+        const poolSummary = getAutoRegister()?.getTokenPoolSummary?.() || null;
+
+        if (summaryEl) {
+            const statusText = this.getTokenPoolStatusText(poolSummary || {});
+            const latestText = latestEntry
+                ? `${this.formatTokenPoolTime(latestEntry.createdAt)} / ${latestEntry.runId || 'NO-RUN'}`
+                : '暂无';
+            const detailHint = isDebugEnabled()
+                ? 'DEBUG 已开启，当前会记录更细的请求与响应细节。'
+                : '如需更多请求明细，可先打开「启用调试日志（DEBUG）」。';
+            summaryEl.textContent = `当前状态：${statusText}；最近日志：${latestText}；日志条数：${entries.length}；${detailHint}`;
+        }
+
+        if (!listEl) return;
+        if (!entries.length) {
+            listEl.innerHTML = `
+                <div class="aifengyue-log-empty">
+                    暂无号池运行日志。可先点“立即维护”，再打开这里查看完整过程。
+                </div>
+            `;
+            return;
+        }
+
+        listEl.innerHTML = entries
+            .slice()
+            .reverse()
+            .map((entry) => {
+                const level = typeof entry?.level === 'string' ? entry.level : 'INFO';
+                const levelClass = `is-${level.toLowerCase()}`;
+                const timeText = this.formatTokenPoolTime(entry?.createdAt);
+                const stepText = typeof entry?.step === 'string' && entry.step.trim() ? entry.step.trim() : '-';
+                const runIdText = typeof entry?.runId === 'string' && entry.runId.trim() ? entry.runId.trim() : 'NO-RUN';
+                const messageText = typeof entry?.message === 'string' ? entry.message : '';
+                const metaText = entry?.meta ? JSON.stringify(entry.meta, null, 2) : '';
+                const metaHtml = metaText
+                    ? `<pre class="aifengyue-log-meta">${this.escapeLogHtml(metaText)}</pre>`
+                    : '';
+
+                return `
+                    <div class="aifengyue-log-entry ${levelClass}">
+                        <div class="aifengyue-log-entry-head">
+                            <span class="aifengyue-log-level">${this.escapeLogHtml(level)}</span>
+                            <span class="aifengyue-log-time">${this.escapeLogHtml(timeText)}</span>
+                            <span class="aifengyue-log-step">${this.escapeLogHtml(stepText)}</span>
+                        </div>
+                        <div class="aifengyue-log-message">${this.escapeLogHtml(messageText)}</div>
+                        <div class="aifengyue-log-run">${this.escapeLogHtml(runIdText)}</div>
+                        ${metaHtml}
+                    </div>
+                `;
+            })
+            .join('');
+    },
+
+    clearTokenPoolLogs() {
+        clearRuntimeLogEntries();
+        this.renderTokenPoolLogModal();
+        getToast()?.success('号池运行日志已清空');
+    },
+
     refreshTokenPoolSummary(summary = null) {
         if (!this.element) return;
         const autoRegister = getAutoRegister();
@@ -149,9 +268,7 @@ export const sidebarSettingsMethods = {
         const errorText = typeof resolvedSummary.lastError === 'string' && resolvedSummary.lastError.trim()
             ? resolvedSummary.lastError.trim()
             : '-';
-        const statusText = resolvedSummary.schedulerEnabled
-            ? (resolvedSummary.schedulerRunning ? '运行中' : '待启动')
-            : '已关闭';
+        const statusText = this.getTokenPoolStatusText(resolvedSummary);
 
         const fullEl = this.element.querySelector('#aifengyue-token-pool-full');
         const totalEl = this.element.querySelector('#aifengyue-token-pool-total');
@@ -159,6 +276,7 @@ export const sidebarSettingsMethods = {
         const lastCheckEl = this.element.querySelector('#aifengyue-token-pool-last-check');
         const nextAllowedEl = this.element.querySelector('#aifengyue-token-pool-next-allowed');
         const errorEl = this.element.querySelector('#aifengyue-token-pool-last-error');
+        const maintainBtn = this.element.querySelector('#aifengyue-token-pool-maintain');
 
         if (fullEl) fullEl.textContent = `${fullCount} / ${targetFullCount}`;
         if (totalEl) totalEl.textContent = `${totalCount} / ${maxCount}`;
@@ -166,6 +284,13 @@ export const sidebarSettingsMethods = {
         if (lastCheckEl) lastCheckEl.textContent = lastCheckAtText;
         if (nextAllowedEl) nextAllowedEl.textContent = nextAllowedAtText;
         if (errorEl) errorEl.textContent = errorText;
+        if (maintainBtn) {
+            maintainBtn.disabled = !!resolvedSummary.maintaining;
+            maintainBtn.textContent = resolvedSummary.maintaining ? '维护中...' : '立即维护';
+        }
+        if (this.tokenPoolLogModalOpen) {
+            this.renderTokenPoolLogModal();
+        }
     },
 
     setAutoReloadEnabled(enabled) {
@@ -197,6 +322,9 @@ export const sidebarSettingsMethods = {
     applyTheme() {
         if (!this.element) return;
         this.element.dataset.theme = this.theme;
+        if (this.tokenPoolLogModal) {
+            this.tokenPoolLogModal.dataset.theme = this.theme;
+        }
         const btn = this.element.querySelector('.aifengyue-theme-toggle');
         if (btn) btn.textContent = this.theme === 'dark' ? '☀' : '🌙';
     },

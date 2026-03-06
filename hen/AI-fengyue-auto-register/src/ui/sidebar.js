@@ -12,6 +12,10 @@ export const Sidebar = {
     conversationModal: null,
     conversationModalOpen: false,
     conversationModalEscHandler: null,
+    tokenPoolLogModal: null,
+    tokenPoolLogModalOpen: false,
+    tokenPoolLogModalEscHandler: null,
+    tokenPoolLogUnsubscribe: null,
     usageUnsubscribe: null,
     isOpen: false,
     layoutMode: 'inline',
@@ -39,6 +43,7 @@ export const Sidebar = {
         this.theme = this.getTheme();
         this.createSidebar();
         this.createConversationModal();
+        this.createTokenPoolLogModal();
         this.createToggleButton();
         this.loadSavedData();
         this.bindUsageSubscription();

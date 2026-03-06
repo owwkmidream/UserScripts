@@ -218,6 +218,7 @@ export const TokenPoolMethods = {
             intervalSeconds,
             schedulerEnabled: intervalSeconds > 0,
             schedulerRunning: !!this.tokenPoolTimer,
+            maintaining: !!this.tokenPoolMaintaining,
             lastCheckAt: backoff.lastCheckAt,
             nextAllowedAt: backoff.nextAllowedAt,
             backoffLevel: backoff.backoffLevel,
@@ -365,6 +366,14 @@ export const TokenPoolMethods = {
         const ctx = runCtx || createRunContext('POOL');
         this.tokenPoolMaintaining = true;
         try {
+            logInfo(ctx, 'TOKEN_POOL', '号池维护开始', {
+                reason,
+                force: !!force,
+            });
+            this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+                reason: reason || 'maintain',
+                status: 'maintaining',
+            }), ctx);
             const backoff = this.readTokenPoolBackoffState();
             const now = Date.now();
             if (!force && backoff.nextAllowedAt > now) {

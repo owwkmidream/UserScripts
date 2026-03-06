@@ -1,3 +1,4 @@
+import { subscribeRuntimeLogChange } from '../../utils/logger.js';
 import { VALID_TABS } from './sidebar-context.js';
 
 export const sidebarViewMethods = {
@@ -371,6 +372,14 @@ export const sidebarViewMethods = {
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-last-error">-</span>
                             </div>
                         </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-token-pool-maintain">
+                                立即维护
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-token-pool-view-log">
+                                查看日志
+                            </button>
+                        </div>
                     </div>
 
                 </div>
@@ -435,6 +444,81 @@ export const sidebarViewMethods = {
         if (!this.conversationModal) return;
         this.conversationModal.classList.remove('open');
         this.conversationModalOpen = false;
+    },
+
+    createTokenPoolLogModal() {
+        const existing = document.getElementById('aifengyue-token-pool-log-modal');
+        if (existing) {
+            existing.remove();
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'aifengyue-token-pool-log-modal';
+        modal.innerHTML = `
+            <div class="aifengyue-conv-modal-backdrop">
+                <div class="aifengyue-log-modal-content" role="dialog" aria-modal="true" aria-label="号池运行日志">
+                    <div class="aifengyue-conv-modal-head">
+                        <div class="aifengyue-conv-modal-title">号池运行日志</div>
+                        <div class="aifengyue-log-modal-head-actions">
+                            <button id="aifengyue-token-pool-log-refresh" class="aifengyue-copy-btn" title="刷新日志">刷新</button>
+                            <button id="aifengyue-token-pool-log-clear" class="aifengyue-copy-btn" title="清空日志">清空</button>
+                            <button id="aifengyue-token-pool-log-modal-close" class="aifengyue-conv-modal-close" title="关闭">✕</button>
+                        </div>
+                    </div>
+                    <div class="aifengyue-log-modal-body">
+                        <div id="aifengyue-token-pool-log-summary" class="aifengyue-hint"></div>
+                        <div id="aifengyue-token-pool-log-list" class="aifengyue-log-list"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        modal.dataset.theme = this.theme;
+        this.tokenPoolLogModal = modal;
+        this.tokenPoolLogModalOpen = false;
+
+        modal.querySelector('#aifengyue-token-pool-log-modal-close')
+            ?.addEventListener('click', () => this.closeTokenPoolLogModal());
+        modal.querySelector('#aifengyue-token-pool-log-refresh')
+            ?.addEventListener('click', () => this.renderTokenPoolLogModal());
+        modal.querySelector('#aifengyue-token-pool-log-clear')
+            ?.addEventListener('click', () => this.clearTokenPoolLogs());
+
+        if (typeof this.tokenPoolLogUnsubscribe === 'function') {
+            this.tokenPoolLogUnsubscribe();
+            this.tokenPoolLogUnsubscribe = null;
+        }
+        this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange(() => {
+            if (this.tokenPoolLogModalOpen) {
+                this.renderTokenPoolLogModal();
+            }
+        });
+
+        if (this.tokenPoolLogModalEscHandler) {
+            document.removeEventListener('keydown', this.tokenPoolLogModalEscHandler);
+        }
+        this.tokenPoolLogModalEscHandler = (event) => {
+            if (event.key === 'Escape' && this.tokenPoolLogModalOpen) {
+                this.closeTokenPoolLogModal();
+            }
+        };
+        document.addEventListener('keydown', this.tokenPoolLogModalEscHandler);
+    },
+
+    openTokenPoolLogModal() {
+        if (!this.tokenPoolLogModal) {
+            this.createTokenPoolLogModal();
+        }
+        if (!this.tokenPoolLogModal) return;
+        this.tokenPoolLogModal.classList.add('open');
+        this.tokenPoolLogModalOpen = true;
+        this.renderTokenPoolLogModal();
+    },
+
+    closeTokenPoolLogModal() {
+        if (!this.tokenPoolLogModal) return;
+        this.tokenPoolLogModal.classList.remove('open');
+        this.tokenPoolLogModalOpen = false;
     },
 
     createToggleButton() {

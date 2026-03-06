@@ -10,6 +10,7 @@ export const CONFIG = {
         API_USAGE_COUNT: 'api_usage_count',
         API_USAGE_RESET_DATE: 'api_usage_reset_date',
         LOG_DEBUG_ENABLED: 'aifengyue_log_debug_enabled',
+        RUNTIME_LOG_BUFFER: 'aifengyue_runtime_log_buffer',
         AUTO_RELOAD_ENABLED: 'aifengyue_auto_reload_enabled',
         CHAT_MESSAGES_TIMEOUT_SECONDS: 'aifengyue_chat_messages_timeout_seconds',
         ACCOUNT_POINT_POLL_SECONDS: 'aifengyue_account_point_poll_seconds',

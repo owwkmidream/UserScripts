@@ -133,6 +133,40 @@ export const sidebarEventsMethods = {
             applyTokenPoolCheckSeconds(e?.target?.value, { showToast: true });
         });
 
+        this.element.querySelector('#aifengyue-token-pool-maintain').addEventListener('click', async () => {
+            const autoRegister = getAutoRegister();
+            if (!autoRegister?.maintainTokenPool) {
+                getToast()?.warning('号池维护能力未就绪');
+                return;
+            }
+
+            this.openTokenPoolLogModal();
+            const summary = await autoRegister.maintainTokenPool({
+                reason: 'manual-button',
+                force: true,
+            });
+            this.refreshTokenPoolSummary(summary);
+            this.renderTokenPoolLogModal();
+
+            if (summary?.maintaining) {
+                getToast()?.info('号池已在维护中，可在日志弹窗查看实时进度');
+                return;
+            }
+            if (summary?.status === 'ok') {
+                getToast()?.success('号池手动维护完成');
+                return;
+            }
+            if (summary?.status === 'failed') {
+                getToast()?.warning('号池维护失败，请查看日志详情');
+                return;
+            }
+            getToast()?.info('号池维护已触发，可在日志弹窗查看详情');
+        });
+
+        this.element.querySelector('#aifengyue-token-pool-view-log').addEventListener('click', () => {
+            this.openTokenPoolLogModal();
+        });
+
         this.element.querySelector('#aifengyue-start').addEventListener('click', () => {
             getAutoRegister()?.start();
         });

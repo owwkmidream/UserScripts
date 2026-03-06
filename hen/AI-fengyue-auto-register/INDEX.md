@@ -88,17 +88,17 @@
 | `src/runtime/chat-monitor/sse-parser.js` | SSE 解析、事件归一化与提示格式化 | 被 fetch/xhr hook 复用 |
 | `src/runtime/chat-monitor/timeout-context.js` | chat-messages 超时策略与 AbortContext | 被 fetch/xhr hook 与门面复用 |
 | `src/ui/sidebar.js` | 侧边栏兼容门面（聚合 `ui/sidebar/*` 子模块） | 被 `app`、`runtime`、`features` 调用 |
-| `src/ui/sidebar/sidebar-view.js` | 侧边栏视图创建与开关、Tab 切换 | 聚合进 `sidebar` |
-| `src/ui/sidebar/sidebar-events.js` | 侧边栏事件绑定与剪贴板交互 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-view.js` | 侧边栏视图创建与开关、Tab 切换、号池日志弹窗骨架 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-events.js` | 侧边栏事件绑定、剪贴板交互与号池手动维护入口 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-conversation.js` | 会话面板交互、预览、导入导出 | 聚合进 `sidebar` |
-| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额/号池摘要显示、模型映射编辑器刷新 | 聚合进 `sidebar` |
+| `src/ui/sidebar/sidebar-settings.js` | 侧边栏设置读写、主题布局、配额/号池摘要显示、号池日志渲染、模型映射编辑器刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-state.js` | 侧边栏状态加载与渲染 | 聚合进 `sidebar` |
 | `src/ui/sidebar/sidebar-tools.js` | 侧边栏工具面板可用性刷新 | 聚合进 `sidebar` |
 | `src/ui/sidebar.css.js` | 侧边栏样式注入 | 由 `src/index.js` 调用 |
 | `src/ui/toast.js` | 轻提示组件 | 被全局多个模块调用 |
 | `src/ui/chat-stream-capsule.js` | SSE 状态胶囊提示组件 | 被 `chat-messages-monitor` 调用 |
 | `src/menu/menu-commands.js` | 油猴菜单命令注册 | 依赖 `gmRegisterMenuCommand` 与业务模块 |
-| `src/utils/logger.js` | 带 runId 的日志工具与调试开关 | 被 `auto-register`、`menu`、`ui` 使用 |
+| `src/utils/logger.js` | 带 runId 的日志工具、调试开关与本地运行日志缓冲 | 被 `auto-register`、`menu`、`ui` 使用 |
 | `src/utils/random.js` | 用户名/密码随机生成与延时工具 | 被 `auto-register` 调用 |
 | `src/utils/code-extractor.js` | 邮件验证码提取工具 | 被 `auto-register` 调用 |
 | `src/utils/dom.js` | 表单输入模拟工具 | 被 `auto-register` 调用 |
@@ -158,3 +158,4 @@
 - `2026-03-05`：新增 `scripts/release.mjs` 与 `package.json release*` 命令，支持版本号更新与发布构建自动化。
 - `2026-03-05`：`scripts/release.mjs` 增加 git 发布流程，默认执行 `commit + push`，并支持 `--no-git/--no-push`。
 - `2026-03-07`：新增 `src/vendor/marked.esm.js` vendored markdown 解析器，会话预览渲染从自写 parser 切换为 `marked` + 安全清洗。
+- `2026-03-07`：号池设置区新增“立即维护/查看日志”入口，`logger.js` 增加本地运行日志缓冲，支持在侧边栏弹窗查看号池维护明细。
