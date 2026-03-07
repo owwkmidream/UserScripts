@@ -23,6 +23,7 @@
 | api-service.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 
@@ -38,6 +39,7 @@
 | api-service.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 
@@ -53,6 +55,7 @@
 | api-service.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 
@@ -68,6 +71,7 @@
 | api-service.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 
@@ -83,6 +87,7 @@
 | api-service.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 
@@ -98,6 +103,7 @@
 | api-service.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/api-service.js) |
 | chat-history-service.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-service.js) |
 | chat-history-store.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/chat-history-store.js) |
+| mail-service.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/services/mail-service.js) |
 
 [⬆️ 返回导航](#-cdn-下载导航)
 

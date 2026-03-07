@@ -21,6 +21,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://github.com/owwkmidream/UserScripts/raw/master/hen/AI-fengyue-auto-register/src/utils/random.js) |
@@ -39,6 +40,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://cdn.jsdelivr.net/gh/owwkmidream/UserScripts@master/hen/AI-fengyue-auto-register/src/utils/random.js) |
@@ -57,6 +59,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://cdn.statically.io/gh/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/random.js) |
@@ -75,6 +78,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://raw.gitmirror.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/random.js) |
@@ -93,6 +97,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://ghfast.top/https://raw.githubusercontent.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/random.js) |
@@ -111,6 +116,7 @@
 | 脚本名称 | 下载链接 |
 | :--- | :--- |
 | code-extractor.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/code-extractor.js) |
+| cross-tab-lock.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/cross-tab-lock.js) |
 | dom.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/dom.js) |
 | logger.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/logger.js) |
 | random.js | [📥 安装](https://raw.githack.com/owwkmidream/UserScripts/master/hen/AI-fengyue-auto-register/src/utils/random.js) |
