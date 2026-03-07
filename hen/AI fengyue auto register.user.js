@@ -12232,6 +12232,7 @@ ${providerOptions}
         right: calc(-1 * (var(--af-sidebar-width) + 20px));
         width: var(--af-sidebar-width);
         height: 100vh;
+        height: 100dvh;
         background: var(--af-bg);
         color: var(--af-text);
         z-index: 2147483646;
@@ -12245,6 +12246,7 @@ ${providerOptions}
         box-sizing: border-box;
         padding-top: var(--af-safe-top);
         padding-bottom: var(--af-safe-bottom);
+        overscroll-behavior: contain;
     }
     #aifengyue-sidebar.open {
         right: 0;
@@ -12358,10 +12360,14 @@ ${providerOptions}
     /* --- 内容区 --- */
     .aifengyue-sidebar-content {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
         padding: 12px;
+        padding-bottom: 16px;
         scrollbar-width: thin;
         scrollbar-color: var(--af-border) transparent;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
     }
     .aifengyue-sidebar-content::-webkit-scrollbar {
         width: 4px;
@@ -12791,6 +12797,7 @@ ${providerOptions}
         width: min(1200px, calc(100vw - 40px));
         min-width: 700px;
         height: min(94vh, 1200px);
+        height: min(94dvh, 1200px);
         border-radius: 12px;
         background: #f7f8fb;
         border: 1px solid rgba(148, 163, 184, 0.4);
@@ -12803,6 +12810,7 @@ ${providerOptions}
         width: min(1280px, calc(100vw - 40px));
         min-width: 760px;
         height: min(92vh, 1080px);
+        height: min(92dvh, 1080px);
         border-radius: 12px;
         background: var(--af-bg);
         border: 1px solid var(--af-border);
@@ -12959,17 +12967,29 @@ ${providerOptions}
         overflow-x: auto;
     }
     @media (max-width: 760px) {
+        .aifengyue-conv-modal-backdrop {
+            align-items: stretch;
+        }
         .aifengyue-conv-modal-content {
             min-width: 0;
-            width: calc(100vw - 16px);
-            height: calc(100vh - 16px);
+            width: 100%;
+            height: 100%;
+            max-height: none;
         }
         .aifengyue-log-modal-content {
             min-width: 0;
-            width: calc(100vw - 16px);
-            height: calc(100vh - 16px);
+            width: 100%;
+            height: 100%;
+            max-height: none;
+        }
+        .aifengyue-conv-modal-head {
+            min-height: 52px;
+            height: auto;
+            padding: 8px 10px 8px 12px;
         }
         .aifengyue-log-modal-head-actions {
+            flex-wrap: wrap;
+            justify-content: flex-end;
             gap: 6px;
         }
         .aifengyue-conv-modal-backdrop {
