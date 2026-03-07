@@ -6615,8 +6615,7 @@ ${providerOptions}
                 box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
                 animation: aifengyue-toast-in 0.3s ease-out;
                 pointer-events: auto;
-                max-width: min(350px, calc(100vw - 40px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
-                box-sizing: border-box;
+                max-width: 350px;
                 word-break: break-word;
             }
             .aifengyue-toast.success { background: linear-gradient(135deg, #10b981, #059669); }
@@ -6631,21 +6630,6 @@ ${providerOptions}
             @keyframes aifengyue-toast-out {
                 from { opacity: 1; transform: translateX(0); }
                 to { opacity: 0; transform: translateX(100%); }
-            }
-            @media (max-width: 760px) {
-                #aifengyue-toast-container {
-                    left: calc(12px + env(safe-area-inset-left, 0px));
-                    right: calc(12px + env(safe-area-inset-right, 0px));
-                    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-                    gap: 8px;
-                }
-                .aifengyue-toast {
-                    width: 100%;
-                    max-width: none;
-                    padding: 10px 12px;
-                    border-radius: 10px;
-                    font-size: 13px;
-                }
             }
         `);
 		},
@@ -10936,8 +10920,6 @@ ${providerOptions}
                 backdrop-filter: blur(8px);
                 -webkit-backdrop-filter: blur(8px);
                 opacity: 0.95;
-                max-width: min(420px, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
-                box-sizing: border-box;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-dot {
                 width: 8px;
@@ -10947,7 +10929,7 @@ ${providerOptions}
                 box-sizing: border-box;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-text {
-                max-width: 100%;
+                max-width: 360px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
@@ -10986,22 +10968,6 @@ ${providerOptions}
                 0% { transform: scale(1); opacity: 0.8; }
                 50% { transform: scale(1.35); opacity: 1; }
                 100% { transform: scale(1); opacity: 0.8; }
-            }
-            @media (max-width: 760px) {
-                #${CAPSULE_ID} {
-                    left: calc(12px + env(safe-area-inset-left, 0px));
-                    right: calc(12px + env(safe-area-inset-right, 0px));
-                    bottom: calc(68px + env(safe-area-inset-bottom, 0px));
-                    justify-content: center;
-                    gap: 10px;
-                    padding: 10px 12px;
-                    border-radius: 14px;
-                }
-                #${CAPSULE_ID} .aifengyue-chat-status-text {
-                    white-space: normal;
-                    line-height: 1.35;
-                    text-align: center;
-                }
             }
         `);
 		},
@@ -12266,7 +12232,6 @@ ${providerOptions}
         right: calc(-1 * (var(--af-sidebar-width) + 20px));
         width: var(--af-sidebar-width);
         height: 100vh;
-        height: 100dvh;
         background: var(--af-bg);
         color: var(--af-text);
         z-index: 2147483646;
@@ -12280,7 +12245,6 @@ ${providerOptions}
         box-sizing: border-box;
         padding-top: var(--af-safe-top);
         padding-bottom: var(--af-safe-bottom);
-        overscroll-behavior: contain;
     }
     #aifengyue-sidebar.open {
         right: 0;
@@ -12394,14 +12358,10 @@ ${providerOptions}
     /* --- 内容区 --- */
     .aifengyue-sidebar-content {
         flex: 1;
-        min-height: 0;
         overflow-y: auto;
         padding: 12px;
-        padding-bottom: 16px;
         scrollbar-width: thin;
         scrollbar-color: var(--af-border) transparent;
-        overscroll-behavior: contain;
-        -webkit-overflow-scrolling: touch;
     }
     .aifengyue-sidebar-content::-webkit-scrollbar {
         width: 4px;
@@ -12831,7 +12791,6 @@ ${providerOptions}
         width: min(1200px, calc(100vw - 40px));
         min-width: 700px;
         height: min(94vh, 1200px);
-        height: min(94dvh, 1200px);
         border-radius: 12px;
         background: #f7f8fb;
         border: 1px solid rgba(148, 163, 184, 0.4);
@@ -12844,7 +12803,6 @@ ${providerOptions}
         width: min(1280px, calc(100vw - 40px));
         min-width: 760px;
         height: min(92vh, 1080px);
-        height: min(92dvh, 1080px);
         border-radius: 12px;
         background: var(--af-bg);
         border: 1px solid var(--af-border);
@@ -13001,122 +12959,21 @@ ${providerOptions}
         overflow-x: auto;
     }
     @media (max-width: 760px) {
-        body.aifengyue-sidebar-inline-mode {
-            padding-right: 0 !important;
-        }
-        body.aifengyue-sidebar-inline-mode #header-setting-button {
-            margin-right: 0 !important;
-        }
-        #aifengyue-sidebar {
-            right: calc(-100vw - 24px);
-            width: 100vw;
-            max-width: 100vw;
-            border-left: none;
-            padding-left: var(--af-safe-left);
-            padding-right: var(--af-safe-right);
-            box-shadow: -8px 0 28px rgba(15, 23, 42, 0.22);
-        }
-        #aifengyue-sidebar-toggle {
-            top: auto;
-            bottom: calc(12px + var(--af-safe-bottom));
-            transform: none;
-            width: auto;
-            min-width: 92px;
-            height: 40px;
-            padding: 0 12px;
-            border-radius: 999px 0 0 999px;
-            writing-mode: horizontal-tb;
-            font-size: 12px;
-            letter-spacing: 0.5px;
-        }
-        #aifengyue-sidebar-toggle:hover {
-            width: auto;
-        }
-        #aifengyue-sidebar-toggle.is-open {
-            right: 0;
-            opacity: 0;
-            pointer-events: none;
-        }
-        .aifengyue-sidebar-header {
-            padding: 12px;
-        }
-        .aifengyue-sidebar-header h2 {
-            font-size: 14px;
-        }
-        .aifengyue-theme-toggle,
-        .aifengyue-sidebar-close {
-            width: 40px;
-            height: 40px;
-        }
-        .aifengyue-sidebar-tabs {
-            gap: 6px;
-            padding: 8px;
-        }
-        .aifengyue-tab-btn {
-            height: 40px;
-            font-size: 12px;
-        }
-        .aifengyue-sidebar-content {
-            padding: 10px;
-        }
-        .aifengyue-section,
-        .aifengyue-tool-block {
-            padding: 12px;
-        }
-        .aifengyue-info-row {
-            align-items: flex-start;
-            flex-wrap: wrap;
-            gap: 6px;
-        }
-        .aifengyue-info-label {
-            min-width: auto;
-        }
-        .aifengyue-info-value {
-            width: 100%;
-            overflow: visible;
-            text-overflow: clip;
-            white-space: normal;
-            word-break: break-word;
-        }
-        .aifengyue-btn-group {
-            grid-template-columns: 1fr;
-        }
-        .aifengyue-check-row {
-            align-items: flex-start;
-        }
-        .aifengyue-conversation-viewer {
-            min-height: 360px;
-        }
-        .aifengyue-conv-modal-backdrop {
-            align-items: stretch;
-            padding: calc(8px + var(--af-safe-top)) calc(8px + var(--af-safe-right)) calc(8px + var(--af-safe-bottom)) calc(8px + var(--af-safe-left));
-        }
         .aifengyue-conv-modal-content {
             min-width: 0;
-            width: 100%;
-            height: 100%;
-            max-height: none;
+            width: calc(100vw - 16px);
+            height: calc(100vh - 16px);
         }
         .aifengyue-log-modal-content {
             min-width: 0;
-            width: 100%;
-            height: 100%;
-            max-height: none;
-        }
-        .aifengyue-conv-modal-head {
-            min-height: 52px;
-            height: auto;
-            padding: 8px 10px 8px 12px;
+            width: calc(100vw - 16px);
+            height: calc(100vh - 16px);
         }
         .aifengyue-log-modal-head-actions {
-            flex-wrap: wrap;
-            justify-content: flex-end;
             gap: 6px;
         }
-        .aifengyue-log-modal-body,
-        .aifengyue-log-list,
-        .aifengyue-log-entry {
-            padding: 10px;
+        .aifengyue-conv-modal-backdrop {
+            padding: calc(8px + var(--af-safe-top)) calc(8px + var(--af-safe-right)) calc(8px + var(--af-safe-bottom)) calc(8px + var(--af-safe-left));
         }
     }
 
