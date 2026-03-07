@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TrendsZine Ultimate Gallery
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @description  Feed grid takeover + infinite load, detail gallery merge + lightbox for trendszine.com
 // @match        https://trendszine.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=trendszine.com
@@ -18,6 +18,7 @@
         scene: '',
         feedBusy: false,
         feedNextUrl: '',
+        feedObserver: null,
         seenPosts: new Set(),
         galleryImages: [],
     };
@@ -93,7 +94,7 @@ html[data-tz-ready="1"] #tz-media-wrap {
   border-radius: 12px !important; background: rgba(255,255,255,.04) !important; color: #d8e1f3 !important;
 }
 html[data-tz-ready="1"] #tz-gallery-root {
-  --tz-col-width: 260px !important; display: block !important; margin: 12px 0 0 !important;
+  --tz-col-width: 260px; display: block !important; margin: 12px 0 0 !important;
   border: 2px solid #ff8aac !important; border-radius: 16px !important;
   background: linear-gradient(180deg, rgba(24,17,30,.95), rgba(12,11,18,.98)) !important;
 }
@@ -214,11 +215,20 @@ html[data-tz-ready="1"] .tz-lb-counter {
         if (!(footer instanceof HTMLElement)) {
             footer = document.createElement('div');
             footer.id = 'tz-feed-footer';
-            footer.innerHTML = `<span id="tz-feed-status">Ready</span><button id="tz-feed-load" type="button">Load Next</button>`;
+            footer.innerHTML = `<span id="tz-feed-status">Scroll to auto load</span>`;
             container.appendChild(footer);
         }
-        const btn = footer.querySelector('#tz-feed-load');
-        if (btn instanceof HTMLButtonElement) btn.onclick = () => loadNextFeedPage(container);
+
+        if (STATE.feedObserver) {
+            STATE.feedObserver.disconnect();
+        }
+        STATE.feedObserver = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                loadNextFeedPage(container);
+            }
+        }, { root: null, rootMargin: '1200px 0px', threshold: 0 });
+        STATE.feedObserver.observe(footer);
+
         updateFeedFooter(footer, STATE.feedNextUrl ? 'Auto load ready' : 'No next page');
     }
 
