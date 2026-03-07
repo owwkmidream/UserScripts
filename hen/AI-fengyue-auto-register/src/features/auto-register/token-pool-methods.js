@@ -201,15 +201,17 @@ export const TokenPoolMethods = {
     },
 
 
-    buildTokenPoolSummary({ entries = null, reason = '', status = 'idle' } = {}) {
+    buildTokenPoolSummary({ entries = null, reason = '', status = 'idle', runId = '' } = {}) {
         const resolvedEntries = Array.isArray(entries) ? entries : this.readTokenPool();
         const fullCount = resolvedEntries.length;
         const backoff = this.readTokenPoolBackoffState();
         const intervalSeconds = this.getTokenPoolCheckSeconds();
+        const resolvedRunId = typeof runId === 'string' ? runId.trim() : '';
 
         return {
             reason: reason || '',
             status,
+            runId: resolvedRunId,
             fullCount,
             totalCount: resolvedEntries.length,
             targetFullCount: TOKEN_POOL_TARGET_FULL_COUNT,
@@ -229,9 +231,16 @@ export const TokenPoolMethods = {
 
 
     updateTokenPoolSummary(summary, runCtx) {
-        const resolved = summary && typeof summary === 'object'
+        const resolvedSummary = summary && typeof summary === 'object'
             ? summary
             : this.buildTokenPoolSummary();
+        const resolvedRunId = typeof resolvedSummary?.runId === 'string' && resolvedSummary.runId.trim()
+            ? resolvedSummary.runId.trim()
+            : (typeof runCtx?.runId === 'string' ? runCtx.runId.trim() : '');
+        const resolved = {
+            ...resolvedSummary,
+            runId: resolvedRunId,
+        };
         this.tokenPoolLastSummary = resolved;
         Sidebar.refreshTokenPoolSummary?.(resolved);
         logDebug(runCtx, 'TOKEN_POOL_SUMMARY', '号池摘要已更新', resolved);
@@ -359,33 +368,57 @@ export const TokenPoolMethods = {
 
 
     async maintainTokenPool({ reason = 'manual', force = false, runCtx } = {}) {
+        const ctx = runCtx || createRunContext('POOL');
+        const resolvedReason = reason || 'maintain';
+        const currentSummary = this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === 'object'
+            ? this.tokenPoolLastSummary
+            : null;
+
         if (this.tokenPoolMaintaining) {
-            return this.getTokenPoolSummary();
+            return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+                reason: currentSummary?.reason || resolvedReason,
+                status: 'maintaining',
+                runId: currentSummary?.runId || '',
+            }), ctx);
         }
 
-        const ctx = runCtx || createRunContext('POOL');
+        const backoff = this.readTokenPoolBackoffState();
+        const now = Date.now();
+        if (!force && backoff.nextAllowedAt > now) {
+            logInfo(ctx, 'TOKEN_POOL', '号池维护命中退避窗口，等待到期后再试', {
+                reason: resolvedReason,
+                nextAllowedAt: backoff.nextAllowedAt,
+                backoffLevel: backoff.backoffLevel,
+            });
+            return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+                reason: resolvedReason,
+                status: 'backoff',
+                runId: ctx.runId,
+            }), ctx);
+        }
+
         this.tokenPoolMaintaining = true;
+        let finalStatus = 'failed';
+        let finalEntries = null;
         try {
             logInfo(ctx, 'TOKEN_POOL', '号池维护开始', {
-                reason,
+                reason: resolvedReason,
                 force: !!force,
             });
             this.updateTokenPoolSummary(this.buildTokenPoolSummary({
-                reason: reason || 'maintain',
+                reason: resolvedReason,
                 status: 'maintaining',
+                runId: ctx.runId,
             }), ctx);
-            const backoff = this.readTokenPoolBackoffState();
-            const now = Date.now();
-            if (!force && backoff.nextAllowedAt > now) {
-                const summary = this.buildTokenPoolSummary({
-                    reason: reason || 'backoff-skip',
-                    status: 'backoff',
-                });
-                this.updateTokenPoolSummary(summary, ctx);
-                return summary;
-            }
 
             let entries = this.readTokenPool();
+            if (entries.length > 0) {
+                logInfo(ctx, 'TOKEN_POOL', `正在校验池内 ${entries.length} 个 token`, {
+                    existingCount: entries.length,
+                });
+            } else {
+                logInfo(ctx, 'TOKEN_POOL', '池内暂无可用 token，准备补充新账号');
+            }
             const checkedEntries = [];
             for (let index = 0; index < entries.length; index++) {
                 const item = entries[index];
@@ -419,6 +452,10 @@ export const TokenPoolMethods = {
                 && registerAttempts < maxRegisterAttempts
             ) {
                 registerAttempts += 1;
+                logInfo(ctx, 'TOKEN_POOL', `正在补充第 ${registerAttempts} 个账号`, {
+                    currentFullCount: entries.length,
+                    target: TOKEN_POOL_TARGET_FULL_COUNT,
+                });
                 this.tokenPoolInFlightRegister = true;
                 let registerResult = null;
                 try {
@@ -475,30 +512,27 @@ export const TokenPoolMethods = {
             }
 
             this.clearTokenPoolBackoffState();
-            const summary = this.buildTokenPoolSummary({
-                entries,
-                reason: reason || 'maintain',
-                status: 'ok',
-            });
-            this.updateTokenPoolSummary(summary, ctx);
             logInfo(ctx, 'TOKEN_POOL', '号池维护完成', {
-                reason,
+                reason: resolvedReason,
                 fullCount: entries.length,
                 target: TOKEN_POOL_TARGET_FULL_COUNT,
             });
-            return summary;
+            finalStatus = 'ok';
+            finalEntries = entries;
         } catch (error) {
             this.applyTokenPoolBackoff(error, ctx);
-            const failedSummary = this.buildTokenPoolSummary({
-                reason: reason || 'maintain',
-                status: 'failed',
-            });
-            this.updateTokenPoolSummary(failedSummary, ctx);
-            return failedSummary;
+            finalStatus = 'failed';
         } finally {
             this.tokenPoolMaintaining = false;
             this.tokenPoolInFlightRegister = false;
         }
+
+        return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+            entries: finalEntries,
+            reason: resolvedReason,
+            status: finalStatus,
+            runId: ctx.runId,
+        }), ctx);
     },
 
 

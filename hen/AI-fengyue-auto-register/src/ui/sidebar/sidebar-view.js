@@ -376,6 +376,10 @@ ${providerOptions}
                                 <span class="aifengyue-info-label">维护状态</span>
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-status">-</span>
                             </div>
+                            <div class="aifengyue-info-row aifengyue-info-row-multiline">
+                                <span class="aifengyue-info-label">当前说明</span>
+                                <span class="aifengyue-info-value aifengyue-info-value-wrap" id="aifengyue-token-pool-detail">-</span>
+                            </div>
                             <div class="aifengyue-info-row">
                                 <span class="aifengyue-info-label">最近检测</span>
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-last-check">-</span>
@@ -505,7 +509,11 @@ ${providerOptions}
             this.tokenPoolLogUnsubscribe();
             this.tokenPoolLogUnsubscribe = null;
         }
-        this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange(() => {
+        this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange((entry) => {
+            if (entry && !this.isTokenPoolLogEntry?.(entry)) {
+                return;
+            }
+            this.refreshTokenPoolSummary();
             if (this.tokenPoolLogModalOpen) {
                 this.renderTokenPoolLogModal();
             }

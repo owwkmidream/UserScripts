@@ -395,6 +395,9 @@ const SIDEBAR_STYLES = `
         padding: 8px 0;
         border-bottom: 1px solid var(--af-border);
     }
+    .aifengyue-info-row.aifengyue-info-row-multiline {
+        align-items: flex-start;
+    }
     .aifengyue-info-row:last-child {
         border-bottom: none;
         padding-bottom: 0;
@@ -417,6 +420,14 @@ const SIDEBAR_STYLES = `
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+    .aifengyue-info-value.aifengyue-info-value-wrap {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.45;
+        word-break: break-word;
+        font-family: inherit;
     }
     .aifengyue-info-value.code {
         color: var(--af-code-color);

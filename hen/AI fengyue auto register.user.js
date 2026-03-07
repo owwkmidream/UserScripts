@@ -4864,6 +4864,10 @@ ${providerOptions}
                                 <span class="aifengyue-info-label">维护状态</span>
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-status">-</span>
                             </div>
+                            <div class="aifengyue-info-row aifengyue-info-row-multiline">
+                                <span class="aifengyue-info-label">当前说明</span>
+                                <span class="aifengyue-info-value aifengyue-info-value-wrap" id="aifengyue-token-pool-detail">-</span>
+                            </div>
                             <div class="aifengyue-info-row">
                                 <span class="aifengyue-info-label">最近检测</span>
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-last-check">-</span>
@@ -4980,7 +4984,11 @@ ${providerOptions}
 				this.tokenPoolLogUnsubscribe();
 				this.tokenPoolLogUnsubscribe = null;
 			}
-			this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange(() => {
+			this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange((entry) => {
+				if (entry && !this.isTokenPoolLogEntry?.(entry)) {
+					return;
+				}
+				this.refreshTokenPoolSummary();
 				if (this.tokenPoolLogModalOpen) {
 					this.renderTokenPoolLogModal();
 				}
@@ -6087,29 +6095,91 @@ ${providerOptions}
 			}
 		},
 		getTokenPoolStatusText(summary = {}) {
-			if (summary?.maintaining) return "维护中";
 			switch (summary?.status) {
+				case "maintaining": return "维护中";
 				case "ok": return "最近成功";
 				case "failed": return "最近失败";
 				case "backoff": return "退避等待";
 				case "stopped": return "已停止";
 				case "running": return "定时中";
-				default: return summary?.schedulerEnabled ? summary?.schedulerRunning ? "运行中" : "待启动" : "已关闭";
+				default:
+					if (summary?.maintaining) return "维护中";
+					return summary?.schedulerEnabled ? summary?.schedulerRunning ? "运行中" : "待启动" : "已关闭";
+			}
+		},
+		getTokenPoolStatusDetail(summary = {}, latestEntry = null) {
+			const status = typeof summary?.status === "string" ? summary.status.trim() : "";
+			const latestMessage = typeof latestEntry?.message === "string" ? latestEntry.message.trim() : "";
+			const lastError = typeof summary?.lastError === "string" ? summary.lastError.trim() : "";
+			if (status === "maintaining" || summary?.maintaining) {
+				return latestMessage || "号池维护进行中，请稍候...";
+			}
+			switch (status) {
+				case "ok": return "号池已满足目标，无需补充";
+				case "failed": return lastError || latestMessage || "号池维护失败，请查看日志详情";
+				case "backoff": return "上次失败后进入退避，可点击“立即重试”跳过等待";
+				case "stopped": return latestMessage || "号池定时维护已停止，可手动触发一次维护";
+				case "running": return latestMessage || "号池定时维护已启动，将按设定间隔自动检查";
+				default: return summary?.schedulerEnabled ? summary?.schedulerRunning ? "等待下次定时检测或手动触发" : "号池定时维护待启动" : "号池定时维护已关闭，可手动触发一次维护";
 			}
 		},
 		escapeLogHtml(value) {
 			const text = typeof value === "string" ? value : String(value ?? "");
 			return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 		},
-		getTokenPoolLogEntries(limit = 200) {
+		isTokenPoolLogEntry(entry) {
+			if (!entry || typeof entry !== "object") return false;
+			const runId = typeof entry?.runId === "string" ? entry.runId : "";
+			const step = typeof entry?.step === "string" ? entry.step : "";
+			const message = typeof entry?.message === "string" ? entry.message : "";
+			return runId.startsWith("POOL-") || step.includes("TOKEN_POOL") || step.includes("SWITCH_POOL") || message.includes("号池");
+		},
+		isTokenPoolProgressLogEntry(entry) {
+			if (!this.isTokenPoolLogEntry(entry)) return false;
+			const step = typeof entry?.step === "string" ? entry.step.trim() : "";
+			const message = typeof entry?.message === "string" ? entry.message.trim() : "";
+			if (!message) return false;
+			return step !== "TOKEN_POOL_SUMMARY";
+		},
+		getTokenPoolLogEntries(limit = 200, { runId = "", progressOnly = false } = {}) {
 			const normalizedLimit = Math.max(1, Math.floor(Number(limit) || 200));
+			const resolvedRunId = typeof runId === "string" ? runId.trim() : "";
 			const entries = readRuntimeLogEntries({ limit: Math.max(normalizedLimit * 3, normalizedLimit) });
+			const predicate = progressOnly ? this.isTokenPoolProgressLogEntry.bind(this) : this.isTokenPoolLogEntry.bind(this);
 			return entries.filter((entry) => {
-				const runId = typeof entry?.runId === "string" ? entry.runId : "";
-				const step = typeof entry?.step === "string" ? entry.step : "";
-				const message = typeof entry?.message === "string" ? entry.message : "";
-				return runId.startsWith("POOL-") || step.includes("TOKEN_POOL") || step.includes("SWITCH_POOL") || message.includes("号池");
+				if (!predicate(entry)) return false;
+				if (!resolvedRunId) return true;
+				const entryRunId = typeof entry?.runId === "string" ? entry.runId.trim() : "";
+				return entryRunId === resolvedRunId;
 			}).slice(-normalizedLimit);
+		},
+		getTokenPoolLatestProgressEntry(summary = null) {
+			const runId = typeof summary?.runId === "string" ? summary.runId.trim() : "";
+			if (!runId) return null;
+			const entries = this.getTokenPoolLogEntries(24, {
+				runId,
+				progressOnly: true
+			});
+			return entries[entries.length - 1] || null;
+		},
+		getTokenPoolMaintainButtonState(summary = {}) {
+			const isMaintaining = summary?.status === "maintaining" || !!summary?.maintaining;
+			if (isMaintaining) {
+				return {
+					disabled: true,
+					text: "维护中..."
+				};
+			}
+			if (summary?.status === "backoff") {
+				return {
+					disabled: false,
+					text: "立即重试"
+				};
+			}
+			return {
+				disabled: false,
+				text: "立即维护"
+			};
 		},
 		renderTokenPoolLogModal() {
 			if (!this.tokenPoolLogModal) return;
@@ -6118,11 +6188,13 @@ ${providerOptions}
 			const entries = this.getTokenPoolLogEntries(180);
 			const latestEntry = entries[entries.length - 1] || null;
 			const poolSummary = getAutoRegister()?.getTokenPoolSummary?.() || null;
+			const latestProgressEntry = this.getTokenPoolLatestProgressEntry(poolSummary);
 			if (summaryEl) {
 				const statusText = this.getTokenPoolStatusText(poolSummary || {});
+				const detailText = this.getTokenPoolStatusDetail(poolSummary || {}, latestProgressEntry);
 				const latestText = latestEntry ? `${this.formatTokenPoolTime(latestEntry.createdAt)} / ${latestEntry.runId || "NO-RUN"}` : "暂无";
 				const detailHint = isDebugEnabled() ? "DEBUG 已开启，当前会记录更细的请求与响应细节。" : "如需更多请求明细，可先打开「启用调试日志（DEBUG）」。";
-				summaryEl.textContent = `当前状态：${statusText}；最近日志：${latestText}；日志条数：${entries.length}；${detailHint}`;
+				summaryEl.textContent = `当前状态：${statusText}；当前说明：${detailText}；最近日志：${latestText}；日志条数：${entries.length}；${detailHint}`;
 			}
 			if (!listEl) return;
 			if (!entries.length) {
@@ -6158,6 +6230,7 @@ ${providerOptions}
 		},
 		clearTokenPoolLogs() {
 			clearRuntimeLogEntries();
+			this.refreshTokenPoolSummary();
 			this.renderTokenPoolLogModal();
 			getToast()?.success("号池运行日志已清空");
 		},
@@ -6171,12 +6244,16 @@ ${providerOptions}
 			const targetFullCount = Number(resolvedSummary.targetFullCount || 2);
 			const maxCount = Number(resolvedSummary.maxCount || 5);
 			const lastCheckAtText = this.formatTokenPoolTime(resolvedSummary.lastCheckAt);
-			const nextAllowedAtText = this.formatTokenPoolTime(resolvedSummary.nextAllowedAt);
+			const nextAllowedAtText = resolvedSummary.status === "backoff" ? this.formatTokenPoolTime(resolvedSummary.nextAllowedAt) : "-";
 			const errorText = typeof resolvedSummary.lastError === "string" && resolvedSummary.lastError.trim() ? resolvedSummary.lastError.trim() : "-";
 			const statusText = this.getTokenPoolStatusText(resolvedSummary);
+			const latestProgressEntry = this.getTokenPoolLatestProgressEntry(resolvedSummary);
+			const detailText = this.getTokenPoolStatusDetail(resolvedSummary, latestProgressEntry);
+			const maintainButtonState = this.getTokenPoolMaintainButtonState(resolvedSummary);
 			const fullEl = this.element.querySelector("#aifengyue-token-pool-full");
 			const totalEl = this.element.querySelector("#aifengyue-token-pool-total");
 			const statusEl = this.element.querySelector("#aifengyue-token-pool-status");
+			const detailEl = this.element.querySelector("#aifengyue-token-pool-detail");
 			const lastCheckEl = this.element.querySelector("#aifengyue-token-pool-last-check");
 			const nextAllowedEl = this.element.querySelector("#aifengyue-token-pool-next-allowed");
 			const errorEl = this.element.querySelector("#aifengyue-token-pool-last-error");
@@ -6184,12 +6261,13 @@ ${providerOptions}
 			if (fullEl) fullEl.textContent = `${fullCount} / ${targetFullCount}`;
 			if (totalEl) totalEl.textContent = `${totalCount} / ${maxCount}`;
 			if (statusEl) statusEl.textContent = statusText;
+			if (detailEl) detailEl.textContent = detailText;
 			if (lastCheckEl) lastCheckEl.textContent = lastCheckAtText;
 			if (nextAllowedEl) nextAllowedEl.textContent = nextAllowedAtText;
 			if (errorEl) errorEl.textContent = errorText;
 			if (maintainBtn) {
-				maintainBtn.disabled = !!resolvedSummary.maintaining;
-				maintainBtn.textContent = resolvedSummary.maintaining ? "维护中..." : "立即维护";
+				maintainBtn.disabled = maintainButtonState.disabled;
+				maintainBtn.textContent = maintainButtonState.text;
 			}
 			if (this.tokenPoolLogModalOpen) {
 				this.renderTokenPoolLogModal();
@@ -8993,14 +9071,16 @@ ${providerOptions}
 			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES, JSON.stringify(normalized));
 			return normalized;
 		},
-		buildTokenPoolSummary({ entries = null, reason = "", status = "idle" } = {}) {
+		buildTokenPoolSummary({ entries = null, reason = "", status = "idle", runId = "" } = {}) {
 			const resolvedEntries = Array.isArray(entries) ? entries : this.readTokenPool();
 			const fullCount = resolvedEntries.length;
 			const backoff = this.readTokenPoolBackoffState();
 			const intervalSeconds = this.getTokenPoolCheckSeconds();
+			const resolvedRunId = typeof runId === "string" ? runId.trim() : "";
 			return {
 				reason: reason || "",
 				status,
+				runId: resolvedRunId,
 				fullCount,
 				totalCount: resolvedEntries.length,
 				targetFullCount: TOKEN_POOL_TARGET_FULL_COUNT,
@@ -9018,7 +9098,12 @@ ${providerOptions}
 			};
 		},
 		updateTokenPoolSummary(summary, runCtx) {
-			const resolved = summary && typeof summary === "object" ? summary : this.buildTokenPoolSummary();
+			const resolvedSummary = summary && typeof summary === "object" ? summary : this.buildTokenPoolSummary();
+			const resolvedRunId = typeof resolvedSummary?.runId === "string" && resolvedSummary.runId.trim() ? resolvedSummary.runId.trim() : typeof runCtx?.runId === "string" ? runCtx.runId.trim() : "";
+			const resolved = {
+				...resolvedSummary,
+				runId: resolvedRunId
+			};
 			this.tokenPoolLastSummary = resolved;
 			Sidebar.refreshTokenPoolSummary?.(resolved);
 			logDebug(runCtx, "TOKEN_POOL_SUMMARY", "号池摘要已更新", resolved);
@@ -9133,31 +9218,49 @@ ${providerOptions}
 			};
 		},
 		async maintainTokenPool({ reason = "manual", force = false, runCtx } = {}) {
-			if (this.tokenPoolMaintaining) {
-				return this.getTokenPoolSummary();
-			}
 			const ctx = runCtx || createRunContext("POOL");
+			const resolvedReason = reason || "maintain";
+			const currentSummary = this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === "object" ? this.tokenPoolLastSummary : null;
+			if (this.tokenPoolMaintaining) {
+				return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					reason: currentSummary?.reason || resolvedReason,
+					status: "maintaining",
+					runId: currentSummary?.runId || ""
+				}), ctx);
+			}
+			const backoff = this.readTokenPoolBackoffState();
+			const now = Date.now();
+			if (!force && backoff.nextAllowedAt > now) {
+				logInfo$1(ctx, "TOKEN_POOL", "号池维护命中退避窗口，等待到期后再试", {
+					reason: resolvedReason,
+					nextAllowedAt: backoff.nextAllowedAt,
+					backoffLevel: backoff.backoffLevel
+				});
+				return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					reason: resolvedReason,
+					status: "backoff",
+					runId: ctx.runId
+				}), ctx);
+			}
 			this.tokenPoolMaintaining = true;
+			let finalStatus = "failed";
+			let finalEntries = null;
 			try {
 				logInfo$1(ctx, "TOKEN_POOL", "号池维护开始", {
-					reason,
+					reason: resolvedReason,
 					force: !!force
 				});
 				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
-					reason: reason || "maintain",
-					status: "maintaining"
+					reason: resolvedReason,
+					status: "maintaining",
+					runId: ctx.runId
 				}), ctx);
-				const backoff = this.readTokenPoolBackoffState();
-				const now = Date.now();
-				if (!force && backoff.nextAllowedAt > now) {
-					const summary = this.buildTokenPoolSummary({
-						reason: reason || "backoff-skip",
-						status: "backoff"
-					});
-					this.updateTokenPoolSummary(summary, ctx);
-					return summary;
-				}
 				let entries = this.readTokenPool();
+				if (entries.length > 0) {
+					logInfo$1(ctx, "TOKEN_POOL", `正在校验池内 ${entries.length} 个 token`, { existingCount: entries.length });
+				} else {
+					logInfo$1(ctx, "TOKEN_POOL", "池内暂无可用 token，准备补充新账号");
+				}
 				const checkedEntries = [];
 				for (let index = 0; index < entries.length; index++) {
 					const item = entries[index];
@@ -9183,6 +9286,10 @@ ${providerOptions}
 				let registerAttempts = 0;
 				while (entries.length < TOKEN_POOL_TARGET_FULL_COUNT && entries.length < TOKEN_POOL_MAX_COUNT && registerAttempts < maxRegisterAttempts) {
 					registerAttempts += 1;
+					logInfo$1(ctx, "TOKEN_POOL", `正在补充第 ${registerAttempts} 个账号`, {
+						currentFullCount: entries.length,
+						target: TOKEN_POOL_TARGET_FULL_COUNT
+					});
 					this.tokenPoolInFlightRegister = true;
 					let registerResult = null;
 					try {
@@ -9227,30 +9334,26 @@ ${providerOptions}
 					throw new Error(`号池补充后仍不足 ${TOKEN_POOL_TARGET_FULL_COUNT} 个满积分 token`);
 				}
 				this.clearTokenPoolBackoffState();
-				const summary = this.buildTokenPoolSummary({
-					entries,
-					reason: reason || "maintain",
-					status: "ok"
-				});
-				this.updateTokenPoolSummary(summary, ctx);
 				logInfo$1(ctx, "TOKEN_POOL", "号池维护完成", {
-					reason,
+					reason: resolvedReason,
 					fullCount: entries.length,
 					target: TOKEN_POOL_TARGET_FULL_COUNT
 				});
-				return summary;
+				finalStatus = "ok";
+				finalEntries = entries;
 			} catch (error) {
 				this.applyTokenPoolBackoff(error, ctx);
-				const failedSummary = this.buildTokenPoolSummary({
-					reason: reason || "maintain",
-					status: "failed"
-				});
-				this.updateTokenPoolSummary(failedSummary, ctx);
-				return failedSummary;
+				finalStatus = "failed";
 			} finally {
 				this.tokenPoolMaintaining = false;
 				this.tokenPoolInFlightRegister = false;
 			}
+			return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+				entries: finalEntries,
+				reason: resolvedReason,
+				status: finalStatus,
+				runId: ctx.runId
+			}), ctx);
 		},
 		startTokenPoolScheduler({ intervalSeconds = null, runCtx } = {}) {
 			return this.refreshTokenPoolScheduler({
@@ -12483,6 +12586,9 @@ ${providerOptions}
         padding: 8px 0;
         border-bottom: 1px solid var(--af-border);
     }
+    .aifengyue-info-row.aifengyue-info-row-multiline {
+        align-items: flex-start;
+    }
     .aifengyue-info-row:last-child {
         border-bottom: none;
         padding-bottom: 0;
@@ -12505,6 +12611,14 @@ ${providerOptions}
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+    .aifengyue-info-value.aifengyue-info-value-wrap {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.45;
+        word-break: break-word;
+        font-family: inherit;
     }
     .aifengyue-info-value.code {
         color: var(--af-code-color);
