@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.20
+// @version      2.0.21
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
@@ -42,6 +42,8 @@
 			ACCOUNT_POINT_POLL_SECONDS: "aifengyue_account_point_poll_seconds",
 			TOKEN_POOL_ENTRIES: "aifengyue_token_pool_entries",
 			TOKEN_POOL_CHECK_SECONDS: "aifengyue_token_pool_check_seconds",
+			TOKEN_POOL_LOCK: "aifengyue_token_pool_lock",
+			TOKEN_POOL_SUMMARY: "aifengyue_token_pool_summary",
 			TOKEN_POOL_LAST_CHECK_AT: "aifengyue_token_pool_last_check_at",
 			TOKEN_POOL_NEXT_ALLOWED_AT: "aifengyue_token_pool_next_allowed_at",
 			TOKEN_POOL_BACKOFF_LEVEL: "aifengyue_token_pool_backoff_level",
@@ -4284,14 +4286,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 	const LOG_MAX_ARRAY = 12;
 	const runtimeLogSubscribers = new Set();
 	let runtimeLogMemoryFallback = [];
-	function trimText(value, maxLength = LOG_STRING_LIMIT) {
+	function trimText$1(value, maxLength = LOG_STRING_LIMIT) {
 		const text = typeof value === "string" ? value : String(value ?? "");
 		if (text.length <= maxLength) return text;
 		return `${text.slice(0, maxLength)}…`;
 	}
 	function sanitizeLogMeta(value, depth = 0, seen = new WeakSet()) {
 		if (value === null || value === undefined) return value;
-		if (typeof value === "string") return trimText(value);
+		if (typeof value === "string") return trimText$1(value);
 		if (typeof value === "number" || typeof value === "boolean") return value;
 		if (typeof value === "bigint") return `${value}n`;
 		if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
@@ -4299,8 +4301,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 		if (value instanceof Error) {
 			return {
 				name: value.name || "Error",
-				message: trimText(value.message || ""),
-				stack: trimText(value.stack || "", 1200)
+				message: trimText$1(value.message || ""),
+				stack: trimText$1(value.stack || "", 1200)
 			};
 		}
 		if (typeof Element !== "undefined" && value instanceof Element) {
@@ -4332,7 +4334,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			}
 			return normalized;
 		}
-		return trimText(value);
+		return trimText$1(value);
 	}
 	function normalizeLogEntries(entries) {
 		if (!Array.isArray(entries)) return [];
@@ -4408,8 +4410,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
 			level,
 			runId,
 			step: typeof step === "string" ? step : String(step ?? ""),
-			message: trimText(message, 800),
-			text: trimText(tag, 1200),
+			message: trimText$1(message, 800),
+			text: trimText$1(tag, 1200),
 			meta: meta === undefined ? null : sanitizeLogMeta(meta)
 		});
 	}
@@ -5242,6 +5244,10 @@ ${providerOptions}
 				this.renderTokenPoolLogModal();
 				if (summary?.maintaining) {
 					getToast()?.info("号池已在维护中，可在日志弹窗查看实时进度");
+					return;
+				}
+				if (summary?.status === "locked") {
+					getToast()?.info(summary?.lockHeldByCurrentTab ? "当前标签页已有号池任务在执行" : "其他标签页正在操作号池，请稍后再试");
 					return;
 				}
 				if (summary?.status === "ok") {
@@ -6094,16 +6100,26 @@ ${providerOptions}
 				return "-";
 			}
 		},
+		getTokenPoolLockActionText(summary = {}) {
+			const reason = typeof summary?.lockReason === "string" ? summary.lockReason.trim().toLowerCase() : "";
+			if (reason.includes("acquire")) {
+				return "从号池取号";
+			}
+			return "维护号池";
+		},
 		getTokenPoolStatusText(summary = {}) {
 			switch (summary?.status) {
-				case "maintaining": return "维护中";
+				case "maintaining": return summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab ? "他页维护中" : "维护中";
 				case "ok": return "最近成功";
 				case "failed": return "最近失败";
 				case "backoff": return "退避等待";
 				case "stopped": return "已停止";
 				case "running": return "定时中";
+				case "locked": return summary?.lockHeldByCurrentTab ? "本页占用中" : "他页占用中";
 				default:
-					if (summary?.maintaining) return "维护中";
+					if (summary?.maintaining) {
+						return summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab ? "他页维护中" : "维护中";
+					}
 					return summary?.schedulerEnabled ? summary?.schedulerRunning ? "运行中" : "待启动" : "已关闭";
 			}
 		},
@@ -6111,7 +6127,18 @@ ${providerOptions}
 			const status = typeof summary?.status === "string" ? summary.status.trim() : "";
 			const latestMessage = typeof latestEntry?.message === "string" ? latestEntry.message.trim() : "";
 			const lastError = typeof summary?.lastError === "string" ? summary.lastError.trim() : "";
+			const lockExpireText = this.formatTokenPoolTime(summary?.lockExpiresAt);
+			const lockActionText = this.getTokenPoolLockActionText(summary);
+			if (status === "locked") {
+				if (summary?.lockHeldByCurrentTab) {
+					return `当前标签页正在${lockActionText}，请稍候...`;
+				}
+				return lockExpireText !== "-" ? `其他标签页正在${lockActionText}，锁预计到 ${lockExpireText}` : `其他标签页正在${lockActionText}，请稍后重试`;
+			}
 			if (status === "maintaining" || summary?.maintaining) {
+				if (summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab) {
+					return latestMessage || (lockExpireText !== "-" ? `其他标签页正在维护号池，锁预计到 ${lockExpireText}` : "其他标签页正在维护号池，请稍候...");
+				}
 				return latestMessage || "号池维护进行中，请稍候...";
 			}
 			switch (status) {
@@ -6164,10 +6191,16 @@ ${providerOptions}
 		},
 		getTokenPoolMaintainButtonState(summary = {}) {
 			const isMaintaining = summary?.status === "maintaining" || !!summary?.maintaining;
+			if (summary?.status === "locked") {
+				return {
+					disabled: true,
+					text: summary?.lockHeldByCurrentTab ? "处理中..." : "他页占用中..."
+				};
+			}
 			if (isMaintaining) {
 				return {
 					disabled: true,
-					text: "维护中..."
+					text: summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab ? "他页维护中..." : "维护中..."
 				};
 			}
 			if (summary?.status === "backoff") {
@@ -8913,6 +8946,175 @@ ${providerOptions}
 	};
 
 //#endregion
+//#region src/utils/cross-tab-lock.js
+	const DEFAULT_TAB_ID_SESSION_KEY = "aifengyue_tab_id";
+	let memoryTabId = "";
+	function trimText(value) {
+		return typeof value === "string" ? value.trim() : "";
+	}
+	function toPositiveTimestamp(value, fallback = 0) {
+		const numberValue = Math.floor(Number(value));
+		return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : fallback;
+	}
+	function normalizeLockRecord(record = {}) {
+		if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+		const ownerTabId = trimText(record.ownerTabId);
+		const nonce = trimText(record.nonce);
+		if (!ownerTabId || !nonce) return null;
+		return {
+			ownerTabId,
+			ownerRunId: trimText(record.ownerRunId),
+			reason: trimText(record.reason),
+			meta: record.meta && typeof record.meta === "object" && !Array.isArray(record.meta) ? { ...record.meta } : null,
+			acquiredAt: toPositiveTimestamp(record.acquiredAt, 0),
+			heartbeatAt: toPositiveTimestamp(record.heartbeatAt, 0),
+			expiresAt: toPositiveTimestamp(record.expiresAt, 0),
+			nonce
+		};
+	}
+	function createTabId(prefix = "TAB") {
+		const stamp = Date.now().toString(36);
+		const rand = Math.random().toString(36).slice(2, 8);
+		return `${prefix}-${stamp}-${rand}`;
+	}
+	function readLockRecord(lockKey) {
+		const normalizedKey = trimText(lockKey);
+		if (!normalizedKey) return null;
+		try {
+			const raw = localStorage.getItem(normalizedKey);
+			if (!raw) return null;
+			return normalizeLockRecord(JSON.parse(raw));
+		} catch {
+			return null;
+		}
+	}
+	function getCurrentTabId({ sessionKey = DEFAULT_TAB_ID_SESSION_KEY, prefix = "TAB" } = {}) {
+		if (memoryTabId) return memoryTabId;
+		const normalizedKey = trimText(sessionKey) || DEFAULT_TAB_ID_SESSION_KEY;
+		try {
+			const existing = trimText(sessionStorage.getItem(normalizedKey));
+			if (existing) {
+				memoryTabId = existing;
+				return memoryTabId;
+			}
+			memoryTabId = createTabId(prefix);
+			sessionStorage.setItem(normalizedKey, memoryTabId);
+			return memoryTabId;
+		} catch {
+			if (!memoryTabId) {
+				memoryTabId = createTabId(prefix);
+			}
+			return memoryTabId;
+		}
+	}
+	function readActiveCrossTabLock(lockKey, { now = Date.now() } = {}) {
+		const record = readLockRecord(lockKey);
+		if (!record) return null;
+		return record.expiresAt > now ? record : null;
+	}
+	function isCrossTabLockOwnedBy(lockRecord, { ownerTabId = "", nonce = "" } = {}) {
+		const resolvedOwnerTabId = trimText(ownerTabId);
+		const resolvedNonce = trimText(nonce);
+		if (!lockRecord || !resolvedOwnerTabId) return false;
+		if (trimText(lockRecord.ownerTabId) !== resolvedOwnerTabId) return false;
+		if (resolvedNonce && trimText(lockRecord.nonce) !== resolvedNonce) return false;
+		return toPositiveTimestamp(lockRecord.expiresAt, 0) > Date.now();
+	}
+	function tryAcquireCrossTabLock(lockKey, { ownerTabId = "", ownerRunId = "", reason = "", ttlMs = 3e4, meta = null } = {}) {
+		const resolvedOwnerTabId = trimText(ownerTabId);
+		if (!resolvedOwnerTabId) {
+			return {
+				ok: false,
+				record: null
+			};
+		}
+		const now = Date.now();
+		const current = readActiveCrossTabLock(lockKey, { now });
+		if (current && current.ownerTabId !== resolvedOwnerTabId) {
+			return {
+				ok: false,
+				record: current
+			};
+		}
+		const nextRecord = {
+			ownerTabId: resolvedOwnerTabId,
+			ownerRunId: trimText(ownerRunId),
+			reason: trimText(reason),
+			meta: meta && typeof meta === "object" && !Array.isArray(meta) ? { ...meta } : null,
+			acquiredAt: current?.ownerTabId === resolvedOwnerTabId ? toPositiveTimestamp(current.acquiredAt, now) : now,
+			heartbeatAt: now,
+			expiresAt: now + Math.max(1e3, Math.floor(Number(ttlMs) || 0)),
+			nonce: `${resolvedOwnerTabId}-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+		};
+		try {
+			localStorage.setItem(lockKey, JSON.stringify(nextRecord));
+		} catch {
+			return {
+				ok: false,
+				record: current
+			};
+		}
+		const confirmed = readActiveCrossTabLock(lockKey);
+		return {
+			ok: !!confirmed && confirmed.ownerTabId === resolvedOwnerTabId && confirmed.nonce === nextRecord.nonce,
+			record: confirmed
+		};
+	}
+	function renewCrossTabLock(lockKey, { ownerTabId = "", nonce = "", ownerRunId = "", reason = null, ttlMs = 3e4, meta = undefined } = {}) {
+		const resolvedOwnerTabId = trimText(ownerTabId);
+		const resolvedNonce = trimText(nonce);
+		const current = readActiveCrossTabLock(lockKey);
+		if (!current || current.ownerTabId !== resolvedOwnerTabId || resolvedNonce && current.nonce !== resolvedNonce) {
+			return {
+				ok: false,
+				record: current
+			};
+		}
+		const now = Date.now();
+		const nextRecord = {
+			...current,
+			ownerRunId: trimText(ownerRunId) || current.ownerRunId,
+			reason: reason === null ? current.reason : trimText(reason),
+			heartbeatAt: now,
+			expiresAt: now + Math.max(1e3, Math.floor(Number(ttlMs) || 0))
+		};
+		if (meta !== undefined) {
+			nextRecord.meta = meta && typeof meta === "object" && !Array.isArray(meta) ? { ...meta } : null;
+		}
+		try {
+			localStorage.setItem(lockKey, JSON.stringify(nextRecord));
+		} catch {
+			return {
+				ok: false,
+				record: current
+			};
+		}
+		const confirmed = readActiveCrossTabLock(lockKey);
+		return {
+			ok: !!confirmed && confirmed.ownerTabId === resolvedOwnerTabId && confirmed.nonce === current.nonce,
+			record: confirmed
+		};
+	}
+	function releaseCrossTabLock(lockKey, { ownerTabId = "", nonce = "" } = {}) {
+		const resolvedOwnerTabId = trimText(ownerTabId);
+		const resolvedNonce = trimText(nonce);
+		const current = readActiveCrossTabLock(lockKey);
+		if (!current || current.ownerTabId !== resolvedOwnerTabId || resolvedNonce && current.nonce !== resolvedNonce) {
+			return false;
+		}
+		if (current.expiresAt <= Date.now()) {
+			return false;
+		}
+		try {
+			localStorage.removeItem(lockKey);
+		} catch {
+			return false;
+		}
+		const confirmed = readActiveCrossTabLock(lockKey);
+		return !(confirmed && confirmed.ownerTabId === resolvedOwnerTabId && (!resolvedNonce || confirmed.nonce === resolvedNonce));
+	}
+
+//#endregion
 //#region src/features/auto-register/token-pool-methods.js
 	const TOKEN_POOL_TARGET_FULL_COUNT = 2;
 	const TOKEN_POOL_MAX_COUNT = 5;
@@ -8926,6 +9128,8 @@ ${providerOptions}
 		10,
 		30
 	];
+	const TOKEN_POOL_LOCK_TTL_MS = 12e4;
+	const TOKEN_POOL_LOCK_HEARTBEAT_MS = 15e3;
 	function toFiniteNumber(value, fallback = 0) {
 		const numberValue = Number(value);
 		if (!Number.isFinite(numberValue)) return fallback;
@@ -8952,6 +9156,242 @@ ${providerOptions}
 			const normalized = this.normalizeTokenPoolCheckSeconds(value);
 			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS, String(normalized));
 			return normalized;
+		},
+		getTokenPoolTabId() {
+			if (typeof this.tokenPoolTabId === "string" && this.tokenPoolTabId.trim()) {
+				return this.tokenPoolTabId.trim();
+			}
+			this.tokenPoolTabId = getCurrentTabId({
+				sessionKey: "aifengyue_token_pool_tab_id",
+				prefix: "POOLTAB"
+			});
+			return this.tokenPoolTabId;
+		},
+		ensureTokenPoolStorageSync() {
+			if (this.tokenPoolStorageSyncBound) return;
+			if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+			this.tokenPoolStorageHandler = (event) => {
+				const key = typeof event?.key === "string" ? event.key : "";
+				if (!key) return;
+				const relevantKeys = new Set([
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_LOCK,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_SUMMARY,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_CHECK_AT,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_NEXT_ALLOWED_AT,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_BACKOFF_LEVEL,
+					CONFIG.STORAGE_KEYS.TOKEN_POOL_LAST_ERROR,
+					CONFIG.STORAGE_KEYS.RUNTIME_LOG_BUFFER
+				]);
+				if (!relevantKeys.has(key)) return;
+				if (key === CONFIG.STORAGE_KEYS.TOKEN_POOL_CHECK_SECONDS) {
+					this.refreshTokenPoolScheduler({
+						reason: "storage-sync",
+						runImmediate: false,
+						persistSummary: false
+					});
+				}
+				const summary = this.getTokenPoolSummary();
+				Sidebar.refreshTokenPoolSummary?.(summary);
+				if (Sidebar.tokenPoolLogModalOpen) {
+					Sidebar.renderTokenPoolLogModal?.();
+				}
+			};
+			window.addEventListener("storage", this.tokenPoolStorageHandler);
+			this.tokenPoolStorageSyncBound = true;
+		},
+		normalizeStoredTokenPoolSummary(summary = {}) {
+			if (!summary || typeof summary !== "object" || Array.isArray(summary)) return null;
+			return {
+				reason: typeof summary.reason === "string" ? summary.reason.trim() : "",
+				status: typeof summary.status === "string" ? summary.status.trim() : "idle",
+				runId: typeof summary.runId === "string" ? summary.runId.trim() : "",
+				fullCount: Math.max(0, Math.floor(toFiniteNumber(summary.fullCount, 0))),
+				totalCount: Math.max(0, Math.floor(toFiniteNumber(summary.totalCount, 0))),
+				targetFullCount: Math.max(0, Math.floor(toFiniteNumber(summary.targetFullCount, TOKEN_POOL_TARGET_FULL_COUNT))),
+				maxCount: Math.max(0, Math.floor(toFiniteNumber(summary.maxCount, TOKEN_POOL_MAX_COUNT))),
+				fullPointThreshold: Math.max(0, Math.floor(toFiniteNumber(summary.fullPointThreshold, TOKEN_POOL_FULL_POINTS))),
+				intervalSeconds: this.normalizeTokenPoolCheckSeconds(summary.intervalSeconds),
+				schedulerEnabled: !!summary.schedulerEnabled,
+				schedulerRunning: !!summary.schedulerRunning,
+				maintaining: !!summary.maintaining,
+				lastCheckAt: normalizeTimestampMs(summary.lastCheckAt, 0),
+				nextAllowedAt: normalizeTimestampMs(summary.nextAllowedAt, 0),
+				backoffLevel: Math.max(0, Math.floor(toFiniteNumber(summary.backoffLevel, 0))),
+				lastError: typeof summary.lastError === "string" ? summary.lastError.trim() : "",
+				lockOwnerTabId: typeof summary.lockOwnerTabId === "string" ? summary.lockOwnerTabId.trim() : "",
+				lockOwnerRunId: typeof summary.lockOwnerRunId === "string" ? summary.lockOwnerRunId.trim() : "",
+				lockReason: typeof summary.lockReason === "string" ? summary.lockReason.trim() : "",
+				lockAcquiredAt: normalizeTimestampMs(summary.lockAcquiredAt, 0),
+				lockHeartbeatAt: normalizeTimestampMs(summary.lockHeartbeatAt, 0),
+				lockExpiresAt: normalizeTimestampMs(summary.lockExpiresAt, 0),
+				lockHeldByCurrentTab: !!summary.lockHeldByCurrentTab,
+				updatedAt: normalizeTimestampMs(summary.updatedAt, Date.now())
+			};
+		},
+		readSharedTokenPoolSummary() {
+			try {
+				const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_SUMMARY);
+				if (!raw) return null;
+				return this.normalizeStoredTokenPoolSummary(JSON.parse(raw));
+			} catch {
+				return null;
+			}
+		},
+		writeSharedTokenPoolSummary(summary) {
+			const normalized = this.normalizeStoredTokenPoolSummary(summary);
+			if (!normalized) return null;
+			try {
+				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_SUMMARY, JSON.stringify(normalized));
+			} catch {}
+			return normalized;
+		},
+		readActiveTokenPoolLock() {
+			return readActiveCrossTabLock(CONFIG.STORAGE_KEYS.TOKEN_POOL_LOCK);
+		},
+		isTokenPoolAcquireReason(reason = "") {
+			const normalizedReason = typeof reason === "string" ? reason.trim().toLowerCase() : "";
+			return normalizedReason.includes("acquire");
+		},
+		getTokenPoolLockStatusFallback(reason = "") {
+			return this.isTokenPoolAcquireReason(reason) ? "locked" : "maintaining";
+		},
+		buildTokenPoolLockMeta(lockRecord = null) {
+			const currentTabId = this.getTokenPoolTabId();
+			return {
+				lockOwnerTabId: typeof lockRecord?.ownerTabId === "string" ? lockRecord.ownerTabId.trim() : "",
+				lockOwnerRunId: typeof lockRecord?.ownerRunId === "string" ? lockRecord.ownerRunId.trim() : "",
+				lockReason: typeof lockRecord?.reason === "string" ? lockRecord.reason.trim() : "",
+				lockAcquiredAt: normalizeTimestampMs(lockRecord?.acquiredAt, 0),
+				lockHeartbeatAt: normalizeTimestampMs(lockRecord?.heartbeatAt, 0),
+				lockExpiresAt: normalizeTimestampMs(lockRecord?.expiresAt, 0),
+				lockHeldByCurrentTab: !!lockRecord && lockRecord.ownerTabId === currentTabId
+			};
+		},
+		reconcileTokenPoolSummary(summary = null) {
+			const resolvedSummary = this.normalizeStoredTokenPoolSummary(summary || {}) || this.buildTokenPoolSummary({
+				reason: "initial",
+				status: "idle"
+			});
+			const activeLock = this.readActiveTokenPoolLock();
+			const lockMeta = this.buildTokenPoolLockMeta(activeLock);
+			const nextSummary = {
+				...resolvedSummary,
+				...lockMeta
+			};
+			if (!activeLock) {
+				nextSummary.maintaining = false;
+				if (nextSummary.status === "maintaining" || nextSummary.status === "locked") {
+					nextSummary.status = nextSummary.schedulerEnabled ? nextSummary.schedulerRunning ? "running" : "idle" : "idle";
+				}
+				return nextSummary;
+			}
+			if (nextSummary.status === "idle" || nextSummary.status === "running") {
+				nextSummary.status = this.getTokenPoolLockStatusFallback(activeLock.reason);
+			}
+			nextSummary.maintaining = nextSummary.status === "maintaining";
+			return nextSummary;
+		},
+		getTokenPoolActiveLocalSummary() {
+			return this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === "object" ? this.tokenPoolLastSummary : null;
+		},
+		syncTokenPoolSummaryFromStorage() {
+			const storedSummary = this.readSharedTokenPoolSummary();
+			const localSummary = this.getTokenPoolActiveLocalSummary();
+			const localUpdatedAt = normalizeTimestampMs(localSummary?.updatedAt, 0);
+			const storedUpdatedAt = normalizeTimestampMs(storedSummary?.updatedAt, 0);
+			if (storedSummary && (!localSummary || storedUpdatedAt >= localUpdatedAt)) {
+				this.tokenPoolLastSummary = this.reconcileTokenPoolSummary(storedSummary);
+			}
+			return this.tokenPoolLastSummary;
+		},
+		tryAcquireTokenPoolLock({ runCtx, reason = "maintain" } = {}) {
+			const ctx = runCtx || createRunContext("POOL_LOCK");
+			const currentTabId = this.getTokenPoolTabId();
+			const result = tryAcquireCrossTabLock(CONFIG.STORAGE_KEYS.TOKEN_POOL_LOCK, {
+				ownerTabId: currentTabId,
+				ownerRunId: ctx.runId,
+				reason,
+				ttlMs: TOKEN_POOL_LOCK_TTL_MS,
+				meta: { href: window.location.href }
+			});
+			if (result.ok) {
+				this.tokenPoolActiveLock = result.record;
+			}
+			return result;
+		},
+		renewTokenPoolActiveLock({ runCtx, reason = null } = {}) {
+			const currentLock = this.tokenPoolActiveLock;
+			if (!currentLock) {
+				return {
+					ok: false,
+					record: this.readActiveTokenPoolLock()
+				};
+			}
+			const result = renewCrossTabLock(CONFIG.STORAGE_KEYS.TOKEN_POOL_LOCK, {
+				ownerTabId: this.getTokenPoolTabId(),
+				nonce: currentLock.nonce,
+				ownerRunId: typeof runCtx?.runId === "string" ? runCtx.runId.trim() : currentLock.ownerRunId,
+				reason,
+				ttlMs: TOKEN_POOL_LOCK_TTL_MS
+			});
+			if (result.ok) {
+				this.tokenPoolActiveLock = result.record;
+			}
+			return result;
+		},
+		assertTokenPoolLockOwned(lockRecord, runCtx, step = "TOKEN_POOL_LOCK_ASSERT") {
+			const currentLock = this.readActiveTokenPoolLock();
+			if (!isCrossTabLockOwnedBy(currentLock, {
+				ownerTabId: this.getTokenPoolTabId(),
+				nonce: lockRecord?.nonce || ""
+			})) {
+				logWarn$1(runCtx, step, "号池跨标签页锁已丢失，中止当前操作", {
+					expectedNonce: typeof lockRecord?.nonce === "string" ? lockRecord.nonce : "",
+					currentLock
+				});
+				throw new Error("号池锁已失效，当前操作已中止");
+			}
+			this.tokenPoolActiveLock = currentLock;
+			return currentLock;
+		},
+		startTokenPoolLockHeartbeat({ runCtx, reason = null } = {}) {
+			this.stopTokenPoolLockHeartbeat();
+			if (!this.tokenPoolActiveLock) return;
+			this.tokenPoolLockHeartbeatTimer = setInterval(() => {
+				const renewResult = this.renewTokenPoolActiveLock({
+					runCtx,
+					reason
+				});
+				if (renewResult.ok) return;
+				this.stopTokenPoolLockHeartbeat();
+				logWarn$1(runCtx, "TOKEN_POOL_LOCK", "号池锁续租失败，后续写操作将自动中止", {
+					reason,
+					currentLock: renewResult.record
+				});
+				Sidebar.refreshTokenPoolSummary?.(this.getTokenPoolSummary());
+			}, TOKEN_POOL_LOCK_HEARTBEAT_MS);
+		},
+		stopTokenPoolLockHeartbeat() {
+			if (this.tokenPoolLockHeartbeatTimer) {
+				clearInterval(this.tokenPoolLockHeartbeatTimer);
+				this.tokenPoolLockHeartbeatTimer = null;
+			}
+		},
+		releaseTokenPoolActiveLock({ runCtx } = {}) {
+			const currentLock = this.tokenPoolActiveLock;
+			this.stopTokenPoolLockHeartbeat();
+			if (!currentLock) return false;
+			const released = releaseCrossTabLock(CONFIG.STORAGE_KEYS.TOKEN_POOL_LOCK, {
+				ownerTabId: this.getTokenPoolTabId(),
+				nonce: currentLock.nonce
+			});
+			if (!released) {
+				logDebug(runCtx, "TOKEN_POOL_LOCK", "号池锁释放跳过（可能已过期或被接管）", { nonce: currentLock.nonce });
+			}
+			this.tokenPoolActiveLock = null;
+			return released;
 		},
 		readTokenPoolBackoffState() {
 			return {
@@ -9043,7 +9483,7 @@ ${providerOptions}
 			}
 			return Array.from(dedupMap.values()).sort((a, b) => b.lastCheckedAt - a.lastCheckedAt || b.createdAt - a.createdAt).slice(0, TOKEN_POOL_MAX_COUNT);
 		},
-		readTokenPool() {
+		readTokenPool({ repair = false } = {}) {
 			const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES);
 			let parsed = [];
 			if (raw) {
@@ -9058,7 +9498,7 @@ ${providerOptions}
 				onlyFull: true
 			});
 			const normalizedRaw = JSON.stringify(normalized);
-			if (raw !== normalizedRaw) {
+			if (repair && raw !== normalizedRaw) {
 				localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES, normalizedRaw);
 			}
 			return normalized;
@@ -9071,15 +9511,21 @@ ${providerOptions}
 			localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN_POOL_ENTRIES, JSON.stringify(normalized));
 			return normalized;
 		},
-		buildTokenPoolSummary({ entries = null, reason = "", status = "idle", runId = "" } = {}) {
+		buildTokenPoolSummary({ entries = null, reason = "", status = "idle", runId = "", lockRecord = undefined } = {}) {
 			const resolvedEntries = Array.isArray(entries) ? entries : this.readTokenPool();
 			const fullCount = resolvedEntries.length;
 			const backoff = this.readTokenPoolBackoffState();
 			const intervalSeconds = this.getTokenPoolCheckSeconds();
 			const resolvedRunId = typeof runId === "string" ? runId.trim() : "";
+			const resolvedLock = lockRecord === undefined ? this.readActiveTokenPoolLock() : lockRecord;
+			const lockMeta = this.buildTokenPoolLockMeta(resolvedLock);
+			let resolvedStatus = typeof status === "string" && status.trim() ? status.trim() : "idle";
+			if (resolvedLock && (resolvedStatus === "idle" || resolvedStatus === "running")) {
+				resolvedStatus = this.getTokenPoolLockStatusFallback(resolvedLock.reason);
+			}
 			return {
 				reason: reason || "",
-				status,
+				status: resolvedStatus,
 				runId: resolvedRunId,
 				fullCount,
 				totalCount: resolvedEntries.length,
@@ -9089,31 +9535,41 @@ ${providerOptions}
 				intervalSeconds,
 				schedulerEnabled: intervalSeconds > 0,
 				schedulerRunning: !!this.tokenPoolTimer,
-				maintaining: !!this.tokenPoolMaintaining,
+				maintaining: resolvedStatus === "maintaining",
 				lastCheckAt: backoff.lastCheckAt,
 				nextAllowedAt: backoff.nextAllowedAt,
 				backoffLevel: backoff.backoffLevel,
 				lastError: backoff.lastError,
+				...lockMeta,
 				updatedAt: Date.now()
 			};
 		},
-		updateTokenPoolSummary(summary, runCtx) {
+		updateTokenPoolSummary(summary, runCtx, { persist = true } = {}) {
 			const resolvedSummary = summary && typeof summary === "object" ? summary : this.buildTokenPoolSummary();
 			const resolvedRunId = typeof resolvedSummary?.runId === "string" && resolvedSummary.runId.trim() ? resolvedSummary.runId.trim() : typeof runCtx?.runId === "string" ? runCtx.runId.trim() : "";
-			const resolved = {
+			const resolved = this.reconcileTokenPoolSummary({
 				...resolvedSummary,
 				runId: resolvedRunId
-			};
+			});
 			this.tokenPoolLastSummary = resolved;
+			if (persist) {
+				this.writeSharedTokenPoolSummary(resolved);
+			}
 			Sidebar.refreshTokenPoolSummary?.(resolved);
 			logDebug(runCtx, "TOKEN_POOL_SUMMARY", "号池摘要已更新", resolved);
 			return resolved;
 		},
 		getTokenPoolSummary() {
+			this.ensureTokenPoolStorageSync();
+			const syncedSummary = this.syncTokenPoolSummaryFromStorage();
+			if (syncedSummary && typeof syncedSummary === "object") {
+				return syncedSummary;
+			}
 			if (this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === "object") {
+				this.tokenPoolLastSummary = this.reconcileTokenPoolSummary(this.tokenPoolLastSummary);
 				return this.tokenPoolLastSummary;
 			}
-			return this.updateTokenPoolSummary(this.buildTokenPoolSummary({ reason: "initial" }));
+			return this.updateTokenPoolSummary(this.buildTokenPoolSummary({ reason: "initial" }), null, { persist: false });
 		},
 		async validateTokenPoolToken({ token, runCtx, step = "TOKEN_POOL_VALIDATE" }) {
 			const normalizedToken = typeof token === "string" ? token.trim() : "";
@@ -9159,74 +9615,138 @@ ${providerOptions}
 		},
 		async acquireBestTokenFromPool({ runCtx } = {}) {
 			const ctx = runCtx || createRunContext("POOL_ACQUIRE");
-			let entries = this.readTokenPool();
-			if (!entries.length) {
+			this.ensureTokenPoolStorageSync();
+			if (this.tokenPoolMaintaining || this.tokenPoolAcquiring) {
 				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
-					entries,
-					reason: "acquire-empty",
-					status: "empty"
-				}), ctx);
+					reason: "acquire-local-busy",
+					status: "locked",
+					runId: ctx.runId,
+					lockRecord: this.tokenPoolActiveLock || this.readActiveTokenPoolLock()
+				}), ctx, { persist: false });
 				return {
 					token: "",
 					points: null,
-					source: "pool-empty"
+					source: "pool-busy"
 				};
 			}
-			for (let index = 0; index < entries.length; index++) {
-				const entry = entries[index];
-				const checkResult = await this.validateTokenPoolToken({
-					token: entry.token,
-					runCtx: ctx,
-					step: `TOKEN_POOL_ACQUIRE_VALIDATE_${index + 1}`
-				});
-				if (!checkResult.ok) {
-					logWarn$1(ctx, "TOKEN_POOL_ACQUIRE", "池中 token 校验未通过，已剔除", {
-						points: checkResult.points,
-						message: checkResult.message
-					});
-					entries = entries.filter((item) => item.token !== entry.token);
-					this.writeTokenPool(entries);
-					continue;
-				}
-				const selectedToken = entry.token;
-				entries = entries.filter((item) => item.token !== selectedToken);
-				this.writeTokenPool(entries);
+			this.tokenPoolAcquiring = true;
+			const lockResult = this.tryAcquireTokenPoolLock({
+				runCtx: ctx,
+				reason: "acquire"
+			});
+			if (!lockResult.ok) {
+				logInfo$1(ctx, "TOKEN_POOL_ACQUIRE", "号池当前被其他标签页占用，跳过本次消费", { lock: lockResult.record });
 				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
-					entries,
-					reason: "acquire-hit",
-					status: "ready"
-				}), ctx);
-				logInfo$1(ctx, "TOKEN_POOL_ACQUIRE", "号池命中可用 token，已消费", {
-					points: checkResult.points,
-					remainingCount: entries.length
-				});
+					reason: "acquire-locked",
+					status: "locked",
+					runId: ctx.runId,
+					lockRecord: lockResult.record
+				}), ctx, { persist: false });
+				this.tokenPoolAcquiring = false;
 				return {
-					token: selectedToken,
-					points: checkResult.points,
-					source: "pool"
+					token: "",
+					points: null,
+					source: "pool-locked"
 				};
 			}
-			this.updateTokenPoolSummary(this.buildTokenPoolSummary({
-				entries,
-				reason: "acquire-depleted",
-				status: "empty"
-			}), ctx);
-			return {
+			const acquiredLock = lockResult.record;
+			let summaryToPersist = null;
+			let result = {
 				token: "",
 				points: null,
 				source: "pool-depleted"
 			};
+			try {
+				let entries = this.readTokenPool({ repair: true });
+				if (!entries.length) {
+					summaryToPersist = this.buildTokenPoolSummary({
+						entries,
+						reason: "acquire-empty",
+						status: "empty",
+						runId: ctx.runId,
+						lockRecord: acquiredLock
+					});
+					result = {
+						token: "",
+						points: null,
+						source: "pool-empty"
+					};
+					return result;
+				}
+				for (let index = 0; index < entries.length; index++) {
+					const entry = entries[index];
+					const checkResult = await this.validateTokenPoolToken({
+						token: entry.token,
+						runCtx: ctx,
+						step: `TOKEN_POOL_ACQUIRE_VALIDATE_${index + 1}`
+					});
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_ACQUIRE_LOCK");
+					if (!checkResult.ok) {
+						logWarn$1(ctx, "TOKEN_POOL_ACQUIRE", "池中 token 校验未通过，已剔除", {
+							points: checkResult.points,
+							message: checkResult.message
+						});
+						entries = entries.filter((item) => item.token !== entry.token);
+						this.writeTokenPool(entries);
+						continue;
+					}
+					const selectedToken = entry.token;
+					entries = entries.filter((item) => item.token !== selectedToken);
+					this.writeTokenPool(entries);
+					summaryToPersist = this.buildTokenPoolSummary({
+						entries,
+						reason: "acquire-hit",
+						status: "ready",
+						runId: ctx.runId,
+						lockRecord: acquiredLock
+					});
+					logInfo$1(ctx, "TOKEN_POOL_ACQUIRE", "号池命中可用 token，已消费", {
+						points: checkResult.points,
+						remainingCount: entries.length
+					});
+					result = {
+						token: selectedToken,
+						points: checkResult.points,
+						source: "pool"
+					};
+					return result;
+				}
+				summaryToPersist = this.buildTokenPoolSummary({
+					entries,
+					reason: "acquire-depleted",
+					status: "empty",
+					runId: ctx.runId,
+					lockRecord: acquiredLock
+				});
+				return result;
+			} finally {
+				this.tokenPoolAcquiring = false;
+				this.releaseTokenPoolActiveLock({ runCtx: ctx });
+				if (summaryToPersist) {
+					this.updateTokenPoolSummary(summaryToPersist, ctx);
+				}
+			}
 		},
 		async maintainTokenPool({ reason = "manual", force = false, runCtx } = {}) {
 			const ctx = runCtx || createRunContext("POOL");
 			const resolvedReason = reason || "maintain";
 			const currentSummary = this.tokenPoolLastSummary && typeof this.tokenPoolLastSummary === "object" ? this.tokenPoolLastSummary : null;
+			this.ensureTokenPoolStorageSync();
 			if (this.tokenPoolMaintaining) {
 				return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
 					reason: currentSummary?.reason || resolvedReason,
 					status: "maintaining",
-					runId: currentSummary?.runId || ""
-				}), ctx);
+					runId: currentSummary?.runId || "",
+					lockRecord: this.tokenPoolActiveLock || this.readActiveTokenPoolLock()
+				}), ctx, { persist: false });
+			}
+			if (this.tokenPoolAcquiring) {
+				return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					reason: resolvedReason,
+					status: "locked",
+					runId: ctx.runId,
+					lockRecord: this.tokenPoolActiveLock || this.readActiveTokenPoolLock()
+				}), ctx, { persist: false });
 			}
 			const backoff = this.readTokenPoolBackoffState();
 			const now = Date.now();
@@ -9242,10 +9762,32 @@ ${providerOptions}
 					runId: ctx.runId
 				}), ctx);
 			}
+			const lockResult = this.tryAcquireTokenPoolLock({
+				runCtx: ctx,
+				reason: resolvedReason
+			});
+			if (!lockResult.ok) {
+				logInfo$1(ctx, "TOKEN_POOL_LOCK", "号池维护发现其他标签页已持锁，跳过本次执行", {
+					reason: resolvedReason,
+					lock: lockResult.record
+				});
+				return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					reason: resolvedReason,
+					status: "locked",
+					runId: ctx.runId,
+					lockRecord: lockResult.record
+				}), ctx, { persist: false });
+			}
+			const acquiredLock = lockResult.record;
 			this.tokenPoolMaintaining = true;
 			let finalStatus = "failed";
 			let finalEntries = null;
+			let persistFinalSummary = true;
 			try {
+				this.startTokenPoolLockHeartbeat({
+					runCtx: ctx,
+					reason: resolvedReason
+				});
 				logInfo$1(ctx, "TOKEN_POOL", "号池维护开始", {
 					reason: resolvedReason,
 					force: !!force
@@ -9253,9 +9795,10 @@ ${providerOptions}
 				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
 					reason: resolvedReason,
 					status: "maintaining",
-					runId: ctx.runId
+					runId: ctx.runId,
+					lockRecord: acquiredLock
 				}), ctx);
-				let entries = this.readTokenPool();
+				let entries = this.readTokenPool({ repair: true });
 				if (entries.length > 0) {
 					logInfo$1(ctx, "TOKEN_POOL", `正在校验池内 ${entries.length} 个 token`, { existingCount: entries.length });
 				} else {
@@ -9269,6 +9812,7 @@ ${providerOptions}
 						runCtx: ctx,
 						step: `TOKEN_POOL_CHECK_EXISTING_${index + 1}`
 					});
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_CHECK_EXISTING_LOCK");
 					if (!checkResult.ok) {
 						logWarn$1(ctx, "TOKEN_POOL", "号池现有 token 校验失败，已剔除", { message: checkResult.message });
 						continue;
@@ -9281,10 +9825,12 @@ ${providerOptions}
 						lastCheckedAt: Date.now()
 					});
 				}
+				this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_WRITE_EXISTING_LOCK");
 				entries = this.writeTokenPool(checkedEntries);
 				const maxRegisterAttempts = Math.max(2, TOKEN_POOL_TARGET_FULL_COUNT * 3);
 				let registerAttempts = 0;
 				while (entries.length < TOKEN_POOL_TARGET_FULL_COUNT && entries.length < TOKEN_POOL_MAX_COUNT && registerAttempts < maxRegisterAttempts) {
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_REGISTER_LOOP_LOCK");
 					registerAttempts += 1;
 					logInfo$1(ctx, "TOKEN_POOL", `正在补充第 ${registerAttempts} 个账号`, {
 						currentFullCount: entries.length,
@@ -9304,6 +9850,7 @@ ${providerOptions}
 					} finally {
 						this.tokenPoolInFlightRegister = false;
 					}
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_REGISTER_RESULT_LOCK");
 					const token = typeof registerResult?.token === "string" ? registerResult.token.trim() : "";
 					if (!token) {
 						throw new Error("补池注册未返回 token");
@@ -9313,6 +9860,7 @@ ${providerOptions}
 						runCtx: ctx,
 						step: `TOKEN_POOL_CHECK_NEW_${registerAttempts}`
 					});
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_CHECK_NEW_LOCK");
 					if (!checkResult.ok) {
 						logWarn$1(ctx, "TOKEN_POOL", "新注册账号积分不足，跳过入池", { message: checkResult.message });
 						continue;
@@ -9327,8 +9875,10 @@ ${providerOptions}
 						source: "auto-register",
 						status: "full"
 					});
+					this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_WRITE_NEW_LOCK");
 					entries = this.writeTokenPool(entries);
 				}
+				this.assertTokenPoolLockOwned(acquiredLock, ctx, "TOKEN_POOL_FINALIZE_LOCK");
 				this.writeTokenPoolBackoffState({ lastCheckAt: Date.now() });
 				if (entries.length < TOKEN_POOL_TARGET_FULL_COUNT) {
 					throw new Error(`号池补充后仍不足 ${TOKEN_POOL_TARGET_FULL_COUNT} 个满积分 token`);
@@ -9342,27 +9892,39 @@ ${providerOptions}
 				finalStatus = "ok";
 				finalEntries = entries;
 			} catch (error) {
-				this.applyTokenPoolBackoff(error, ctx);
-				finalStatus = "failed";
+				const errorMessage = error?.message || String(error);
+				if (errorMessage.includes("号池锁已失效")) {
+					persistFinalSummary = false;
+					finalStatus = "locked";
+					logWarn$1(ctx, "TOKEN_POOL_LOCK", "号池维护因锁丢失而中止，未继续写入共享状态", {
+						reason: resolvedReason,
+						message: errorMessage
+					});
+				} else {
+					this.applyTokenPoolBackoff(error, ctx);
+					finalStatus = "failed";
+				}
 			} finally {
 				this.tokenPoolMaintaining = false;
 				this.tokenPoolInFlightRegister = false;
+				this.releaseTokenPoolActiveLock({ runCtx: ctx });
 			}
 			return this.updateTokenPoolSummary(this.buildTokenPoolSummary({
 				entries: finalEntries,
 				reason: resolvedReason,
 				status: finalStatus,
 				runId: ctx.runId
-			}), ctx);
+			}), ctx, { persist: persistFinalSummary });
 		},
 		startTokenPoolScheduler({ intervalSeconds = null, runCtx } = {}) {
+			this.ensureTokenPoolStorageSync();
 			return this.refreshTokenPoolScheduler({
 				intervalSeconds,
 				runCtx,
 				reason: "start"
 			});
 		},
-		stopTokenPoolScheduler({ runCtx, reason = "stop" } = {}) {
+		stopTokenPoolScheduler({ runCtx, reason = "stop", persistSummary = true } = {}) {
 			if (this.tokenPoolTimer) {
 				clearInterval(this.tokenPoolTimer);
 				this.tokenPoolTimer = null;
@@ -9371,11 +9933,12 @@ ${providerOptions}
 				reason,
 				status: "stopped"
 			});
-			this.updateTokenPoolSummary(summary, runCtx);
+			this.updateTokenPoolSummary(summary, runCtx, { persist: persistSummary });
 			logInfo$1(runCtx, "TOKEN_POOL_TIMER", "号池定时维护已停止", { reason });
 			return summary;
 		},
-		refreshTokenPoolScheduler({ intervalSeconds = null, runCtx, reason = "refresh" } = {}) {
+		refreshTokenPoolScheduler({ intervalSeconds = null, runCtx, reason = "refresh", runImmediate = true, persistSummary = true } = {}) {
+			this.ensureTokenPoolStorageSync();
 			const resolvedSeconds = intervalSeconds === null || intervalSeconds === undefined ? this.getTokenPoolCheckSeconds() : this.normalizeTokenPoolCheckSeconds(intervalSeconds);
 			if (this.tokenPoolTimer) {
 				clearInterval(this.tokenPoolTimer);
@@ -9384,7 +9947,8 @@ ${providerOptions}
 			if (resolvedSeconds <= 0) {
 				return this.stopTokenPoolScheduler({
 					runCtx,
-					reason: "disabled"
+					reason: "disabled",
+					persistSummary
 				});
 			}
 			const intervalMs = resolvedSeconds * 1e3;
@@ -9398,16 +9962,18 @@ ${providerOptions}
 				reason,
 				status: "running"
 			});
-			this.updateTokenPoolSummary(summary, runCtx);
+			this.updateTokenPoolSummary(summary, runCtx, { persist: persistSummary });
 			logInfo$1(runCtx, "TOKEN_POOL_TIMER", "号池定时维护已启动", {
 				intervalSeconds: resolvedSeconds,
 				intervalMs
 			});
-			this.maintainTokenPool({
-				reason: "timer-initial",
-				force: false,
-				runCtx
-			}).catch(() => {});
+			if (runImmediate) {
+				this.maintainTokenPool({
+					reason: "timer-initial",
+					force: false,
+					runCtx
+				}).catch(() => {});
+			}
 			return summary;
 		}
 	};
@@ -9878,6 +10444,14 @@ ${providerOptions}
 						points: Number(poolTokenResult?.points || 0) || null
 					});
 					Toast.success("更换账号：已从号池获取账号 token", 1800);
+				} else if (poolTokenResult?.source === "pool-locked" || poolTokenResult?.source === "pool-busy") {
+					tokenSource = poolTokenResult?.source || "pool-locked";
+					Sidebar.updateState({
+						status: "warning",
+						statusMessage: "更换账号：号池正在被其他任务占用，请稍后重试..."
+					});
+					Toast.warning("号池当前被占用，请稍后重试更换账号", 3200);
+					throw new Error("更换账号终止：号池当前被其他标签页或任务占用");
 				} else {
 					tokenSource = poolTokenResult?.source || "register-fallback";
 					Sidebar.updateState({
@@ -10130,6 +10704,12 @@ ${providerOptions}
 		tokenPoolMaintaining: false,
 		tokenPoolLastSummary: null,
 		tokenPoolInFlightRegister: false,
+		tokenPoolAcquiring: false,
+		tokenPoolActiveLock: null,
+		tokenPoolLockHeartbeatTimer: null,
+		tokenPoolTabId: "",
+		tokenPoolStorageSyncBound: false,
+		tokenPoolStorageHandler: null,
 		...RuntimeMethods,
 		...FormMethods,
 		...SiteApiMethods,
