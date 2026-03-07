@@ -1,6 +1,14 @@
 import { gmAddStyle } from '../gm.js';
 
 const SIDEBAR_STYLES = `
+    :root {
+        --af-sidebar-width: 372px;
+        --af-safe-top: env(safe-area-inset-top, 0px);
+        --af-safe-right: env(safe-area-inset-right, 0px);
+        --af-safe-bottom: env(safe-area-inset-bottom, 0px);
+        --af-safe-left: env(safe-area-inset-left, 0px);
+    }
+
     /* ============================
        Light 主题 (默认)
        ============================ */
@@ -89,7 +97,7 @@ const SIDEBAR_STYLES = `
        Global / Layout
        ============================ */
     body.aifengyue-sidebar-inline-mode {
-        padding-right: 372px !important;
+        padding-right: calc(var(--af-sidebar-width) + var(--af-safe-right)) !important;
         box-sizing: border-box;
         transition: padding-right 0.3s var(--af-ease, ease);
     }
@@ -100,7 +108,7 @@ const SIDEBAR_STYLES = `
     /* --- Toggle 按钮 --- */
     #aifengyue-sidebar-toggle {
         position: fixed;
-        right: 0;
+        right: var(--af-safe-right);
         top: 50%;
         transform: translateY(-50%);
         width: 38px;
@@ -124,7 +132,7 @@ const SIDEBAR_STYLES = `
         box-shadow: -4px 0 28px rgba(99, 102, 241, 0.5);
     }
     #aifengyue-sidebar-toggle.is-open {
-        right: 372px;
+        right: calc(var(--af-sidebar-width) + var(--af-safe-right));
         background: linear-gradient(135deg, #4b5563 0%, #334155 100%);
         box-shadow: -3px 0 18px rgba(51, 65, 85, 0.45);
     }
@@ -133,9 +141,10 @@ const SIDEBAR_STYLES = `
     #aifengyue-sidebar {
         position: fixed;
         top: 0;
-        right: -392px;
-        width: 372px;
+        right: calc(-1 * (var(--af-sidebar-width) + 20px));
+        width: var(--af-sidebar-width);
         height: 100vh;
+        height: 100dvh;
         background: var(--af-bg);
         color: var(--af-text);
         z-index: 2147483646;
@@ -146,6 +155,10 @@ const SIDEBAR_STYLES = `
         display: flex;
         flex-direction: column;
         border-left: 1px solid var(--af-border);
+        box-sizing: border-box;
+        padding-top: var(--af-safe-top);
+        padding-bottom: var(--af-safe-bottom);
+        overscroll-behavior: contain;
     }
     #aifengyue-sidebar.open {
         right: 0;
@@ -259,10 +272,14 @@ const SIDEBAR_STYLES = `
     /* --- 内容区 --- */
     .aifengyue-sidebar-content {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
         padding: 12px;
+        padding-bottom: 16px;
         scrollbar-width: thin;
         scrollbar-color: var(--af-border) transparent;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
     }
     .aifengyue-sidebar-content::-webkit-scrollbar {
         width: 4px;
@@ -685,12 +702,14 @@ const SIDEBAR_STYLES = `
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 10px 16px;
+        padding: calc(10px + var(--af-safe-top)) calc(16px + var(--af-safe-right)) calc(10px + var(--af-safe-bottom)) calc(16px + var(--af-safe-left));
+        box-sizing: border-box;
     }
     .aifengyue-conv-modal-content {
         width: min(1200px, calc(100vw - 40px));
         min-width: 700px;
         height: min(94vh, 1200px);
+        height: min(94dvh, 1200px);
         border-radius: 12px;
         background: #f7f8fb;
         border: 1px solid rgba(148, 163, 184, 0.4);
@@ -703,6 +722,7 @@ const SIDEBAR_STYLES = `
         width: min(1280px, calc(100vw - 40px));
         min-width: 760px;
         height: min(92vh, 1080px);
+        height: min(92dvh, 1080px);
         border-radius: 12px;
         background: var(--af-bg);
         border: 1px solid var(--af-border);
@@ -859,21 +879,122 @@ const SIDEBAR_STYLES = `
         overflow-x: auto;
     }
     @media (max-width: 760px) {
+        body.aifengyue-sidebar-inline-mode {
+            padding-right: 0 !important;
+        }
+        body.aifengyue-sidebar-inline-mode #header-setting-button {
+            margin-right: 0 !important;
+        }
+        #aifengyue-sidebar {
+            right: calc(-100vw - 24px);
+            width: 100vw;
+            max-width: 100vw;
+            border-left: none;
+            padding-left: var(--af-safe-left);
+            padding-right: var(--af-safe-right);
+            box-shadow: -8px 0 28px rgba(15, 23, 42, 0.22);
+        }
+        #aifengyue-sidebar-toggle {
+            top: auto;
+            bottom: calc(12px + var(--af-safe-bottom));
+            transform: none;
+            width: auto;
+            min-width: 92px;
+            height: 40px;
+            padding: 0 12px;
+            border-radius: 999px 0 0 999px;
+            writing-mode: horizontal-tb;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+        #aifengyue-sidebar-toggle:hover {
+            width: auto;
+        }
+        #aifengyue-sidebar-toggle.is-open {
+            right: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .aifengyue-sidebar-header {
+            padding: 12px;
+        }
+        .aifengyue-sidebar-header h2 {
+            font-size: 14px;
+        }
+        .aifengyue-theme-toggle,
+        .aifengyue-sidebar-close {
+            width: 40px;
+            height: 40px;
+        }
+        .aifengyue-sidebar-tabs {
+            gap: 6px;
+            padding: 8px;
+        }
+        .aifengyue-tab-btn {
+            height: 40px;
+            font-size: 12px;
+        }
+        .aifengyue-sidebar-content {
+            padding: 10px;
+        }
+        .aifengyue-section,
+        .aifengyue-tool-block {
+            padding: 12px;
+        }
+        .aifengyue-info-row {
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .aifengyue-info-label {
+            min-width: auto;
+        }
+        .aifengyue-info-value {
+            width: 100%;
+            overflow: visible;
+            text-overflow: clip;
+            white-space: normal;
+            word-break: break-word;
+        }
+        .aifengyue-btn-group {
+            grid-template-columns: 1fr;
+        }
+        .aifengyue-check-row {
+            align-items: flex-start;
+        }
+        .aifengyue-conversation-viewer {
+            min-height: 360px;
+        }
+        .aifengyue-conv-modal-backdrop {
+            align-items: stretch;
+            padding: calc(8px + var(--af-safe-top)) calc(8px + var(--af-safe-right)) calc(8px + var(--af-safe-bottom)) calc(8px + var(--af-safe-left));
+        }
         .aifengyue-conv-modal-content {
             min-width: 0;
-            width: calc(100vw - 16px);
-            height: calc(100vh - 16px);
+            width: 100%;
+            height: 100%;
+            max-height: none;
         }
         .aifengyue-log-modal-content {
             min-width: 0;
-            width: calc(100vw - 16px);
-            height: calc(100vh - 16px);
+            width: 100%;
+            height: 100%;
+            max-height: none;
+        }
+        .aifengyue-conv-modal-head {
+            min-height: 52px;
+            height: auto;
+            padding: 8px 10px 8px 12px;
         }
         .aifengyue-log-modal-head-actions {
+            flex-wrap: wrap;
+            justify-content: flex-end;
             gap: 6px;
         }
-        .aifengyue-conv-modal-backdrop {
-            padding: 8px;
+        .aifengyue-log-modal-body,
+        .aifengyue-log-list,
+        .aifengyue-log-entry {
+            padding: 10px;
         }
     }
 

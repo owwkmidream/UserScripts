@@ -27,8 +27,8 @@ export const ChatStreamCapsule = {
         gmAddStyle(`
             #${CAPSULE_ID} {
                 position: fixed;
-                right: 20px;
-                bottom: 84px;
+                right: calc(20px + env(safe-area-inset-right, 0px));
+                bottom: calc(84px + env(safe-area-inset-bottom, 0px));
                 z-index: 2147483647;
                 display: inline-flex;
                 align-items: center;
@@ -46,6 +46,8 @@ export const ChatStreamCapsule = {
                 backdrop-filter: blur(8px);
                 -webkit-backdrop-filter: blur(8px);
                 opacity: 0.95;
+                max-width: min(420px, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+                box-sizing: border-box;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-dot {
                 width: 8px;
@@ -55,7 +57,7 @@ export const ChatStreamCapsule = {
                 box-sizing: border-box;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-text {
-                max-width: 360px;
+                max-width: 100%;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
@@ -94,6 +96,22 @@ export const ChatStreamCapsule = {
                 0% { transform: scale(1); opacity: 0.8; }
                 50% { transform: scale(1.35); opacity: 1; }
                 100% { transform: scale(1); opacity: 0.8; }
+            }
+            @media (max-width: 760px) {
+                #${CAPSULE_ID} {
+                    left: calc(12px + env(safe-area-inset-left, 0px));
+                    right: calc(12px + env(safe-area-inset-right, 0px));
+                    bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+                    justify-content: center;
+                    gap: 10px;
+                    padding: 10px 12px;
+                    border-radius: 14px;
+                }
+                #${CAPSULE_ID} .aifengyue-chat-status-text {
+                    white-space: normal;
+                    line-height: 1.35;
+                    text-align: center;
+                }
             }
         `);
     },
