@@ -41,7 +41,7 @@
 | `src/runtime/chat-monitor/` | chat-messages 监控子模块（hook、SSE、超时、状态发布） | 被 `src/runtime/chat-messages-monitor.js` 聚合 |
 | `src/ui/` | 侧边栏、toast、状态胶囊与样式注入 | 由 `src/app.js`、`runtime`、`features` 调用 |
 | `src/ui/sidebar/` | 侧边栏子模块（视图、事件、会话、设置、工具） | 被 `src/ui/sidebar.js` 聚合 |
-| `src/utils/` | 公共工具（日志、随机、DOM 输入、验证码提取） | 被 `features`、`menu`、`ui` 复用 |
+| `src/utils/` | 公共工具（日志、随机、DOM 输入、验证码提取、跨标签页锁） | 被 `features`、`menu`、`ui` 复用 |
 | `src/vendor/` | vendored 第三方前端依赖（无需改锁文件即可随源码打包） | 被 `services/chat-history` 等浏览器端模块直接导入 |
 | `src/menu/` | 油猴菜单命令注册 | 由 `src/app.js` 调用 |
 
@@ -64,7 +64,7 @@
 | `src/features/auto-register.js` | 自动注册兼容门面（聚合子模块并导出 `AutoRegister`） | 被 `app`、`menu`、`runtime`、`ui` 依赖 |
 | `src/features/auto-register/shared.js` | 自动注册共享常量与纯工具函数 | 被 `auto-register/*-methods.js` 复用 |
 | `src/features/auto-register/runtime-methods.js` | 自动注册通用运行时能力（重试、自动刷新） | 聚合进 `src/features/auto-register.js` |
-| `src/features/auto-register/token-pool-methods.js` | 号池维护能力（本地 token 池、定时补池、退避、消费策略） | 聚合进 `src/features/auto-register.js`，被 `flow-methods` 调用 |
+| `src/features/auto-register/token-pool-methods.js` | 号池维护能力（本地 token 池、定时补池、退避、消费策略、跨标签页互斥与摘要同步） | 聚合进 `src/features/auto-register.js`，被 `flow-methods` 调用 |
 | `src/features/auto-register/form-methods.js` | 注册页表单能力（页面识别、输入、按钮触发） | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/site-api-methods.js` | 站点接口调用与首次引导处理 | 聚合进 `src/features/auto-register.js` |
 | `src/features/auto-register/conversation-methods.js` | 会话链路读取/同步/预览入口封装 | 依赖 `chat-history-service`，聚合进 `auto-register` |
@@ -105,6 +105,7 @@
 | `src/ui/chat-stream-capsule.js` | SSE 状态胶囊提示组件 | 被 `chat-messages-monitor` 调用 |
 | `src/menu/menu-commands.js` | 油猴菜单命令注册 | 依赖 `gmRegisterMenuCommand` 与业务模块 |
 | `src/utils/logger.js` | 带 runId 的日志工具、调试开关与本地运行日志缓冲 | 被 `auto-register`、`menu`、`ui` 使用 |
+| `src/utils/cross-tab-lock.js` | 基于 `localStorage/sessionStorage` 的跨标签页租约锁工具 | 被 `token-pool-methods` 依赖 |
 | `src/utils/random.js` | 用户名/密码随机生成与延时工具 | 被 `auto-register` 调用 |
 | `src/utils/code-extractor.js` | 邮件验证码提取工具 | 被 `auto-register` 调用 |
 | `src/utils/dom.js` | 表单输入模拟工具 | 被 `auto-register` 调用 |
@@ -135,6 +136,7 @@
   - 会话预览 markdown 解析统一经 `src/services/chat-history/shared.js` 调用该解析器完成。
 - 本地持久化边界：
   - `CONFIG.STORAGE_KEYS` 定义 localStorage/GM 存储键名。
+  - 号池跨标签页协同状态（池内容、维护锁、共享摘要、运行日志）存于 localStorage。
   - 会话链主数据存于 IndexedDB（`src/services/chat-history-store.js`）。
 
 ## 6. 索引维护规则
@@ -169,3 +171,4 @@
 - `2026-03-07`：邮件服务重构为 `mail-service + provider-registry + gptmail-provider` 结构，usage 改为直接消费邮件接口返回的 `usage` 元数据。
 - `2026-03-07`：新增 `emailnator-provider.js` 第二邮件提供商，侧边栏设置页加入 provider 切换与按 provider 显示 API Key/usage 状态。
 - `2026-03-07`：`src/meta.user.js` 增加 Emailnator 的 `@connect` 权限；无 usage 的邮件 provider 在侧边栏中隐藏“配额统计”区域。
+- `2026-03-07`：号池维护与号池消费新增跨标签页租约锁，侧边栏摘要/日志改为同步读取共享状态，并在他页占用时阻止重复维护或重复消费。

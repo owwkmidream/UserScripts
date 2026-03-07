@@ -17,6 +17,8 @@ export const CONFIG = {
         ACCOUNT_POINT_POLL_SECONDS: 'aifengyue_account_point_poll_seconds',
         TOKEN_POOL_ENTRIES: 'aifengyue_token_pool_entries',
         TOKEN_POOL_CHECK_SECONDS: 'aifengyue_token_pool_check_seconds',
+        TOKEN_POOL_LOCK: 'aifengyue_token_pool_lock',
+        TOKEN_POOL_SUMMARY: 'aifengyue_token_pool_summary',
         TOKEN_POOL_LAST_CHECK_AT: 'aifengyue_token_pool_last_check_at',
         TOKEN_POOL_NEXT_ALLOWED_AT: 'aifengyue_token_pool_next_allowed_at',
         TOKEN_POOL_BACKOFF_LEVEL: 'aifengyue_token_pool_backoff_level',

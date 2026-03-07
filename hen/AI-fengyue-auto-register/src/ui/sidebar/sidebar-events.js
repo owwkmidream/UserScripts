@@ -174,6 +174,12 @@ export const sidebarEventsMethods = {
                 getToast()?.info('号池已在维护中，可在日志弹窗查看实时进度');
                 return;
             }
+            if (summary?.status === 'locked') {
+                getToast()?.info(summary?.lockHeldByCurrentTab
+                    ? '当前标签页已有号池任务在执行'
+                    : '其他标签页正在操作号池，请稍后再试');
+                return;
+            }
             if (summary?.status === 'ok') {
                 getToast()?.success('号池手动维护完成');
                 return;

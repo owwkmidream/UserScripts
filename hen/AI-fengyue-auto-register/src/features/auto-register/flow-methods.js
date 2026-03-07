@@ -555,6 +555,14 @@ export const FlowMethods = {
                     points: Number(poolTokenResult?.points || 0) || null,
                 });
                 Toast.success('更换账号：已从号池获取账号 token', 1800);
+            } else if (poolTokenResult?.source === 'pool-locked' || poolTokenResult?.source === 'pool-busy') {
+                tokenSource = poolTokenResult?.source || 'pool-locked';
+                Sidebar.updateState({
+                    status: 'warning',
+                    statusMessage: '更换账号：号池正在被其他任务占用，请稍后重试...',
+                });
+                Toast.warning('号池当前被占用，请稍后重试更换账号', 3200);
+                throw new Error('更换账号终止：号池当前被其他标签页或任务占用');
             } else {
                 tokenSource = poolTokenResult?.source || 'register-fallback';
                 Sidebar.updateState({

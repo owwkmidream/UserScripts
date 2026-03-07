@@ -137,10 +137,20 @@ export const sidebarSettingsMethods = {
         }
     },
 
+    getTokenPoolLockActionText(summary = {}) {
+        const reason = typeof summary?.lockReason === 'string' ? summary.lockReason.trim().toLowerCase() : '';
+        if (reason.includes('acquire')) {
+            return '从号池取号';
+        }
+        return '维护号池';
+    },
+
     getTokenPoolStatusText(summary = {}) {
         switch (summary?.status) {
             case 'maintaining':
-                return '维护中';
+                return summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab
+                    ? '他页维护中'
+                    : '维护中';
             case 'ok':
                 return '最近成功';
             case 'failed':
@@ -151,8 +161,14 @@ export const sidebarSettingsMethods = {
                 return '已停止';
             case 'running':
                 return '定时中';
+            case 'locked':
+                return summary?.lockHeldByCurrentTab ? '本页占用中' : '他页占用中';
             default:
-                if (summary?.maintaining) return '维护中';
+                if (summary?.maintaining) {
+                    return summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab
+                        ? '他页维护中'
+                        : '维护中';
+                }
                 return summary?.schedulerEnabled
                     ? (summary?.schedulerRunning ? '运行中' : '待启动')
                     : '已关闭';
@@ -163,8 +179,25 @@ export const sidebarSettingsMethods = {
         const status = typeof summary?.status === 'string' ? summary.status.trim() : '';
         const latestMessage = typeof latestEntry?.message === 'string' ? latestEntry.message.trim() : '';
         const lastError = typeof summary?.lastError === 'string' ? summary.lastError.trim() : '';
+        const lockExpireText = this.formatTokenPoolTime(summary?.lockExpiresAt);
+        const lockActionText = this.getTokenPoolLockActionText(summary);
+
+        if (status === 'locked') {
+            if (summary?.lockHeldByCurrentTab) {
+                return `当前标签页正在${lockActionText}，请稍候...`;
+            }
+            return lockExpireText !== '-'
+                ? `其他标签页正在${lockActionText}，锁预计到 ${lockExpireText}`
+                : `其他标签页正在${lockActionText}，请稍后重试`;
+        }
 
         if (status === 'maintaining' || summary?.maintaining) {
+            if (summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab) {
+                return latestMessage
+                    || (lockExpireText !== '-'
+                        ? `其他标签页正在维护号池，锁预计到 ${lockExpireText}`
+                        : '其他标签页正在维护号池，请稍候...');
+            }
             return latestMessage || '号池维护进行中，请稍候...';
         }
 
@@ -244,10 +277,18 @@ export const sidebarSettingsMethods = {
 
     getTokenPoolMaintainButtonState(summary = {}) {
         const isMaintaining = summary?.status === 'maintaining' || !!summary?.maintaining;
+        if (summary?.status === 'locked') {
+            return {
+                disabled: true,
+                text: summary?.lockHeldByCurrentTab ? '处理中...' : '他页占用中...',
+            };
+        }
         if (isMaintaining) {
             return {
                 disabled: true,
-                text: '维护中...',
+                text: summary?.lockOwnerTabId && !summary?.lockHeldByCurrentTab
+                    ? '他页维护中...'
+                    : '维护中...',
             };
         }
         if (summary?.status === 'backoff') {
