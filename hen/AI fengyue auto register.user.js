@@ -13,6 +13,8 @@
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @connect      mail.chatgpt.org.uk
+// @connect      www.emailnator.com
+// @connect      emailnator.com
 // @license      MIT
 // @run-at       document-end
 // ==/UserScript==
@@ -26,13 +28,15 @@
 		DEFAULT_API_KEY: "gpt-test",
 		STORAGE_KEYS: {
 			API_KEY: "gptmail_api_key",
+			MAIL_PROVIDER_ID: "aifengyue_mail_provider_id",
+			MAIL_PROVIDER_API_KEYS: "aifengyue_mail_provider_api_keys",
+			MAIL_PROVIDER_USAGE_SNAPSHOTS: "aifengyue_mail_provider_usage_snapshots",
 			CURRENT_EMAIL: "current_temp_email",
 			GENERATED_PASSWORD: "generated_password",
 			GENERATED_USERNAME: "generated_username",
 			REGISTRATION_START_TIME: "registration_start_time",
-			API_USAGE_COUNT: "api_usage_count",
-			API_USAGE_RESET_DATE: "api_usage_reset_date",
 			LOG_DEBUG_ENABLED: "aifengyue_log_debug_enabled",
+			RUNTIME_LOG_BUFFER: "aifengyue_runtime_log_buffer",
 			AUTO_RELOAD_ENABLED: "aifengyue_auto_reload_enabled",
 			CHAT_MESSAGES_TIMEOUT_SECONDS: "aifengyue_chat_messages_timeout_seconds",
 			ACCOUNT_POINT_POLL_SECONDS: "aifengyue_account_point_poll_seconds",
@@ -151,6 +155,352 @@
 	}
 
 //#endregion
+//#region src/services/mail/providers/gptmail-provider.js
+	function toNumber$1(value, fallback = 0) {
+		const numericValue = Number(value);
+		return Number.isFinite(numericValue) ? numericValue : fallback;
+	}
+	function clampPercentage$1(value) {
+		const numericValue = toNumber$1(value, 0);
+		return Math.max(0, Math.min(numericValue, 100));
+	}
+	const GPTMailProvider = {
+		id: "gptmail",
+		name: "GPTMail",
+		supportsUsage: true,
+		requiresApiKey: true,
+		baseUrl: CONFIG.API_BASE,
+		defaultApiKey: CONFIG.DEFAULT_API_KEY,
+		defaultQuotaLimit: CONFIG.API_QUOTA_LIMIT,
+		apiKeyLabel: "GPTMail API Key",
+		apiKeyPlaceholder: `输入你的 API Key (默认: ${CONFIG.DEFAULT_API_KEY})`,
+		buildHeaders({ apiKey, headers = {} }) {
+			return {
+				"X-API-Key": apiKey,
+				"Content-Type": "application/json",
+				...headers
+			};
+		},
+		parseResponsePayload(payload) {
+			if (!payload || typeof payload !== "object") {
+				throw new Error("解析响应失败");
+			}
+			if (!payload.success) {
+				throw new Error(payload.error || "请求失败");
+			}
+			return {
+				data: payload.data ?? null,
+				usage: payload.usage ?? null
+			};
+		},
+		normalizeUsage(usage) {
+			if (!usage || typeof usage !== "object") {
+				return null;
+			}
+			const totalLimit = Math.max(0, toNumber$1(usage.total_limit, this.defaultQuotaLimit));
+			const totalUsed = Math.max(0, toNumber$1(usage.total_usage, 0));
+			const totalRemaining = Number.isFinite(Number(usage.remaining_total)) ? Number(usage.remaining_total) : totalLimit - totalUsed;
+			const dailyLimit = Math.max(0, toNumber$1(usage.daily_limit, 0));
+			const dailyUsed = Math.max(0, toNumber$1(usage.used_today, 0));
+			const dailyRemaining = Number.isFinite(Number(usage.remaining_today)) ? Number(usage.remaining_today) : dailyLimit > 0 ? dailyLimit - dailyUsed : -1;
+			const limit = totalLimit > 0 ? totalLimit : this.defaultQuotaLimit;
+			const percentage = limit > 0 ? clampPercentage$1(totalUsed / limit * 100) : 0;
+			return {
+				used: totalUsed,
+				limit,
+				remaining: totalRemaining,
+				percentage,
+				dailyLimit,
+				dailyUsed,
+				dailyRemaining,
+				totalLimit: limit,
+				totalUsed,
+				totalRemaining,
+				supportsUsage: true,
+				hasUsage: true,
+				usageStatus: "available",
+				raw: usage
+			};
+		},
+		createGenerateEmailRequest() {
+			return {
+				endpoint: "/generate-email",
+				method: "GET"
+			};
+		},
+		createGetEmailsRequest(email) {
+			return {
+				endpoint: `/emails?email=${encodeURIComponent(email)}`,
+				method: "GET"
+			};
+		},
+		extractGeneratedEmail(data) {
+			const email = typeof data?.email === "string" ? data.email.trim() : "";
+			if (!email) {
+				throw new Error("邮件接口未返回有效邮箱");
+			}
+			return email;
+		},
+		extractEmails(data) {
+			return Array.isArray(data?.emails) ? data.emails : [];
+		}
+	};
+
+//#endregion
+//#region src/services/mail/providers/emailnator-provider.js
+	const EMAILNATOR_BASE_URL = "https://www.emailnator.com";
+	const GENERATE_EMAIL_TYPES = ["dotGmail"];
+	function normalizeText(value) {
+		return typeof value === "string" ? value.trim() : "";
+	}
+	function buildCookieJar() {
+		const store = new Map();
+		return {
+			applyResponseHeaders(rawHeaders = "") {
+				const lines = String(rawHeaders || "").split(/\r?\n/);
+				for (const line of lines) {
+					const colonIndex = line.indexOf(":");
+					if (colonIndex <= 0) continue;
+					const key = line.slice(0, colonIndex).trim().toLowerCase();
+					if (key !== "set-cookie") continue;
+					const rawCookie = line.slice(colonIndex + 1).trim();
+					if (!rawCookie) continue;
+					const cookiePair = rawCookie.split(";", 1)[0];
+					const equalIndex = cookiePair.indexOf("=");
+					if (equalIndex <= 0) continue;
+					const name = cookiePair.slice(0, equalIndex).trim();
+					const value = cookiePair.slice(equalIndex + 1).trim();
+					if (!name) continue;
+					if (!value) {
+						store.delete(name);
+						continue;
+					}
+					store.set(name, value);
+				}
+			},
+			get(name) {
+				return store.get(name) || "";
+			},
+			toHeader() {
+				return Array.from(store.entries()).map(([name, value]) => `${name}=${value}`).join("; ");
+			}
+		};
+	}
+	function decodeXsrfToken(value) {
+		if (!value) return "";
+		try {
+			return decodeURIComponent(value);
+		} catch {
+			return value;
+		}
+	}
+	function buildBaseHeaders(jar, { includeJsonContentType = false } = {}) {
+		const headers = {
+			Accept: "application/json, text/plain, */*",
+			Origin: EMAILNATOR_BASE_URL,
+			Referer: `${EMAILNATOR_BASE_URL}/`,
+			"X-Requested-With": "XMLHttpRequest"
+		};
+		const xsrfToken = decodeXsrfToken(jar.get("XSRF-TOKEN"));
+		if (xsrfToken) {
+			headers["X-XSRF-TOKEN"] = xsrfToken;
+		}
+		if (includeJsonContentType) {
+			headers["Content-Type"] = "application/json";
+		}
+		return headers;
+	}
+	async function requestEmailnator(path, { method = "GET", body, jar, expectJson = true } = {}) {
+		const cookieHeader = jar.toHeader();
+		const response = await gmRequest({
+			method,
+			url: `${EMAILNATOR_BASE_URL}${path}`,
+			headers: {
+				...buildBaseHeaders(jar, { includeJsonContentType: body !== undefined }),
+				...cookieHeader ? { Cookie: cookieHeader } : {}
+			},
+			cookie: cookieHeader || undefined,
+			data: body === undefined ? undefined : JSON.stringify(body),
+			timeout: 3e4,
+			anonymous: true
+		});
+		jar.applyResponseHeaders(response.responseHeaders || "");
+		const status = Number(response.status || 0);
+		if (status < 200 || status >= 300) {
+			throw new Error(`Emailnator 请求失败 (${status || "unknown"})`);
+		}
+		const raw = response.responseText || "";
+		if (!expectJson) {
+			return raw;
+		}
+		try {
+			return JSON.parse(raw);
+		} catch {
+			throw new Error("Emailnator 返回了无法解析的 JSON");
+		}
+	}
+	async function bootstrapSession() {
+		const jar = buildCookieJar();
+		await requestEmailnator("/", {
+			method: "GET",
+			jar,
+			expectJson: false
+		});
+		if (!jar.get("XSRF-TOKEN") || !jar.get("gmailnator_session")) {
+			throw new Error("Emailnator 会话初始化失败");
+		}
+		return jar;
+	}
+	function fallbackHtmlToText(html) {
+		return String(html || "").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+	}
+	function resolveRelativeTimeSeconds(unit) {
+		switch (unit) {
+			case "second":
+			case "sec": return 1;
+			case "minute":
+			case "min": return 60;
+			case "hour": return 3600;
+			case "day": return 86400;
+			case "week": return 604800;
+			case "month": return 2592e3;
+			case "year": return 31536e3;
+			default: return 0;
+		}
+	}
+	function parseTimeTextToTimestamp(timeText) {
+		const normalized = normalizeText(timeText);
+		if (!normalized) {
+			return 0;
+		}
+		const parsedDate = Date.parse(normalized);
+		if (Number.isFinite(parsedDate)) {
+			return Math.floor(parsedDate / 1e3);
+		}
+		const lowerText = normalized.toLowerCase();
+		const now = Math.floor(Date.now() / 1e3);
+		if (lowerText === "just now") {
+			return now;
+		}
+		if (lowerText === "yesterday") {
+			return now - 86400;
+		}
+		const match = lowerText.match(/(\d+)\s*(second|sec|minute|min|hour|day|week|month|year)s?\s*ago/);
+		if (!match) {
+			return 0;
+		}
+		const count = Number(match[1] || 0);
+		const unitSeconds = resolveRelativeTimeSeconds(match[2]);
+		if (!Number.isFinite(count) || !unitSeconds) {
+			return 0;
+		}
+		return now - count * unitSeconds;
+	}
+	function htmlToText(html) {
+		const rawHtml = normalizeText(html);
+		if (!rawHtml) {
+			return "";
+		}
+		try {
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(rawHtml, "text/html");
+			doc.querySelectorAll("script, style, noscript, template").forEach((node) => node.remove());
+			const body = doc.body;
+			if (!body) {
+				return fallbackHtmlToText(rawHtml);
+			}
+			body.querySelectorAll("br").forEach((node) => node.replaceWith("\n"));
+			body.querySelectorAll("p, div, section, article, header, footer, aside, li, tr, td, th, h1, h2, h3, h4, h5, h6").forEach((node) => node.append("\n"));
+			const text = body.innerText || body.textContent || "";
+			return text.replace(/\u00a0/g, " ").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+		} catch {
+			return fallbackHtmlToText(rawHtml);
+		}
+	}
+	function normalizeMessage(message, htmlContent = "") {
+		const html = normalizeText(htmlContent);
+		const content = html ? htmlToText(html) : "";
+		const timeText = normalizeText(message?.time);
+		return {
+			subject: normalizeText(message?.subject),
+			from: normalizeText(message?.from),
+			messageId: normalizeText(message?.messageID),
+			time: timeText,
+			timeText,
+			timestamp: parseTimeTextToTimestamp(timeText),
+			html_content: html,
+			content
+		};
+	}
+	async function fetchMessageDetail(jar, email, messageId) {
+		if (!messageId) {
+			return "";
+		}
+		return requestEmailnator("/message-list", {
+			method: "POST",
+			body: {
+				email,
+				messageID: messageId
+			},
+			jar,
+			expectJson: false
+		});
+	}
+	const EmailnatorProvider = {
+		id: "emailnator",
+		name: "Emailnator",
+		supportsUsage: false,
+		requiresApiKey: false,
+		baseUrl: EMAILNATOR_BASE_URL,
+		async generateEmail() {
+			const jar = await bootstrapSession();
+			const payload = await requestEmailnator("/generate-email", {
+				method: "POST",
+				body: { email: GENERATE_EMAIL_TYPES },
+				jar
+			});
+			const email = Array.isArray(payload?.email) ? normalizeText(payload.email[0]) : "";
+			if (!email) {
+				throw new Error("Emailnator 未返回有效邮箱");
+			}
+			return email;
+		},
+		async getEmails(email) {
+			const normalizedEmail = normalizeText(email);
+			if (!normalizedEmail) {
+				return [];
+			}
+			const jar = await bootstrapSession();
+			const payload = await requestEmailnator("/message-list", {
+				method: "POST",
+				body: { email: normalizedEmail },
+				jar
+			});
+			const messages = Array.isArray(payload?.messageData) ? payload.messageData : [];
+			const normalizedMessages = await Promise.all(messages.map(async (message) => {
+				const messageId = normalizeText(message?.messageID);
+				if (!messageId) {
+					return normalizeMessage(message);
+				}
+				try {
+					const htmlContent = await fetchMessageDetail(jar, normalizedEmail, messageId);
+					return normalizeMessage(message, htmlContent);
+				} catch {
+					return normalizeMessage(message);
+				}
+			}));
+			return normalizedMessages;
+		}
+	};
+
+//#endregion
+//#region src/services/mail/provider-registry.js
+	const MAIL_PROVIDERS = [GPTMailProvider, EmailnatorProvider];
+	function getMailProviderById(providerId) {
+		return MAIL_PROVIDERS.find((provider) => provider.id === providerId) || null;
+	}
+
+//#endregion
 //#region src/utils/retry-policy.js
 	function resolveRetryAttempts(maxAttempts, fallback = 3) {
 		const parsed = Number(maxAttempts);
@@ -200,31 +550,210 @@
 	}
 
 //#endregion
-//#region src/services/api-service.js
+//#region src/services/mail-service.js
 	const DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2 = 3;
+	const DEFAULT_PROVIDER_ID = MAIL_PROVIDERS[0]?.id || "gptmail";
 	const usageListeners = new Set();
-	const ApiService = {
-		getApiKey() {
-			return gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, CONFIG.DEFAULT_API_KEY);
+	function isPlainObject(value) {
+		return !!value && typeof value === "object" && !Array.isArray(value);
+	}
+	function toNumber(value, fallback = 0) {
+		const numericValue = Number(value);
+		return Number.isFinite(numericValue) ? numericValue : fallback;
+	}
+	function clampPercentage(value) {
+		return Math.max(0, Math.min(toNumber(value, 0), 100));
+	}
+	function getProviderDefaultApiKey(provider) {
+		return typeof provider?.defaultApiKey === "string" ? provider.defaultApiKey : "";
+	}
+	function readProviderApiKeys() {
+		const stored = gmGetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_API_KEYS, null);
+		if (isPlainObject(stored)) {
+			return { ...stored };
+		}
+		const legacyKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, "");
+		return legacyKey ? { [DEFAULT_PROVIDER_ID]: legacyKey } : {};
+	}
+	function writeProviderApiKeys(providerApiKeys) {
+		gmSetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_API_KEYS, providerApiKeys);
+		const defaultProviderKey = providerApiKeys?.[DEFAULT_PROVIDER_ID];
+		if (typeof defaultProviderKey === "string") {
+			gmSetValue(CONFIG.STORAGE_KEYS.API_KEY, defaultProviderKey);
+		}
+	}
+	function readUsageSnapshots() {
+		const stored = gmGetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_USAGE_SNAPSHOTS, null);
+		if (isPlainObject(stored)) {
+			return { ...stored };
+		}
+		return {};
+	}
+	function writeUsageSnapshots(usageSnapshots) {
+		gmSetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_USAGE_SNAPSHOTS, usageSnapshots);
+	}
+	function createFallbackUsageSnapshot(provider) {
+		const supportsUsage = provider?.supportsUsage !== false;
+		const limit = supportsUsage ? Math.max(0, toNumber(provider?.defaultQuotaLimit, CONFIG.API_QUOTA_LIMIT)) : 0;
+		return {
+			providerId: provider?.id || DEFAULT_PROVIDER_ID,
+			supportsUsage,
+			used: 0,
+			limit,
+			remaining: limit,
+			percentage: 0,
+			dailyLimit: 0,
+			dailyUsed: 0,
+			dailyRemaining: -1,
+			totalLimit: limit,
+			totalUsed: 0,
+			totalRemaining: limit,
+			hasUsage: false,
+			usageStatus: supportsUsage ? "pending" : "unsupported",
+			raw: null
+		};
+	}
+	function normalizeStoredUsageSnapshot(provider, snapshot) {
+		const fallback = createFallbackUsageSnapshot(provider);
+		if (!isPlainObject(snapshot)) {
+			return fallback;
+		}
+		const limit = Math.max(0, toNumber(snapshot.limit ?? snapshot.totalLimit, fallback.limit));
+		const used = Math.max(0, toNumber(snapshot.used ?? snapshot.totalUsed, 0));
+		const remaining = Number.isFinite(Number(snapshot.remaining)) ? Number(snapshot.remaining) : limit - used;
+		const percentage = limit > 0 ? clampPercentage(snapshot.percentage ?? used / limit * 100) : 0;
+		const dailyLimit = Math.max(0, toNumber(snapshot.dailyLimit, 0));
+		const dailyUsed = Math.max(0, toNumber(snapshot.dailyUsed, 0));
+		const dailyRemaining = Number.isFinite(Number(snapshot.dailyRemaining)) ? Number(snapshot.dailyRemaining) : dailyLimit > 0 ? dailyLimit - dailyUsed : -1;
+		const totalLimit = Math.max(0, toNumber(snapshot.totalLimit, limit));
+		const totalUsed = Math.max(0, toNumber(snapshot.totalUsed, used));
+		const totalRemaining = Number.isFinite(Number(snapshot.totalRemaining)) ? Number(snapshot.totalRemaining) : remaining;
+		return {
+			...fallback,
+			...snapshot,
+			providerId: provider.id,
+			used,
+			limit,
+			remaining,
+			percentage,
+			dailyLimit,
+			dailyUsed,
+			dailyRemaining,
+			totalLimit,
+			totalUsed,
+			totalRemaining,
+			supportsUsage: snapshot.supportsUsage !== false,
+			hasUsage: snapshot.hasUsage === true,
+			usageStatus: snapshot.hasUsage === true ? "available" : snapshot.usageStatus || fallback.usageStatus,
+			raw: isPlainObject(snapshot.raw) ? snapshot.raw : null
+		};
+	}
+	const MailService = {
+		listProviders() {
+			return MAIL_PROVIDERS.map((provider) => ({
+				id: provider.id,
+				name: provider.name,
+				supportsUsage: provider.supportsUsage !== false,
+				requiresApiKey: provider.requiresApiKey !== false,
+				apiKeyLabel: provider.apiKeyLabel,
+				apiKeyPlaceholder: provider.apiKeyPlaceholder
+			}));
 		},
-		setApiKey(key) {
-			gmSetValue(CONFIG.STORAGE_KEYS.API_KEY, key);
-			this.resetUsageCount();
+		resolveProvider(providerId = this.getCurrentProviderId()) {
+			const provider = getMailProviderById(providerId);
+			if (!provider) {
+				throw new Error(`未找到邮件提供商: ${providerId}`);
+			}
+			return provider;
 		},
-		getUsageCount() {
-			return gmGetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
+		getCurrentProviderId() {
+			const savedProviderId = gmGetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_ID, DEFAULT_PROVIDER_ID);
+			return getMailProviderById(savedProviderId) ? savedProviderId : DEFAULT_PROVIDER_ID;
 		},
-		getUsageSnapshot() {
-			const used = this.getUsageCount();
-			const limit = CONFIG.API_QUOTA_LIMIT;
-			const remaining = this.getRemainingQuota();
-			const percentage = limit > 0 ? Math.min(used / limit * 100, 100) : 0;
+		setCurrentProviderId(providerId) {
+			const provider = this.resolveProvider(providerId);
+			gmSetValue(CONFIG.STORAGE_KEYS.MAIL_PROVIDER_ID, provider.id);
+			this.emitUsageChange(this.getUsageSnapshot(provider.id));
+			return provider.id;
+		},
+		getCurrentProvider() {
+			return this.resolveProvider();
+		},
+		getCurrentProviderMeta(providerId = this.getCurrentProviderId()) {
+			const provider = this.resolveProvider(providerId);
 			return {
-				used,
-				limit,
-				remaining,
-				percentage
+				id: provider.id,
+				name: provider.name,
+				supportsUsage: provider.supportsUsage !== false,
+				requiresApiKey: provider.requiresApiKey !== false,
+				apiKeyLabel: provider.apiKeyLabel || "邮件 API Key",
+				apiKeyPlaceholder: provider.apiKeyPlaceholder || "输入你的邮件 API Key",
+				defaultApiKey: getProviderDefaultApiKey(provider)
 			};
+		},
+		getDefaultApiKey(providerId = this.getCurrentProviderId()) {
+			return this.getCurrentProviderMeta(providerId).defaultApiKey;
+		},
+		getApiKey(providerId = this.getCurrentProviderId()) {
+			const provider = this.resolveProvider(providerId);
+			const providerApiKeys = readProviderApiKeys();
+			const savedKey = typeof providerApiKeys[provider.id] === "string" ? providerApiKeys[provider.id].trim() : "";
+			return savedKey || this.getDefaultApiKey(provider.id);
+		},
+		setApiKey(key, providerId = this.getCurrentProviderId()) {
+			const provider = this.resolveProvider(providerId);
+			const normalizedKey = provider.requiresApiKey === false ? "" : typeof key === "string" && key.trim() ? key.trim() : this.getDefaultApiKey(provider.id);
+			const providerApiKeys = readProviderApiKeys();
+			if (normalizedKey) {
+				providerApiKeys[provider.id] = normalizedKey;
+			} else {
+				delete providerApiKeys[provider.id];
+			}
+			writeProviderApiKeys(providerApiKeys);
+			this.clearUsageSnapshot(provider.id, { emit: provider.id === this.getCurrentProviderId() });
+			return normalizedKey;
+		},
+		getUsageCount(providerId = this.getCurrentProviderId()) {
+			return this.getUsageSnapshot(providerId).used;
+		},
+		getRemainingQuota(providerId = this.getCurrentProviderId()) {
+			return this.getUsageSnapshot(providerId).remaining;
+		},
+		getUsageSnapshot(providerId = this.getCurrentProviderId()) {
+			const provider = this.resolveProvider(providerId);
+			const usageSnapshots = readUsageSnapshots();
+			return normalizeStoredUsageSnapshot(provider, usageSnapshots[provider.id]);
+		},
+		updateUsageSnapshot(snapshot, providerId = this.getCurrentProviderId()) {
+			const provider = this.resolveProvider(providerId);
+			if (!snapshot) {
+				return this.getUsageSnapshot(provider.id);
+			}
+			const normalizedSnapshot = normalizeStoredUsageSnapshot(provider, {
+				...snapshot,
+				hasUsage: snapshot.hasUsage !== false
+			});
+			const usageSnapshots = readUsageSnapshots();
+			usageSnapshots[provider.id] = normalizedSnapshot;
+			writeUsageSnapshots(usageSnapshots);
+			if (provider.id === this.getCurrentProviderId()) {
+				this.emitUsageChange(normalizedSnapshot);
+			}
+			return normalizedSnapshot;
+		},
+		resetUsageCount(providerId = this.getCurrentProviderId()) {
+			this.clearUsageSnapshot(providerId);
+		},
+		clearUsageSnapshot(providerId = this.getCurrentProviderId(), { emit = true } = {}) {
+			const provider = this.resolveProvider(providerId);
+			const usageSnapshots = readUsageSnapshots();
+			if (provider.id in usageSnapshots) {
+				delete usageSnapshots[provider.id];
+				writeUsageSnapshots(usageSnapshots);
+			}
+			if (emit) {
+				this.emitUsageChange(this.getUsageSnapshot(provider.id));
+			}
 		},
 		subscribeUsageChange(listener) {
 			if (typeof listener !== "function") {
@@ -236,28 +765,12 @@
 			};
 		},
 		emitUsageChange(snapshot = this.getUsageSnapshot()) {
+			const normalizedSnapshot = normalizeStoredUsageSnapshot(this.getCurrentProvider(), snapshot);
 			for (const listener of usageListeners) {
 				try {
-					listener(snapshot);
+					listener(normalizedSnapshot);
 				} catch {}
 			}
-		},
-		incrementUsageCount() {
-			const count = this.getUsageCount() + 1;
-			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, count);
-			this.emitUsageChange(this.getUsageSnapshot());
-			return count;
-		},
-		resetUsageCount() {
-			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_COUNT, 0);
-			gmSetValue(CONFIG.STORAGE_KEYS.API_USAGE_RESET_DATE, new Date().toISOString());
-			this.emitUsageChange(this.getUsageSnapshot());
-		},
-		getRemainingQuota() {
-			return CONFIG.API_QUOTA_LIMIT - this.getUsageCount();
-		},
-		isQuotaExceeded() {
-			return this.getUsageCount() >= CONFIG.API_QUOTA_LIMIT;
 		},
 		resolveRetryAttempts(maxAttempts) {
 			return resolveRetryAttempts(maxAttempts, DEFAULT_OBJECTIVE_RETRY_ATTEMPTS$2);
@@ -266,11 +779,12 @@
 			return isRetryableNetworkError(error, { includeHttpStatus: false });
 		},
 		async request(endpoint, options = {}) {
+			const provider = this.resolveProvider(options.providerId);
 			const attempts = this.resolveRetryAttempts(options.maxAttempts);
 			let lastError = null;
 			for (let attempt = 1; attempt <= attempts; attempt++) {
 				try {
-					return await this.requestOnce(endpoint, options);
+					return await this.requestOnce(provider, endpoint, options);
 				} catch (error) {
 					lastError = error;
 					const hasNext = attempt < attempts;
@@ -283,56 +797,72 @@
 			}
 			throw lastError || new Error("请求失败");
 		},
-		requestOnce(endpoint, options = {}) {
-			return new Promise((resolve, reject) => {
-				if (this.isQuotaExceeded()) {
-					reject(new Error(`API 配额已用完 (${this.getUsageCount()}/${CONFIG.API_QUOTA_LIMIT})`));
-					return;
-				}
-				const url = `${CONFIG.API_BASE}${endpoint}`;
-				gmXmlHttpRequest({
-					method: options.method || "GET",
-					url,
-					anonymous: true,
-					headers: {
-						"X-API-Key": this.getApiKey(),
-						"Content-Type": "application/json",
-						...options.headers
-					},
-					data: options.body ? JSON.stringify(options.body) : undefined,
-					timeout: options.timeout ?? 3e4,
-					onload: (response) => {
-						try {
-							const data = JSON.parse(response.responseText);
-							if (data.success) {
-								this.incrementUsageCount();
-								resolve(data.data);
-							} else {
-								reject(new Error(data.error || "请求失败"));
-							}
-						} catch {
-							reject(new Error("解析响应失败"));
-						}
-					},
-					onerror: (error) => {
-						reject(new Error(error?.error || "网络请求失败"));
-					},
-					ontimeout: () => {
-						reject(new Error("网络请求超时"));
-					},
-					onabort: () => {
-						reject(new Error("网络请求被中止"));
-					}
-				});
+		async requestOnce(provider, endpoint, options = {}) {
+			const response = await gmRequestJson({
+				method: options.method || "GET",
+				url: `${provider.baseUrl}${endpoint}`,
+				headers: typeof provider.buildHeaders === "function" ? provider.buildHeaders({
+					apiKey: this.getApiKey(provider.id),
+					headers: options.headers
+				}) : options.headers || {},
+				body: options.body,
+				rawBody: options.rawBody,
+				timeout: options.timeout ?? 3e4,
+				anonymous: options.anonymous ?? true
 			});
+			if (!response.json) {
+				throw new Error("解析响应失败");
+			}
+			const parsedResponse = provider.parseResponsePayload(response.json, {
+				endpoint,
+				status: response.status,
+				headers: response.headers
+			});
+			const usageSnapshot = typeof provider.normalizeUsage === "function" ? provider.normalizeUsage(parsedResponse.usage) : null;
+			if (usageSnapshot) {
+				this.updateUsageSnapshot(usageSnapshot, provider.id);
+			}
+			return parsedResponse.data;
 		},
 		async generateEmail() {
-			const data = await this.request("/generate-email");
-			return data.email;
+			const provider = this.getCurrentProvider();
+			if (typeof provider.generateEmail === "function") {
+				return provider.generateEmail({
+					mailService: this,
+					provider
+				});
+			}
+			const requestConfig = provider.createGenerateEmailRequest();
+			const data = await this.request(requestConfig.endpoint, {
+				providerId: provider.id,
+				method: requestConfig.method,
+				headers: requestConfig.headers,
+				body: requestConfig.body,
+				rawBody: requestConfig.rawBody,
+				timeout: requestConfig.timeout,
+				anonymous: requestConfig.anonymous
+			});
+			return provider.extractGeneratedEmail(data);
 		},
 		async getEmails(email) {
-			const data = await this.request(`/emails?email=${encodeURIComponent(email)}`);
-			return data.emails || [];
+			const provider = this.getCurrentProvider();
+			if (typeof provider.getEmails === "function") {
+				return provider.getEmails(email, {
+					mailService: this,
+					provider
+				});
+			}
+			const requestConfig = provider.createGetEmailsRequest(email);
+			const data = await this.request(requestConfig.endpoint, {
+				providerId: provider.id,
+				method: requestConfig.method,
+				headers: requestConfig.headers,
+				body: requestConfig.body,
+				rawBody: requestConfig.rawBody,
+				timeout: requestConfig.timeout,
+				anonymous: requestConfig.anonymous
+			});
+			return provider.extractEmails(data);
 		}
 	};
 
@@ -385,8 +915,1618 @@
 	}
 
 //#endregion
+//#region src/vendor/marked.esm.js
+/**
+	* marked v17.0.4 - a markdown parser
+	* Copyright (c) 2018-2026, MarkedJS. (MIT License)
+	* Copyright (c) 2011-2018, Christopher Jeffrey. (MIT License)
+	* https://github.com/markedjs/marked
+	*/
+	/**
+	* DO NOT EDIT THIS FILE
+	* The code in this file is generated from files in ./src/
+	*/
+	function M() {
+		return {
+			async: !1,
+			breaks: !1,
+			extensions: null,
+			gfm: !0,
+			hooks: null,
+			pedantic: !1,
+			renderer: null,
+			silent: !1,
+			tokenizer: null,
+			walkTokens: null
+		};
+	}
+	var T = M();
+	function G(u) {
+		T = u;
+	}
+	var _ = { exec: () => null };
+	function k(u, e = "") {
+		let t = typeof u == "string" ? u : u.source, n = {
+			replace: (r, i) => {
+				let s = typeof i == "string" ? i : i.source;
+				return s = s.replace(m.caret, "$1"), t = t.replace(r, s), n;
+			},
+			getRegex: () => new RegExp(t, e)
+		};
+		return n;
+	}
+	var Re = (() => {
+		try {
+			return !!new RegExp("(?<=1)(?<!1)");
+		} catch {
+			return !1;
+		}
+	})(), m = {
+		codeRemoveIndent: /^(?: {1,4}| {0,3}\t)/gm,
+		outputLinkReplace: /\\([\[\]])/g,
+		indentCodeCompensation: /^(\s+)(?:```)/,
+		beginningSpace: /^\s+/,
+		endingHash: /#$/,
+		startingSpaceChar: /^ /,
+		endingSpaceChar: / $/,
+		nonSpaceChar: /[^ ]/,
+		newLineCharGlobal: /\n/g,
+		tabCharGlobal: /\t/g,
+		multipleSpaceGlobal: /\s+/g,
+		blankLine: /^[ \t]*$/,
+		doubleBlankLine: /\n[ \t]*\n[ \t]*$/,
+		blockquoteStart: /^ {0,3}>/,
+		blockquoteSetextReplace: /\n {0,3}((?:=+|-+) *)(?=\n|$)/g,
+		blockquoteSetextReplace2: /^ {0,3}>[ \t]?/gm,
+		listReplaceNesting: /^ {1,4}(?=( {4})*[^ ])/g,
+		listIsTask: /^\[[ xX]\] +\S/,
+		listReplaceTask: /^\[[ xX]\] +/,
+		listTaskCheckbox: /\[[ xX]\]/,
+		anyLine: /\n.*\n/,
+		hrefBrackets: /^<(.*)>$/,
+		tableDelimiter: /[:|]/,
+		tableAlignChars: /^\||\| *$/g,
+		tableRowBlankLine: /\n[ \t]*$/,
+		tableAlignRight: /^ *-+: *$/,
+		tableAlignCenter: /^ *:-+: *$/,
+		tableAlignLeft: /^ *:-+ *$/,
+		startATag: /^<a /i,
+		endATag: /^<\/a>/i,
+		startPreScriptTag: /^<(pre|code|kbd|script)(\s|>)/i,
+		endPreScriptTag: /^<\/(pre|code|kbd|script)(\s|>)/i,
+		startAngleBracket: /^</,
+		endAngleBracket: />$/,
+		pedanticHrefTitle: /^([^'"]*[^\s])\s+(['"])(.*)\2/,
+		unicodeAlphaNumeric: /[\p{L}\p{N}]/u,
+		escapeTest: /[&<>"']/,
+		escapeReplace: /[&<>"']/g,
+		escapeTestNoEncode: /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/,
+		escapeReplaceNoEncode: /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g,
+		caret: /(^|[^\[])\^/g,
+		percentDecode: /%25/g,
+		findPipe: /\|/g,
+		splitPipe: / \|/,
+		slashPipe: /\\\|/g,
+		carriageReturn: /\r\n|\r/g,
+		spaceLine: /^ +$/gm,
+		notSpaceStart: /^\S*/,
+		endingNewline: /\n$/,
+		listItemRegex: (u) => new RegExp(`^( {0,3}${u})((?:[	 ][^\\n]*)?(?:\\n|$))`),
+		nextBulletRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ 	][^\\n]*)?(?:\\n|$))`),
+		hrRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`),
+		fencesBeginRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}(?:\`\`\`|~~~)`),
+		headingBeginRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}#`),
+		htmlBeginRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}<(?:[a-z].*>|!--)`, "i"),
+		blockquoteBeginRegex: (u) => new RegExp(`^ {0,${Math.min(3, u - 1)}}>`)
+	}, Te = /^(?:[ \t]*(?:\n|$))+/, Oe = /^((?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/, we = /^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/, A = /^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/, ye = /^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/, N = / {0,3}(?:[*+-]|\d{1,9}[.)])/, re = /^(?!bull |blockCode|fences|blockquote|heading|html|table)((?:.|\n(?!\s*?\n|bull |blockCode|fences|blockquote|heading|html|table))+?)\n {0,3}(=+|-+) *(?:\n+|$)/, se = k(re).replace(/bull/g, N).replace(/blockCode/g, /(?: {4}| {0,3}\t)/).replace(/fences/g, / {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g, / {0,3}>/).replace(/heading/g, / {0,3}#{1,6}/).replace(/html/g, / {0,3}<[^\n>]+>\n/).replace(/\|table/g, "").getRegex(), Pe = k(re).replace(/bull/g, N).replace(/blockCode/g, /(?: {4}| {0,3}\t)/).replace(/fences/g, / {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g, / {0,3}>/).replace(/heading/g, / {0,3}#{1,6}/).replace(/html/g, / {0,3}<[^\n>]+>\n/).replace(/table/g, / {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/).getRegex(), Q = /^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/, Se = /^[^\n]+/, j = /(?!\s*\])(?:\\[\s\S]|[^\[\]\\])+/, $e = k(/^ {0,3}\[(label)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)(title))? *(?:\n+|$)/).replace("label", j).replace("title", /(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex(), _e = k(/^(bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g, N).getRegex(), q = "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul", F = /<!--(?:-?>|[\s\S]*?(?:-->|$))/, Le = k("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$))", "i").replace("comment", F).replace("tag", q).replace("attribute", / +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex(), ie = k(Q).replace("hr", A).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("|table", "").replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", q).getRegex(), Me = k(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph", ie).getRegex(), U = {
+		blockquote: Me,
+		code: Oe,
+		def: $e,
+		fences: we,
+		heading: ye,
+		hr: A,
+		html: Le,
+		lheading: se,
+		list: _e,
+		newline: Te,
+		paragraph: ie,
+		table: _,
+		text: Se
+	}, te = k("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr", A).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("blockquote", " {0,3}>").replace("code", "(?: {4}| {0,3}	)[^\\n]").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", q).getRegex(), ze = {
+		...U,
+		lheading: Pe,
+		table: te,
+		paragraph: k(Q).replace("hr", A).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("table", te).replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", q).getRegex()
+	}, Ee = {
+		...U,
+		html: k(`^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:"[^"]*"|'[^']*'|\\s[^'"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))`).replace("comment", F).replace(/tag/g, "(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(),
+		def: /^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/,
+		heading: /^(#{1,6})(.*)(?:\n+|$)/,
+		fences: _,
+		lheading: /^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/,
+		paragraph: k(Q).replace("hr", A).replace("heading", ` *#{1,6} *[^
+]`).replace("lheading", se).replace("|table", "").replace("blockquote", " {0,3}>").replace("|fences", "").replace("|list", "").replace("|html", "").replace("|tag", "").getRegex()
+	}, Ie = /^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/, Ae = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/, oe = /^( {2,}|\\)\n(?!\s*$)/, Ce = /^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/, v = /[\p{P}\p{S}]/u, K = /[\s\p{P}\p{S}]/u, ae = /[^\s\p{P}\p{S}]/u, Be = k(/^((?![*_])punctSpace)/, "u").replace(/punctSpace/g, K).getRegex(), le = /(?!~)[\p{P}\p{S}]/u, De = /(?!~)[\s\p{P}\p{S}]/u, qe = /(?:[^\s\p{P}\p{S}]|~)/u, ue = /(?![*_])[\p{P}\p{S}]/u, ve = /(?![*_])[\s\p{P}\p{S}]/u, He = /(?:[^\s\p{P}\p{S}]|[*_])/u, Ge = k(/link|precode-code|html/, "g").replace("link", /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/).replace("precode-", Re ? "(?<!`)()" : "(^^|[^`])").replace("code", /(?<b>`+)[^`]+\k<b>(?!`)/).replace("html", /<(?! )[^<>]*?>/).getRegex(), pe = /^(?:\*+(?:((?!\*)punct)|[^\s*]))|^_+(?:((?!_)punct)|([^\s_]))/, Ze = k(pe, "u").replace(/punct/g, v).getRegex(), Ne = k(pe, "u").replace(/punct/g, le).getRegex(), ce = "^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)punct(\\*+)(?=[\\s]|$)|notPunctSpace(\\*+)(?!\\*)(?=punctSpace|$)|(?!\\*)punctSpace(\\*+)(?=notPunctSpace)|[\\s](\\*+)(?!\\*)(?=punct)|(?!\\*)punct(\\*+)(?!\\*)(?=punct)|notPunctSpace(\\*+)(?=notPunctSpace)", Qe = k(ce, "gu").replace(/notPunctSpace/g, ae).replace(/punctSpace/g, K).replace(/punct/g, v).getRegex(), je = k(ce, "gu").replace(/notPunctSpace/g, qe).replace(/punctSpace/g, De).replace(/punct/g, le).getRegex(), Fe = k("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)punct(_+)(?=[\\s]|$)|notPunctSpace(_+)(?!_)(?=punctSpace|$)|(?!_)punctSpace(_+)(?=notPunctSpace)|[\\s](_+)(?!_)(?=punct)|(?!_)punct(_+)(?!_)(?=punct)", "gu").replace(/notPunctSpace/g, ae).replace(/punctSpace/g, K).replace(/punct/g, v).getRegex(), Ue = k(/^~~?(?:((?!~)punct)|[^\s~])/, "u").replace(/punct/g, ue).getRegex(), Ke = "^[^~]+(?=[^~])|(?!~)punct(~~?)(?=[\\s]|$)|notPunctSpace(~~?)(?!~)(?=punctSpace|$)|(?!~)punctSpace(~~?)(?=notPunctSpace)|[\\s](~~?)(?!~)(?=punct)|(?!~)punct(~~?)(?!~)(?=punct)|notPunctSpace(~~?)(?=notPunctSpace)", We = k(Ke, "gu").replace(/notPunctSpace/g, He).replace(/punctSpace/g, ve).replace(/punct/g, ue).getRegex(), Xe = k(/\\(punct)/, "gu").replace(/punct/g, v).getRegex(), Je = k(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme", /[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email", /[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex(), Ve = k(F).replace("(?:-->|$)", "-->").getRegex(), Ye = k("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment", Ve).replace("attribute", /\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex(), D = /(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+[^`]*?`+(?!`)|[^\[\]\\`])*?/, et = k(/^!?\[(label)\]\(\s*(href)(?:(?:[ \t]+(?:\n[ \t]*)?|\n[ \t]*)(title))?\s*\)/).replace("label", D).replace("href", /<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]*/).replace("title", /"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex(), he = k(/^!?\[(label)\]\[(ref)\]/).replace("label", D).replace("ref", j).getRegex(), ke = k(/^!?\[(ref)\](?:\[\])?/).replace("ref", j).getRegex(), tt = k("reflink|nolink(?!\\()", "g").replace("reflink", he).replace("nolink", ke).getRegex(), ne = /[hH][tT][tT][pP][sS]?|[fF][tT][pP]/, W = {
+		_backpedal: _,
+		anyPunctuation: Xe,
+		autolink: Je,
+		blockSkip: Ge,
+		br: oe,
+		code: Ae,
+		del: _,
+		delLDelim: _,
+		delRDelim: _,
+		emStrongLDelim: Ze,
+		emStrongRDelimAst: Qe,
+		emStrongRDelimUnd: Fe,
+		escape: Ie,
+		link: et,
+		nolink: ke,
+		punctuation: Be,
+		reflink: he,
+		reflinkSearch: tt,
+		tag: Ye,
+		text: Ce,
+		url: _
+	}, nt = {
+		...W,
+		link: k(/^!?\[(label)\]\((.*?)\)/).replace("label", D).getRegex(),
+		reflink: k(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label", D).getRegex()
+	}, Z = {
+		...W,
+		emStrongRDelimAst: je,
+		emStrongLDelim: Ne,
+		delLDelim: Ue,
+		delRDelim: We,
+		url: k(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/).replace("protocol", ne).replace("email", /[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(),
+		_backpedal: /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,
+		del: /^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/,
+		text: k(/^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/).replace("protocol", ne).getRegex()
+	}, rt = {
+		...Z,
+		br: k(oe).replace("{2,}", "*").getRegex(),
+		text: k(Z.text).replace("\\b_", "\\b_| {2,}\\n").replace(/\{2,\}/g, "*").getRegex()
+	}, C = {
+		normal: U,
+		gfm: ze,
+		pedantic: Ee
+	}, z = {
+		normal: W,
+		gfm: Z,
+		breaks: rt,
+		pedantic: nt
+	};
+	var st = {
+		"&": "&amp;",
+		"<": "&lt;",
+		">": "&gt;",
+		"\"": "&quot;",
+		"'": "&#39;"
+	}, de = (u) => st[u];
+	function O(u, e) {
+		if (e) {
+			if (m.escapeTest.test(u)) return u.replace(m.escapeReplace, de);
+		} else if (m.escapeTestNoEncode.test(u)) return u.replace(m.escapeReplaceNoEncode, de);
+		return u;
+	}
+	function X(u) {
+		try {
+			u = encodeURI(u).replace(m.percentDecode, "%");
+		} catch {
+			return null;
+		}
+		return u;
+	}
+	function J(u, e) {
+		let t = u.replace(m.findPipe, (i, s, a) => {
+			let o = !1, l = s;
+			for (; --l >= 0 && a[l] === "\\";) o = !o;
+			return o ? "|" : " |";
+		}), n = t.split(m.splitPipe), r = 0;
+		if (n[0].trim() || n.shift(), n.length > 0 && !n.at(-1)?.trim() && n.pop(), e) if (n.length > e) n.splice(e);
+		else for (; n.length < e;) n.push("");
+		for (; r < n.length; r++) n[r] = n[r].trim().replace(m.slashPipe, "|");
+		return n;
+	}
+	function E(u, e, t) {
+		let n = u.length;
+		if (n === 0) return "";
+		let r = 0;
+		for (; r < n;) {
+			let i = u.charAt(n - r - 1);
+			if (i === e && !t) r++;
+			else if (i !== e && t) r++;
+			else break;
+		}
+		return u.slice(0, n - r);
+	}
+	function ge(u, e) {
+		if (u.indexOf(e[1]) === -1) return -1;
+		let t = 0;
+		for (let n = 0; n < u.length; n++) if (u[n] === "\\") n++;
+		else if (u[n] === e[0]) t++;
+		else if (u[n] === e[1] && (t--, t < 0)) return n;
+		return t > 0 ? -2 : -1;
+	}
+	function fe(u, e = 0) {
+		let t = e, n = "";
+		for (let r of u) if (r === "	") {
+			let i = 4 - t % 4;
+			n += " ".repeat(i), t += i;
+		} else n += r, t++;
+		return n;
+	}
+	function me(u, e, t, n, r) {
+		let i = e.href, s = e.title || null, a = u[1].replace(r.other.outputLinkReplace, "$1");
+		n.state.inLink = !0;
+		let o = {
+			type: u[0].charAt(0) === "!" ? "image" : "link",
+			raw: t,
+			href: i,
+			title: s,
+			text: a,
+			tokens: n.inlineTokens(a)
+		};
+		return n.state.inLink = !1, o;
+	}
+	function it(u, e, t) {
+		let n = u.match(t.other.indentCodeCompensation);
+		if (n === null) return e;
+		let r = n[1];
+		return e.split(`
+`).map((i) => {
+			let s = i.match(t.other.beginningSpace);
+			if (s === null) return i;
+			let [a] = s;
+			return a.length >= r.length ? i.slice(r.length) : i;
+		}).join(`
+`);
+	}
+	var w = class {
+		options;
+		rules;
+		lexer;
+		constructor(e) {
+			this.options = e || T;
+		}
+		space(e) {
+			let t = this.rules.block.newline.exec(e);
+			if (t && t[0].length > 0) return {
+				type: "space",
+				raw: t[0]
+			};
+		}
+		code(e) {
+			let t = this.rules.block.code.exec(e);
+			if (t) {
+				let n = t[0].replace(this.rules.other.codeRemoveIndent, "");
+				return {
+					type: "code",
+					raw: t[0],
+					codeBlockStyle: "indented",
+					text: this.options.pedantic ? n : E(n, `
+`)
+				};
+			}
+		}
+		fences(e) {
+			let t = this.rules.block.fences.exec(e);
+			if (t) {
+				let n = t[0], r = it(n, t[3] || "", this.rules);
+				return {
+					type: "code",
+					raw: n,
+					lang: t[2] ? t[2].trim().replace(this.rules.inline.anyPunctuation, "$1") : t[2],
+					text: r
+				};
+			}
+		}
+		heading(e) {
+			let t = this.rules.block.heading.exec(e);
+			if (t) {
+				let n = t[2].trim();
+				if (this.rules.other.endingHash.test(n)) {
+					let r = E(n, "#");
+					(this.options.pedantic || !r || this.rules.other.endingSpaceChar.test(r)) && (n = r.trim());
+				}
+				return {
+					type: "heading",
+					raw: t[0],
+					depth: t[1].length,
+					text: n,
+					tokens: this.lexer.inline(n)
+				};
+			}
+		}
+		hr(e) {
+			let t = this.rules.block.hr.exec(e);
+			if (t) return {
+				type: "hr",
+				raw: E(t[0], `
+`)
+			};
+		}
+		blockquote(e) {
+			let t = this.rules.block.blockquote.exec(e);
+			if (t) {
+				let n = E(t[0], `
+`).split(`
+`), r = "", i = "", s = [];
+				for (; n.length > 0;) {
+					let a = !1, o = [], l;
+					for (l = 0; l < n.length; l++) if (this.rules.other.blockquoteStart.test(n[l])) o.push(n[l]), a = !0;
+					else if (!a) o.push(n[l]);
+					else break;
+					n = n.slice(l);
+					let p = o.join(`
+`), c = p.replace(this.rules.other.blockquoteSetextReplace, `
+    $1`).replace(this.rules.other.blockquoteSetextReplace2, "");
+					r = r ? `${r}
+${p}` : p, i = i ? `${i}
+${c}` : c;
+					let d = this.lexer.state.top;
+					if (this.lexer.state.top = !0, this.lexer.blockTokens(c, s, !0), this.lexer.state.top = d, n.length === 0) break;
+					let h = s.at(-1);
+					if (h?.type === "code") break;
+					if (h?.type === "blockquote") {
+						let R = h, f = R.raw + `
+` + n.join(`
+`), S = this.blockquote(f);
+						s[s.length - 1] = S, r = r.substring(0, r.length - R.raw.length) + S.raw, i = i.substring(0, i.length - R.text.length) + S.text;
+						break;
+					} else if (h?.type === "list") {
+						let R = h, f = R.raw + `
+` + n.join(`
+`), S = this.list(f);
+						s[s.length - 1] = S, r = r.substring(0, r.length - h.raw.length) + S.raw, i = i.substring(0, i.length - R.raw.length) + S.raw, n = f.substring(s.at(-1).raw.length).split(`
+`);
+						continue;
+					}
+				}
+				return {
+					type: "blockquote",
+					raw: r,
+					tokens: s,
+					text: i
+				};
+			}
+		}
+		list(e) {
+			let t = this.rules.block.list.exec(e);
+			if (t) {
+				let n = t[1].trim(), r = n.length > 1, i = {
+					type: "list",
+					raw: "",
+					ordered: r,
+					start: r ? +n.slice(0, -1) : "",
+					loose: !1,
+					items: []
+				};
+				n = r ? `\\d{1,9}\\${n.slice(-1)}` : `\\${n}`, this.options.pedantic && (n = r ? n : "[*+-]");
+				let s = this.rules.other.listItemRegex(n), a = !1;
+				for (; e;) {
+					let l = !1, p = "", c = "";
+					if (!(t = s.exec(e)) || this.rules.block.hr.test(e)) break;
+					p = t[0], e = e.substring(p.length);
+					let d = fe(t[2].split(`
+`, 1)[0], t[1].length), h = e.split(`
+`, 1)[0], R = !d.trim(), f = 0;
+					if (this.options.pedantic ? (f = 2, c = d.trimStart()) : R ? f = t[1].length + 1 : (f = d.search(this.rules.other.nonSpaceChar), f = f > 4 ? 1 : f, c = d.slice(f), f += t[1].length), R && this.rules.other.blankLine.test(h) && (p += h + `
+`, e = e.substring(h.length + 1), l = !0), !l) {
+						let S = this.rules.other.nextBulletRegex(f), V = this.rules.other.hrRegex(f), Y = this.rules.other.fencesBeginRegex(f), ee = this.rules.other.headingBeginRegex(f), xe = this.rules.other.htmlBeginRegex(f), be = this.rules.other.blockquoteBeginRegex(f);
+						for (; e;) {
+							let H = e.split(`
+`, 1)[0], I;
+							if (h = H, this.options.pedantic ? (h = h.replace(this.rules.other.listReplaceNesting, "  "), I = h) : I = h.replace(this.rules.other.tabCharGlobal, "    "), Y.test(h) || ee.test(h) || xe.test(h) || be.test(h) || S.test(h) || V.test(h)) break;
+							if (I.search(this.rules.other.nonSpaceChar) >= f || !h.trim()) c += `
+` + I.slice(f);
+							else {
+								if (R || d.replace(this.rules.other.tabCharGlobal, "    ").search(this.rules.other.nonSpaceChar) >= 4 || Y.test(d) || ee.test(d) || V.test(d)) break;
+								c += `
+` + h;
+							}
+							R = !h.trim(), p += H + `
+`, e = e.substring(H.length + 1), d = I.slice(f);
+						}
+					}
+					i.loose || (a ? i.loose = !0 : this.rules.other.doubleBlankLine.test(p) && (a = !0)), i.items.push({
+						type: "list_item",
+						raw: p,
+						task: !!this.options.gfm && this.rules.other.listIsTask.test(c),
+						loose: !1,
+						text: c,
+						tokens: []
+					}), i.raw += p;
+				}
+				let o = i.items.at(-1);
+				if (o) o.raw = o.raw.trimEnd(), o.text = o.text.trimEnd();
+				else return;
+				i.raw = i.raw.trimEnd();
+				for (let l of i.items) {
+					if (this.lexer.state.top = !1, l.tokens = this.lexer.blockTokens(l.text, []), l.task) {
+						if (l.text = l.text.replace(this.rules.other.listReplaceTask, ""), l.tokens[0]?.type === "text" || l.tokens[0]?.type === "paragraph") {
+							l.tokens[0].raw = l.tokens[0].raw.replace(this.rules.other.listReplaceTask, ""), l.tokens[0].text = l.tokens[0].text.replace(this.rules.other.listReplaceTask, "");
+							for (let c = this.lexer.inlineQueue.length - 1; c >= 0; c--) if (this.rules.other.listIsTask.test(this.lexer.inlineQueue[c].src)) {
+								this.lexer.inlineQueue[c].src = this.lexer.inlineQueue[c].src.replace(this.rules.other.listReplaceTask, "");
+								break;
+							}
+						}
+						let p = this.rules.other.listTaskCheckbox.exec(l.raw);
+						if (p) {
+							let c = {
+								type: "checkbox",
+								raw: p[0] + " ",
+								checked: p[0] !== "[ ]"
+							};
+							l.checked = c.checked, i.loose ? l.tokens[0] && ["paragraph", "text"].includes(l.tokens[0].type) && "tokens" in l.tokens[0] && l.tokens[0].tokens ? (l.tokens[0].raw = c.raw + l.tokens[0].raw, l.tokens[0].text = c.raw + l.tokens[0].text, l.tokens[0].tokens.unshift(c)) : l.tokens.unshift({
+								type: "paragraph",
+								raw: c.raw,
+								text: c.raw,
+								tokens: [c]
+							}) : l.tokens.unshift(c);
+						}
+					}
+					if (!i.loose) {
+						let p = l.tokens.filter((d) => d.type === "space"), c = p.length > 0 && p.some((d) => this.rules.other.anyLine.test(d.raw));
+						i.loose = c;
+					}
+				}
+				if (i.loose) for (let l of i.items) {
+					l.loose = !0;
+					for (let p of l.tokens) p.type === "text" && (p.type = "paragraph");
+				}
+				return i;
+			}
+		}
+		html(e) {
+			let t = this.rules.block.html.exec(e);
+			if (t) return {
+				type: "html",
+				block: !0,
+				raw: t[0],
+				pre: t[1] === "pre" || t[1] === "script" || t[1] === "style",
+				text: t[0]
+			};
+		}
+		def(e) {
+			let t = this.rules.block.def.exec(e);
+			if (t) {
+				let n = t[1].toLowerCase().replace(this.rules.other.multipleSpaceGlobal, " "), r = t[2] ? t[2].replace(this.rules.other.hrefBrackets, "$1").replace(this.rules.inline.anyPunctuation, "$1") : "", i = t[3] ? t[3].substring(1, t[3].length - 1).replace(this.rules.inline.anyPunctuation, "$1") : t[3];
+				return {
+					type: "def",
+					tag: n,
+					raw: t[0],
+					href: r,
+					title: i
+				};
+			}
+		}
+		table(e) {
+			let t = this.rules.block.table.exec(e);
+			if (!t || !this.rules.other.tableDelimiter.test(t[2])) return;
+			let n = J(t[1]), r = t[2].replace(this.rules.other.tableAlignChars, "").split("|"), i = t[3]?.trim() ? t[3].replace(this.rules.other.tableRowBlankLine, "").split(`
+`) : [], s = {
+				type: "table",
+				raw: t[0],
+				header: [],
+				align: [],
+				rows: []
+			};
+			if (n.length === r.length) {
+				for (let a of r) this.rules.other.tableAlignRight.test(a) ? s.align.push("right") : this.rules.other.tableAlignCenter.test(a) ? s.align.push("center") : this.rules.other.tableAlignLeft.test(a) ? s.align.push("left") : s.align.push(null);
+				for (let a = 0; a < n.length; a++) s.header.push({
+					text: n[a],
+					tokens: this.lexer.inline(n[a]),
+					header: !0,
+					align: s.align[a]
+				});
+				for (let a of i) s.rows.push(J(a, s.header.length).map((o, l) => ({
+					text: o,
+					tokens: this.lexer.inline(o),
+					header: !1,
+					align: s.align[l]
+				})));
+				return s;
+			}
+		}
+		lheading(e) {
+			let t = this.rules.block.lheading.exec(e);
+			if (t) return {
+				type: "heading",
+				raw: t[0],
+				depth: t[2].charAt(0) === "=" ? 1 : 2,
+				text: t[1],
+				tokens: this.lexer.inline(t[1])
+			};
+		}
+		paragraph(e) {
+			let t = this.rules.block.paragraph.exec(e);
+			if (t) {
+				let n = t[1].charAt(t[1].length - 1) === `
+` ? t[1].slice(0, -1) : t[1];
+				return {
+					type: "paragraph",
+					raw: t[0],
+					text: n,
+					tokens: this.lexer.inline(n)
+				};
+			}
+		}
+		text(e) {
+			let t = this.rules.block.text.exec(e);
+			if (t) return {
+				type: "text",
+				raw: t[0],
+				text: t[0],
+				tokens: this.lexer.inline(t[0])
+			};
+		}
+		escape(e) {
+			let t = this.rules.inline.escape.exec(e);
+			if (t) return {
+				type: "escape",
+				raw: t[0],
+				text: t[1]
+			};
+		}
+		tag(e) {
+			let t = this.rules.inline.tag.exec(e);
+			if (t) return !this.lexer.state.inLink && this.rules.other.startATag.test(t[0]) ? this.lexer.state.inLink = !0 : this.lexer.state.inLink && this.rules.other.endATag.test(t[0]) && (this.lexer.state.inLink = !1), !this.lexer.state.inRawBlock && this.rules.other.startPreScriptTag.test(t[0]) ? this.lexer.state.inRawBlock = !0 : this.lexer.state.inRawBlock && this.rules.other.endPreScriptTag.test(t[0]) && (this.lexer.state.inRawBlock = !1), {
+				type: "html",
+				raw: t[0],
+				inLink: this.lexer.state.inLink,
+				inRawBlock: this.lexer.state.inRawBlock,
+				block: !1,
+				text: t[0]
+			};
+		}
+		link(e) {
+			let t = this.rules.inline.link.exec(e);
+			if (t) {
+				let n = t[2].trim();
+				if (!this.options.pedantic && this.rules.other.startAngleBracket.test(n)) {
+					if (!this.rules.other.endAngleBracket.test(n)) return;
+					let s = E(n.slice(0, -1), "\\");
+					if ((n.length - s.length) % 2 === 0) return;
+				} else {
+					let s = ge(t[2], "()");
+					if (s === -2) return;
+					if (s > -1) {
+						let o = (t[0].indexOf("!") === 0 ? 5 : 4) + t[1].length + s;
+						t[2] = t[2].substring(0, s), t[0] = t[0].substring(0, o).trim(), t[3] = "";
+					}
+				}
+				let r = t[2], i = "";
+				if (this.options.pedantic) {
+					let s = this.rules.other.pedanticHrefTitle.exec(r);
+					s && (r = s[1], i = s[3]);
+				} else i = t[3] ? t[3].slice(1, -1) : "";
+				return r = r.trim(), this.rules.other.startAngleBracket.test(r) && (this.options.pedantic && !this.rules.other.endAngleBracket.test(n) ? r = r.slice(1) : r = r.slice(1, -1)), me(t, {
+					href: r && r.replace(this.rules.inline.anyPunctuation, "$1"),
+					title: i && i.replace(this.rules.inline.anyPunctuation, "$1")
+				}, t[0], this.lexer, this.rules);
+			}
+		}
+		reflink(e, t) {
+			let n;
+			if ((n = this.rules.inline.reflink.exec(e)) || (n = this.rules.inline.nolink.exec(e))) {
+				let r = (n[2] || n[1]).replace(this.rules.other.multipleSpaceGlobal, " "), i = t[r.toLowerCase()];
+				if (!i) {
+					let s = n[0].charAt(0);
+					return {
+						type: "text",
+						raw: s,
+						text: s
+					};
+				}
+				return me(n, i, n[0], this.lexer, this.rules);
+			}
+		}
+		emStrong(e, t, n = "") {
+			let r = this.rules.inline.emStrongLDelim.exec(e);
+			if (!r || r[3] && n.match(this.rules.other.unicodeAlphaNumeric)) return;
+			if (!(r[1] || r[2] || "") || !n || this.rules.inline.punctuation.exec(n)) {
+				let s = [...r[0]].length - 1, a, o, l = s, p = 0, c = r[0][0] === "*" ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
+				for (c.lastIndex = 0, t = t.slice(-1 * e.length + s); (r = c.exec(t)) != null;) {
+					if (a = r[1] || r[2] || r[3] || r[4] || r[5] || r[6], !a) continue;
+					if (o = [...a].length, r[3] || r[4]) {
+						l += o;
+						continue;
+					} else if ((r[5] || r[6]) && s % 3 && !((s + o) % 3)) {
+						p += o;
+						continue;
+					}
+					if (l -= o, l > 0) continue;
+					o = Math.min(o, o + l + p);
+					let d = [...r[0]][0].length, h = e.slice(0, s + r.index + d + o);
+					if (Math.min(s, o) % 2) {
+						let f = h.slice(1, -1);
+						return {
+							type: "em",
+							raw: h,
+							text: f,
+							tokens: this.lexer.inlineTokens(f)
+						};
+					}
+					let R = h.slice(2, -2);
+					return {
+						type: "strong",
+						raw: h,
+						text: R,
+						tokens: this.lexer.inlineTokens(R)
+					};
+				}
+			}
+		}
+		codespan(e) {
+			let t = this.rules.inline.code.exec(e);
+			if (t) {
+				let n = t[2].replace(this.rules.other.newLineCharGlobal, " "), r = this.rules.other.nonSpaceChar.test(n), i = this.rules.other.startingSpaceChar.test(n) && this.rules.other.endingSpaceChar.test(n);
+				return r && i && (n = n.substring(1, n.length - 1)), {
+					type: "codespan",
+					raw: t[0],
+					text: n
+				};
+			}
+		}
+		br(e) {
+			let t = this.rules.inline.br.exec(e);
+			if (t) return {
+				type: "br",
+				raw: t[0]
+			};
+		}
+		del(e, t, n = "") {
+			let r = this.rules.inline.delLDelim.exec(e);
+			if (!r) return;
+			if (!(r[1] || "") || !n || this.rules.inline.punctuation.exec(n)) {
+				let s = [...r[0]].length - 1, a, o, l = s, p = this.rules.inline.delRDelim;
+				for (p.lastIndex = 0, t = t.slice(-1 * e.length + s); (r = p.exec(t)) != null;) {
+					if (a = r[1] || r[2] || r[3] || r[4] || r[5] || r[6], !a || (o = [...a].length, o !== s)) continue;
+					if (r[3] || r[4]) {
+						l += o;
+						continue;
+					}
+					if (l -= o, l > 0) continue;
+					o = Math.min(o, o + l);
+					let c = [...r[0]][0].length, d = e.slice(0, s + r.index + c + o), h = d.slice(s, -s);
+					return {
+						type: "del",
+						raw: d,
+						text: h,
+						tokens: this.lexer.inlineTokens(h)
+					};
+				}
+			}
+		}
+		autolink(e) {
+			let t = this.rules.inline.autolink.exec(e);
+			if (t) {
+				let n, r;
+				return t[2] === "@" ? (n = t[1], r = "mailto:" + n) : (n = t[1], r = n), {
+					type: "link",
+					raw: t[0],
+					text: n,
+					href: r,
+					tokens: [{
+						type: "text",
+						raw: n,
+						text: n
+					}]
+				};
+			}
+		}
+		url(e) {
+			let t;
+			if (t = this.rules.inline.url.exec(e)) {
+				let n, r;
+				if (t[2] === "@") n = t[0], r = "mailto:" + n;
+				else {
+					let i;
+					do
+						i = t[0], t[0] = this.rules.inline._backpedal.exec(t[0])?.[0] ?? "";
+					while (i !== t[0]);
+					n = t[0], t[1] === "www." ? r = "http://" + t[0] : r = t[0];
+				}
+				return {
+					type: "link",
+					raw: t[0],
+					text: n,
+					href: r,
+					tokens: [{
+						type: "text",
+						raw: n,
+						text: n
+					}]
+				};
+			}
+		}
+		inlineText(e) {
+			let t = this.rules.inline.text.exec(e);
+			if (t) {
+				let n = this.lexer.state.inRawBlock;
+				return {
+					type: "text",
+					raw: t[0],
+					text: t[0],
+					escaped: n
+				};
+			}
+		}
+	};
+	var x = class u {
+		tokens;
+		options;
+		state;
+		inlineQueue;
+		tokenizer;
+		constructor(e) {
+			this.tokens = [], this.tokens.links = Object.create(null), this.options = e || T, this.options.tokenizer = this.options.tokenizer || new w(), this.tokenizer = this.options.tokenizer, this.tokenizer.options = this.options, this.tokenizer.lexer = this, this.inlineQueue = [], this.state = {
+				inLink: !1,
+				inRawBlock: !1,
+				top: !0
+			};
+			let t = {
+				other: m,
+				block: C.normal,
+				inline: z.normal
+			};
+			this.options.pedantic ? (t.block = C.pedantic, t.inline = z.pedantic) : this.options.gfm && (t.block = C.gfm, this.options.breaks ? t.inline = z.breaks : t.inline = z.gfm), this.tokenizer.rules = t;
+		}
+		static get rules() {
+			return {
+				block: C,
+				inline: z
+			};
+		}
+		static lex(e, t) {
+			return new u(t).lex(e);
+		}
+		static lexInline(e, t) {
+			return new u(t).inlineTokens(e);
+		}
+		lex(e) {
+			e = e.replace(m.carriageReturn, `
+`), this.blockTokens(e, this.tokens);
+			for (let t = 0; t < this.inlineQueue.length; t++) {
+				let n = this.inlineQueue[t];
+				this.inlineTokens(n.src, n.tokens);
+			}
+			return this.inlineQueue = [], this.tokens;
+		}
+		blockTokens(e, t = [], n = !1) {
+			for (this.options.pedantic && (e = e.replace(m.tabCharGlobal, "    ").replace(m.spaceLine, "")); e;) {
+				let r;
+				if (this.options.extensions?.block?.some((s) => (r = s.call({ lexer: this }, e, t)) ? (e = e.substring(r.raw.length), t.push(r), !0) : !1)) continue;
+				if (r = this.tokenizer.space(e)) {
+					e = e.substring(r.raw.length);
+					let s = t.at(-1);
+					r.raw.length === 1 && s !== void 0 ? s.raw += `
+` : t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.code(e)) {
+					e = e.substring(r.raw.length);
+					let s = t.at(-1);
+					s?.type === "paragraph" || s?.type === "text" ? (s.raw += (s.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, s.text += `
+` + r.text, this.inlineQueue.at(-1).src = s.text) : t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.fences(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.heading(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.hr(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.blockquote(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.list(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.html(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.def(e)) {
+					e = e.substring(r.raw.length);
+					let s = t.at(-1);
+					s?.type === "paragraph" || s?.type === "text" ? (s.raw += (s.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, s.text += `
+` + r.raw, this.inlineQueue.at(-1).src = s.text) : this.tokens.links[r.tag] || (this.tokens.links[r.tag] = {
+						href: r.href,
+						title: r.title
+					}, t.push(r));
+					continue;
+				}
+				if (r = this.tokenizer.table(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				if (r = this.tokenizer.lheading(e)) {
+					e = e.substring(r.raw.length), t.push(r);
+					continue;
+				}
+				let i = e;
+				if (this.options.extensions?.startBlock) {
+					let s = 1 / 0, a = e.slice(1), o;
+					this.options.extensions.startBlock.forEach((l) => {
+						o = l.call({ lexer: this }, a), typeof o == "number" && o >= 0 && (s = Math.min(s, o));
+					}), s < 1 / 0 && s >= 0 && (i = e.substring(0, s + 1));
+				}
+				if (this.state.top && (r = this.tokenizer.paragraph(i))) {
+					let s = t.at(-1);
+					n && s?.type === "paragraph" ? (s.raw += (s.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, s.text += `
+` + r.text, this.inlineQueue.pop(), this.inlineQueue.at(-1).src = s.text) : t.push(r), n = i.length !== e.length, e = e.substring(r.raw.length);
+					continue;
+				}
+				if (r = this.tokenizer.text(e)) {
+					e = e.substring(r.raw.length);
+					let s = t.at(-1);
+					s?.type === "text" ? (s.raw += (s.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, s.text += `
+` + r.text, this.inlineQueue.pop(), this.inlineQueue.at(-1).src = s.text) : t.push(r);
+					continue;
+				}
+				if (e) {
+					let s = "Infinite loop on byte: " + e.charCodeAt(0);
+					if (this.options.silent) {
+						console.error(s);
+						break;
+					} else throw new Error(s);
+				}
+			}
+			return this.state.top = !0, t;
+		}
+		inline(e, t = []) {
+			return this.inlineQueue.push({
+				src: e,
+				tokens: t
+			}), t;
+		}
+		inlineTokens(e, t = []) {
+			let n = e, r = null;
+			if (this.tokens.links) {
+				let o = Object.keys(this.tokens.links);
+				if (o.length > 0) for (; (r = this.tokenizer.rules.inline.reflinkSearch.exec(n)) != null;) o.includes(r[0].slice(r[0].lastIndexOf("[") + 1, -1)) && (n = n.slice(0, r.index) + "[" + "a".repeat(r[0].length - 2) + "]" + n.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex));
+			}
+			for (; (r = this.tokenizer.rules.inline.anyPunctuation.exec(n)) != null;) n = n.slice(0, r.index) + "++" + n.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);
+			let i;
+			for (; (r = this.tokenizer.rules.inline.blockSkip.exec(n)) != null;) i = r[2] ? r[2].length : 0, n = n.slice(0, r.index + i) + "[" + "a".repeat(r[0].length - i - 2) + "]" + n.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);
+			n = this.options.hooks?.emStrongMask?.call({ lexer: this }, n) ?? n;
+			let s = !1, a = "";
+			for (; e;) {
+				s || (a = ""), s = !1;
+				let o;
+				if (this.options.extensions?.inline?.some((p) => (o = p.call({ lexer: this }, e, t)) ? (e = e.substring(o.raw.length), t.push(o), !0) : !1)) continue;
+				if (o = this.tokenizer.escape(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.tag(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.link(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.reflink(e, this.tokens.links)) {
+					e = e.substring(o.raw.length);
+					let p = t.at(-1);
+					o.type === "text" && p?.type === "text" ? (p.raw += o.raw, p.text += o.text) : t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.emStrong(e, n, a)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.codespan(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.br(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.del(e, n, a)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (o = this.tokenizer.autolink(e)) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				if (!this.state.inLink && (o = this.tokenizer.url(e))) {
+					e = e.substring(o.raw.length), t.push(o);
+					continue;
+				}
+				let l = e;
+				if (this.options.extensions?.startInline) {
+					let p = 1 / 0, c = e.slice(1), d;
+					this.options.extensions.startInline.forEach((h) => {
+						d = h.call({ lexer: this }, c), typeof d == "number" && d >= 0 && (p = Math.min(p, d));
+					}), p < 1 / 0 && p >= 0 && (l = e.substring(0, p + 1));
+				}
+				if (o = this.tokenizer.inlineText(l)) {
+					e = e.substring(o.raw.length), o.raw.slice(-1) !== "_" && (a = o.raw.slice(-1)), s = !0;
+					let p = t.at(-1);
+					p?.type === "text" ? (p.raw += o.raw, p.text += o.text) : t.push(o);
+					continue;
+				}
+				if (e) {
+					let p = "Infinite loop on byte: " + e.charCodeAt(0);
+					if (this.options.silent) {
+						console.error(p);
+						break;
+					} else throw new Error(p);
+				}
+			}
+			return t;
+		}
+	};
+	var y = class {
+		options;
+		parser;
+		constructor(e) {
+			this.options = e || T;
+		}
+		space(e) {
+			return "";
+		}
+		code({ text: e, lang: t, escaped: n }) {
+			let r = (t || "").match(m.notSpaceStart)?.[0], i = e.replace(m.endingNewline, "") + `
+`;
+			return r ? "<pre><code class=\"language-" + O(r) + "\">" + (n ? i : O(i, !0)) + `</code></pre>
+` : "<pre><code>" + (n ? i : O(i, !0)) + `</code></pre>
+`;
+		}
+		blockquote({ tokens: e }) {
+			return `<blockquote>
+${this.parser.parse(e)}</blockquote>
+`;
+		}
+		html({ text: e }) {
+			return e;
+		}
+		def(e) {
+			return "";
+		}
+		heading({ tokens: e, depth: t }) {
+			return `<h${t}>${this.parser.parseInline(e)}</h${t}>
+`;
+		}
+		hr(e) {
+			return `<hr>
+`;
+		}
+		list(e) {
+			let t = e.ordered, n = e.start, r = "";
+			for (let a = 0; a < e.items.length; a++) {
+				let o = e.items[a];
+				r += this.listitem(o);
+			}
+			let i = t ? "ol" : "ul", s = t && n !== 1 ? " start=\"" + n + "\"" : "";
+			return "<" + i + s + `>
+` + r + "</" + i + `>
+`;
+		}
+		listitem(e) {
+			return `<li>${this.parser.parse(e.tokens)}</li>
+`;
+		}
+		checkbox({ checked: e }) {
+			return "<input " + (e ? "checked=\"\" " : "") + "disabled=\"\" type=\"checkbox\"> ";
+		}
+		paragraph({ tokens: e }) {
+			return `<p>${this.parser.parseInline(e)}</p>
+`;
+		}
+		table(e) {
+			let t = "", n = "";
+			for (let i = 0; i < e.header.length; i++) n += this.tablecell(e.header[i]);
+			t += this.tablerow({ text: n });
+			let r = "";
+			for (let i = 0; i < e.rows.length; i++) {
+				let s = e.rows[i];
+				n = "";
+				for (let a = 0; a < s.length; a++) n += this.tablecell(s[a]);
+				r += this.tablerow({ text: n });
+			}
+			return r && (r = `<tbody>${r}</tbody>`), `<table>
+<thead>
+` + t + `</thead>
+` + r + `</table>
+`;
+		}
+		tablerow({ text: e }) {
+			return `<tr>
+${e}</tr>
+`;
+		}
+		tablecell(e) {
+			let t = this.parser.parseInline(e.tokens), n = e.header ? "th" : "td";
+			return (e.align ? `<${n} align="${e.align}">` : `<${n}>`) + t + `</${n}>
+`;
+		}
+		strong({ tokens: e }) {
+			return `<strong>${this.parser.parseInline(e)}</strong>`;
+		}
+		em({ tokens: e }) {
+			return `<em>${this.parser.parseInline(e)}</em>`;
+		}
+		codespan({ text: e }) {
+			return `<code>${O(e, !0)}</code>`;
+		}
+		br(e) {
+			return "<br>";
+		}
+		del({ tokens: e }) {
+			return `<del>${this.parser.parseInline(e)}</del>`;
+		}
+		link({ href: e, title: t, tokens: n }) {
+			let r = this.parser.parseInline(n), i = X(e);
+			if (i === null) return r;
+			e = i;
+			let s = "<a href=\"" + e + "\"";
+			return t && (s += " title=\"" + O(t) + "\""), s += ">" + r + "</a>", s;
+		}
+		image({ href: e, title: t, text: n, tokens: r }) {
+			r && (n = this.parser.parseInline(r, this.parser.textRenderer));
+			let i = X(e);
+			if (i === null) return O(n);
+			e = i;
+			let s = `<img src="${e}" alt="${O(n)}"`;
+			return t && (s += ` title="${O(t)}"`), s += ">", s;
+		}
+		text(e) {
+			return "tokens" in e && e.tokens ? this.parser.parseInline(e.tokens) : "escaped" in e && e.escaped ? e.text : O(e.text);
+		}
+	};
+	var $ = class {
+		strong({ text: e }) {
+			return e;
+		}
+		em({ text: e }) {
+			return e;
+		}
+		codespan({ text: e }) {
+			return e;
+		}
+		del({ text: e }) {
+			return e;
+		}
+		html({ text: e }) {
+			return e;
+		}
+		text({ text: e }) {
+			return e;
+		}
+		link({ text: e }) {
+			return "" + e;
+		}
+		image({ text: e }) {
+			return "" + e;
+		}
+		br() {
+			return "";
+		}
+		checkbox({ raw: e }) {
+			return e;
+		}
+	};
+	var b = class u {
+		options;
+		renderer;
+		textRenderer;
+		constructor(e) {
+			this.options = e || T, this.options.renderer = this.options.renderer || new y(), this.renderer = this.options.renderer, this.renderer.options = this.options, this.renderer.parser = this, this.textRenderer = new $();
+		}
+		static parse(e, t) {
+			return new u(t).parse(e);
+		}
+		static parseInline(e, t) {
+			return new u(t).parseInline(e);
+		}
+		parse(e) {
+			let t = "";
+			for (let n = 0; n < e.length; n++) {
+				let r = e[n];
+				if (this.options.extensions?.renderers?.[r.type]) {
+					let s = r, a = this.options.extensions.renderers[s.type].call({ parser: this }, s);
+					if (a !== !1 || ![
+						"space",
+						"hr",
+						"heading",
+						"code",
+						"table",
+						"blockquote",
+						"list",
+						"html",
+						"def",
+						"paragraph",
+						"text"
+					].includes(s.type)) {
+						t += a || "";
+						continue;
+					}
+				}
+				let i = r;
+				switch (i.type) {
+					case "space": {
+						t += this.renderer.space(i);
+						break;
+					}
+					case "hr": {
+						t += this.renderer.hr(i);
+						break;
+					}
+					case "heading": {
+						t += this.renderer.heading(i);
+						break;
+					}
+					case "code": {
+						t += this.renderer.code(i);
+						break;
+					}
+					case "table": {
+						t += this.renderer.table(i);
+						break;
+					}
+					case "blockquote": {
+						t += this.renderer.blockquote(i);
+						break;
+					}
+					case "list": {
+						t += this.renderer.list(i);
+						break;
+					}
+					case "checkbox": {
+						t += this.renderer.checkbox(i);
+						break;
+					}
+					case "html": {
+						t += this.renderer.html(i);
+						break;
+					}
+					case "def": {
+						t += this.renderer.def(i);
+						break;
+					}
+					case "paragraph": {
+						t += this.renderer.paragraph(i);
+						break;
+					}
+					case "text": {
+						t += this.renderer.text(i);
+						break;
+					}
+					default: {
+						let s = "Token with \"" + i.type + "\" type was not found.";
+						if (this.options.silent) return console.error(s), "";
+						throw new Error(s);
+					}
+				}
+			}
+			return t;
+		}
+		parseInline(e, t = this.renderer) {
+			let n = "";
+			for (let r = 0; r < e.length; r++) {
+				let i = e[r];
+				if (this.options.extensions?.renderers?.[i.type]) {
+					let a = this.options.extensions.renderers[i.type].call({ parser: this }, i);
+					if (a !== !1 || ![
+						"escape",
+						"html",
+						"link",
+						"image",
+						"strong",
+						"em",
+						"codespan",
+						"br",
+						"del",
+						"text"
+					].includes(i.type)) {
+						n += a || "";
+						continue;
+					}
+				}
+				let s = i;
+				switch (s.type) {
+					case "escape": {
+						n += t.text(s);
+						break;
+					}
+					case "html": {
+						n += t.html(s);
+						break;
+					}
+					case "link": {
+						n += t.link(s);
+						break;
+					}
+					case "image": {
+						n += t.image(s);
+						break;
+					}
+					case "checkbox": {
+						n += t.checkbox(s);
+						break;
+					}
+					case "strong": {
+						n += t.strong(s);
+						break;
+					}
+					case "em": {
+						n += t.em(s);
+						break;
+					}
+					case "codespan": {
+						n += t.codespan(s);
+						break;
+					}
+					case "br": {
+						n += t.br(s);
+						break;
+					}
+					case "del": {
+						n += t.del(s);
+						break;
+					}
+					case "text": {
+						n += t.text(s);
+						break;
+					}
+					default: {
+						let a = "Token with \"" + s.type + "\" type was not found.";
+						if (this.options.silent) return console.error(a), "";
+						throw new Error(a);
+					}
+				}
+			}
+			return n;
+		}
+	};
+	var P = class {
+		options;
+		block;
+		constructor(e) {
+			this.options = e || T;
+		}
+		static passThroughHooks = new Set([
+			"preprocess",
+			"postprocess",
+			"processAllTokens",
+			"emStrongMask"
+		]);
+		static passThroughHooksRespectAsync = new Set([
+			"preprocess",
+			"postprocess",
+			"processAllTokens"
+		]);
+		preprocess(e) {
+			return e;
+		}
+		postprocess(e) {
+			return e;
+		}
+		processAllTokens(e) {
+			return e;
+		}
+		emStrongMask(e) {
+			return e;
+		}
+		provideLexer() {
+			return this.block ? x.lex : x.lexInline;
+		}
+		provideParser() {
+			return this.block ? b.parse : b.parseInline;
+		}
+	};
+	var B = class {
+		defaults = M();
+		options = this.setOptions;
+		parse = this.parseMarkdown(!0);
+		parseInline = this.parseMarkdown(!1);
+		Parser = b;
+		Renderer = y;
+		TextRenderer = $;
+		Lexer = x;
+		Tokenizer = w;
+		Hooks = P;
+		constructor(...e) {
+			this.use(...e);
+		}
+		walkTokens(e, t) {
+			let n = [];
+			for (let r of e) switch (n = n.concat(t.call(this, r)), r.type) {
+				case "table": {
+					let i = r;
+					for (let s of i.header) n = n.concat(this.walkTokens(s.tokens, t));
+					for (let s of i.rows) for (let a of s) n = n.concat(this.walkTokens(a.tokens, t));
+					break;
+				}
+				case "list": {
+					let i = r;
+					n = n.concat(this.walkTokens(i.items, t));
+					break;
+				}
+				default: {
+					let i = r;
+					this.defaults.extensions?.childTokens?.[i.type] ? this.defaults.extensions.childTokens[i.type].forEach((s) => {
+						let a = i[s].flat(1 / 0);
+						n = n.concat(this.walkTokens(a, t));
+					}) : i.tokens && (n = n.concat(this.walkTokens(i.tokens, t)));
+				}
+			}
+			return n;
+		}
+		use(...e) {
+			let t = this.defaults.extensions || {
+				renderers: {},
+				childTokens: {}
+			};
+			return e.forEach((n) => {
+				let r = { ...n };
+				if (r.async = this.defaults.async || r.async || !1, n.extensions && (n.extensions.forEach((i) => {
+					if (!i.name) throw new Error("extension name required");
+					if ("renderer" in i) {
+						let s = t.renderers[i.name];
+						s ? t.renderers[i.name] = function(...a) {
+							let o = i.renderer.apply(this, a);
+							return o === !1 && (o = s.apply(this, a)), o;
+						} : t.renderers[i.name] = i.renderer;
+					}
+					if ("tokenizer" in i) {
+						if (!i.level || i.level !== "block" && i.level !== "inline") throw new Error("extension level must be 'block' or 'inline'");
+						let s = t[i.level];
+						s ? s.unshift(i.tokenizer) : t[i.level] = [i.tokenizer], i.start && (i.level === "block" ? t.startBlock ? t.startBlock.push(i.start) : t.startBlock = [i.start] : i.level === "inline" && (t.startInline ? t.startInline.push(i.start) : t.startInline = [i.start]));
+					}
+					"childTokens" in i && i.childTokens && (t.childTokens[i.name] = i.childTokens);
+				}), r.extensions = t), n.renderer) {
+					let i = this.defaults.renderer || new y(this.defaults);
+					for (let s in n.renderer) {
+						if (!(s in i)) throw new Error(`renderer '${s}' does not exist`);
+						if (["options", "parser"].includes(s)) continue;
+						let a = s, o = n.renderer[a], l = i[a];
+						i[a] = (...p) => {
+							let c = o.apply(i, p);
+							return c === !1 && (c = l.apply(i, p)), c || "";
+						};
+					}
+					r.renderer = i;
+				}
+				if (n.tokenizer) {
+					let i = this.defaults.tokenizer || new w(this.defaults);
+					for (let s in n.tokenizer) {
+						if (!(s in i)) throw new Error(`tokenizer '${s}' does not exist`);
+						if ([
+							"options",
+							"rules",
+							"lexer"
+						].includes(s)) continue;
+						let a = s, o = n.tokenizer[a], l = i[a];
+						i[a] = (...p) => {
+							let c = o.apply(i, p);
+							return c === !1 && (c = l.apply(i, p)), c;
+						};
+					}
+					r.tokenizer = i;
+				}
+				if (n.hooks) {
+					let i = this.defaults.hooks || new P();
+					for (let s in n.hooks) {
+						if (!(s in i)) throw new Error(`hook '${s}' does not exist`);
+						if (["options", "block"].includes(s)) continue;
+						let a = s, o = n.hooks[a], l = i[a];
+						P.passThroughHooks.has(s) ? i[a] = (p) => {
+							if (this.defaults.async && P.passThroughHooksRespectAsync.has(s)) return (async () => {
+								let d = await o.call(i, p);
+								return l.call(i, d);
+							})();
+							let c = o.call(i, p);
+							return l.call(i, c);
+						} : i[a] = (...p) => {
+							if (this.defaults.async) return (async () => {
+								let d = await o.apply(i, p);
+								return d === !1 && (d = await l.apply(i, p)), d;
+							})();
+							let c = o.apply(i, p);
+							return c === !1 && (c = l.apply(i, p)), c;
+						};
+					}
+					r.hooks = i;
+				}
+				if (n.walkTokens) {
+					let i = this.defaults.walkTokens, s = n.walkTokens;
+					r.walkTokens = function(a) {
+						let o = [];
+						return o.push(s.call(this, a)), i && (o = o.concat(i.call(this, a))), o;
+					};
+				}
+				this.defaults = {
+					...this.defaults,
+					...r
+				};
+			}), this;
+		}
+		setOptions(e) {
+			return this.defaults = {
+				...this.defaults,
+				...e
+			}, this;
+		}
+		lexer(e, t) {
+			return x.lex(e, t ?? this.defaults);
+		}
+		parser(e, t) {
+			return b.parse(e, t ?? this.defaults);
+		}
+		parseMarkdown(e) {
+			return (n, r) => {
+				let i = { ...r }, s = {
+					...this.defaults,
+					...i
+				}, a = this.onError(!!s.silent, !!s.async);
+				if (this.defaults.async === !0 && i.async === !1) return a(new Error("marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise."));
+				if (typeof n > "u" || n === null) return a(new Error("marked(): input parameter is undefined or null"));
+				if (typeof n != "string") return a(new Error("marked(): input parameter is of type " + Object.prototype.toString.call(n) + ", string expected"));
+				if (s.hooks && (s.hooks.options = s, s.hooks.block = e), s.async) return (async () => {
+					let o = s.hooks ? await s.hooks.preprocess(n) : n, p = await (s.hooks ? await s.hooks.provideLexer() : e ? x.lex : x.lexInline)(o, s), c = s.hooks ? await s.hooks.processAllTokens(p) : p;
+					s.walkTokens && await Promise.all(this.walkTokens(c, s.walkTokens));
+					let h = await (s.hooks ? await s.hooks.provideParser() : e ? b.parse : b.parseInline)(c, s);
+					return s.hooks ? await s.hooks.postprocess(h) : h;
+				})().catch(a);
+				try {
+					s.hooks && (n = s.hooks.preprocess(n));
+					let l = (s.hooks ? s.hooks.provideLexer() : e ? x.lex : x.lexInline)(n, s);
+					s.hooks && (l = s.hooks.processAllTokens(l)), s.walkTokens && this.walkTokens(l, s.walkTokens);
+					let c = (s.hooks ? s.hooks.provideParser() : e ? b.parse : b.parseInline)(l, s);
+					return s.hooks && (c = s.hooks.postprocess(c)), c;
+				} catch (o) {
+					return a(o);
+				}
+			};
+		}
+		onError(e, t) {
+			return (n) => {
+				if (n.message += `
+Please report this to https://github.com/markedjs/marked.`, e) {
+					let r = "<p>An error occurred:</p><pre>" + O(n.message + "", !0) + "</pre>";
+					return t ? Promise.resolve(r) : r;
+				}
+				if (t) return Promise.reject(n);
+				throw n;
+			};
+		}
+	};
+	var L = new B();
+	function g(u, e) {
+		return L.parse(u, e);
+	}
+	g.options = g.setOptions = function(u) {
+		return L.setOptions(u), g.defaults = L.defaults, G(g.defaults), g;
+	};
+	g.getDefaults = M;
+	g.defaults = T;
+	g.use = function(...u) {
+		return L.use(...u), g.defaults = L.defaults, G(g.defaults), g;
+	};
+	g.walkTokens = function(u, e) {
+		return L.walkTokens(u, e);
+	};
+	g.parseInline = L.parseInline;
+	g.Parser = b;
+	g.parser = b.parse;
+	g.Renderer = y;
+	g.TextRenderer = $;
+	g.Lexer = x;
+	g.lexer = x.lex;
+	g.Tokenizer = w;
+	g.Hooks = P;
+	g.parse = g;
+	var Ut = g.options, Kt = g.setOptions, Wt = g.use, Xt = g.walkTokens, Jt = g.parseInline, Vt = g, Yt = b.parse, en = x.lex;
+
+//#endregion
 //#region src/services/chat-history/shared.js
 	const INDEX_KEY = "aifengyue_chat_index_v1";
+	const RAW_HTML_BLOCK_TAGS = new Set([
+		"article",
+		"aside",
+		"blockquote",
+		"button",
+		"details",
+		"div",
+		"figure",
+		"figcaption",
+		"h1",
+		"h2",
+		"h3",
+		"h4",
+		"h5",
+		"h6",
+		"hr",
+		"img",
+		"li",
+		"ol",
+		"p",
+		"pre",
+		"section",
+		"summary",
+		"table",
+		"tbody",
+		"td",
+		"tfoot",
+		"th",
+		"thead",
+		"tr",
+		"ul"
+	]);
+	const VOID_HTML_TAGS = new Set([
+		"area",
+		"base",
+		"br",
+		"col",
+		"embed",
+		"hr",
+		"img",
+		"input",
+		"link",
+		"meta",
+		"param",
+		"source",
+		"track",
+		"wbr"
+	]);
+	const SAFE_INLINE_HTML_TAGS = new Set([
+		"b",
+		"br",
+		"code",
+		"del",
+		"em",
+		"font",
+		"i",
+		"kbd",
+		"mark",
+		"s",
+		"small",
+		"span",
+		"strong",
+		"sub",
+		"sup",
+		"u"
+	]);
+	const BLOCKED_RENDER_TAGS = new Set([
+		"base",
+		"embed",
+		"form",
+		"iframe",
+		"input",
+		"link",
+		"meta",
+		"object",
+		"script",
+		"style",
+		"textarea"
+	]);
+	const MARKDOWN_CODE_COPY_ICON_CLASS = "style_copyIcon__euyNI";
+	const MARKDOWN_CODE_COPIED_CLASS = "style_copied__SbkhO";
+	let markdownCodeBlockSerial = 0;
 	function normalizeId(value) {
 		return typeof value === "string" ? value.trim() : "";
 	}
@@ -455,6 +2595,378 @@
 	function looksLikeHtml(value) {
 		return /<\/?[a-z][\s\S]*>/i.test(value);
 	}
+	function sanitizeUrlLikeAttr(value) {
+		const normalized = String(value || "").trim();
+		if (!normalized) return "";
+		if (/^(?:javascript|vbscript|data:text\/html)/i.test(normalized)) {
+			return "";
+		}
+		return normalized;
+	}
+	function sanitizeRenderedMarkdownHtml(html) {
+		const source = String(html || "");
+		if (!source.trim()) return "";
+		if (typeof DOMParser !== "function") {
+			return source.replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form|input|textarea)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "").replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form|input|textarea)\b[^>]*\/?\s*>/gi, "").replace(/\s+on[a-z-]+\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "").replace(/\s+(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+)/gi, "");
+		}
+		const parser = new DOMParser();
+		const doc = parser.parseFromString(`<body>${source}</body>`, "text/html");
+		const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
+		const nodes = [];
+		let current = walker.nextNode();
+		while (current) {
+			nodes.push(current);
+			current = walker.nextNode();
+		}
+		for (const node of nodes) {
+			const tagName = String(node.tagName || "").toLowerCase();
+			if (!tagName) continue;
+			if (BLOCKED_RENDER_TAGS.has(tagName)) {
+				node.remove();
+				continue;
+			}
+			for (const attr of [...node.attributes]) {
+				const attrName = String(attr.name || "").toLowerCase();
+				if (!attrName) continue;
+				if (attrName.startsWith("on")) {
+					node.removeAttribute(attr.name);
+					continue;
+				}
+				if (attrName === "href" || attrName === "src" || attrName === "xlink:href") {
+					const sanitized = sanitizeUrlLikeAttr(attr.value);
+					if (!sanitized) {
+						node.removeAttribute(attr.name);
+					} else {
+						node.setAttribute(attr.name, sanitized);
+					}
+				}
+			}
+		}
+		return doc.body.innerHTML;
+	}
+	function isSafeCssColor(value) {
+		const normalized = String(value || "").trim();
+		if (!normalized) return false;
+		return /^(?:[a-z]+|#[0-9a-f]{3,8}|rgba?\([0-9\s,%.]+\)|hsla?\([0-9\s,%.]+\))$/i.test(normalized);
+	}
+	function isSafeFontSize(value) {
+		const normalized = String(value || "").trim();
+		if (!normalized) return false;
+		return /^(?:[1-7]|[+-][1-7]|xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)$/i.test(normalized);
+	}
+	function isSafeFontFace(value) {
+		const normalized = String(value || "").trim();
+		if (!normalized) return false;
+		return /^[\w\s,\-"']{1,80}$/i.test(normalized);
+	}
+	function sanitizeInlineHtmlTag(rawTag) {
+		const source = String(rawTag || "");
+		const matched = source.match(/^<\s*(\/?)\s*([a-z][\w-]*)\b([^>]*)>\s*$/i);
+		if (!matched) return "";
+		const isClosing = matched[1] === "/";
+		const tagName = String(matched[2] || "").toLowerCase();
+		const rawAttrs = String(matched[3] || "");
+		const isSelfClosing = /\/\s*$/.test(rawAttrs) || VOID_HTML_TAGS.has(tagName);
+		if (!SAFE_INLINE_HTML_TAGS.has(tagName)) return "";
+		if (isClosing) {
+			return `</${tagName}>`;
+		}
+		const attrs = [];
+		if (tagName === "font") {
+			const colorMatched = rawAttrs.match(/\bcolor\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+			const sizeMatched = rawAttrs.match(/\bsize\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+			const faceMatched = rawAttrs.match(/\bface\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+			const colorValue = colorMatched?.[2] ?? colorMatched?.[3] ?? colorMatched?.[4] ?? "";
+			const sizeValue = sizeMatched?.[2] ?? sizeMatched?.[3] ?? sizeMatched?.[4] ?? "";
+			const faceValue = faceMatched?.[2] ?? faceMatched?.[3] ?? faceMatched?.[4] ?? "";
+			if (isSafeCssColor(colorValue)) {
+				attrs.push(` color="${escapeHtml(colorValue.trim())}"`);
+			}
+			if (isSafeFontSize(sizeValue)) {
+				attrs.push(` size="${escapeHtml(sizeValue.trim())}"`);
+			}
+			if (isSafeFontFace(faceValue)) {
+				attrs.push(` face="${escapeHtml(faceValue.trim())}"`);
+			}
+		}
+		return `<${tagName}${attrs.join("")}${isSelfClosing ? " /" : ""}>`;
+	}
+	function preserveSafeInlineHtml(text) {
+		const htmlTokens = [];
+		const value = String(text ?? "").replace(/<\/?[a-z][^>\n]*>/gi, (rawTag) => {
+			const sanitized = sanitizeInlineHtmlTag(rawTag);
+			if (!sanitized) return rawTag;
+			const placeholder = `@@AFHTML${htmlTokens.length}@@`;
+			htmlTokens.push(sanitized);
+			return placeholder;
+		});
+		return {
+			value,
+			htmlTokens
+		};
+	}
+	function renderInlineMarkdown(text) {
+		const codeTokens = [];
+		let value = String(text ?? "").replace(/(`+)([\s\S]*?)\1/g, (_, __, content) => {
+			const placeholder = `__AF_CODE_${codeTokens.length}__`;
+			codeTokens.push(`<code>${escapeHtml(content)}</code>`);
+			return placeholder;
+		});
+		const preservedInlineHtml = preserveSafeInlineHtml(value);
+		value = preservedInlineHtml.value;
+		value = escapeHtml(value);
+		value = value.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, alt, url) => `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="lazy">`).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, label, url) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>").replace(/~~([^~]+)~~/g, "<del>$1</del>").replace(/(^|[^\*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>").replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+		for (let i = 0; i < codeTokens.length; i++) {
+			value = value.replace(`__AF_CODE_${i}__`, codeTokens[i]);
+		}
+		for (let i = 0; i < preservedInlineHtml.htmlTokens.length; i++) {
+			value = value.replace(`@@AFHTML${i}@@`, preservedInlineHtml.htmlTokens[i]);
+		}
+		return value;
+	}
+	function isRawHtmlBlockStart(line) {
+		const trimmed = String(line || "").trim();
+		if (!trimmed.startsWith("<")) return false;
+		if (/^<!--/.test(trimmed)) return true;
+		const matched = trimmed.match(/^<\/?([a-z][\w-]*)\b/i);
+		if (!matched?.[1]) return false;
+		return RAW_HTML_BLOCK_TAGS.has(matched[1].toLowerCase());
+	}
+	function updateHtmlTagStack(stack, line) {
+		const tagMatcher = /<\/?([a-z][\w-]*)\b[^>]*>/gi;
+		let matched = tagMatcher.exec(String(line || ""));
+		while (matched) {
+			const rawTag = matched[0];
+			const tagName = String(matched[1] || "").toLowerCase();
+			if (!tagName || VOID_HTML_TAGS.has(tagName) || /^<!--/.test(rawTag) || rawTag.endsWith("/>")) {
+				matched = tagMatcher.exec(String(line || ""));
+				continue;
+			}
+			if (rawTag.startsWith("</")) {
+				for (let i = stack.length - 1; i >= 0; i--) {
+					if (stack[i] !== tagName) continue;
+					stack.length = i;
+					break;
+				}
+			} else {
+				stack.push(tagName);
+			}
+			matched = tagMatcher.exec(String(line || ""));
+		}
+	}
+	function collectRawHtmlBlock(lines, startIndex) {
+		const collected = [];
+		const stack = [];
+		let index = startIndex;
+		while (index < lines.length) {
+			const line = String(lines[index] ?? "");
+			collected.push(line);
+			if (!/^<!--/.test(line.trim())) {
+				updateHtmlTagStack(stack, line);
+			}
+			index += 1;
+			if (stack.length === 0) {
+				break;
+			}
+		}
+		return {
+			html: collected.join("\n").trim(),
+			nextIndex: index
+		};
+	}
+	function isMarkdownBlockStart(line) {
+		const trimmed = String(line || "").trim();
+		if (!trimmed) return false;
+		if (/^(```+|~~~+)/.test(trimmed)) return true;
+		if (/^#{1,6}\s+/.test(trimmed)) return true;
+		if (/^\s*>\s?/.test(trimmed)) return true;
+		if (/^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(trimmed)) return true;
+		if (looksLikeMarkdownTableStart(trimmed)) return true;
+		if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) return true;
+		return isRawHtmlBlockStart(trimmed);
+	}
+	function splitMarkdownTableRow(line) {
+		const source = String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "");
+		const cells = [];
+		let current = "";
+		let escaped = false;
+		for (let i = 0; i < source.length; i++) {
+			const char = source[i];
+			if (escaped) {
+				current += char;
+				escaped = false;
+				continue;
+			}
+			if (char === "\\") {
+				escaped = true;
+				current += char;
+				continue;
+			}
+			if (char === "|") {
+				cells.push(current.trim());
+				current = "";
+				continue;
+			}
+			current += char;
+		}
+		cells.push(current.trim());
+		return cells;
+	}
+	function parseMarkdownTableAlignments(line) {
+		const cells = splitMarkdownTableRow(line);
+		if (!cells.length) return null;
+		const alignments = [];
+		for (const cell of cells) {
+			const normalized = cell.replace(/\s+/g, "");
+			if (!/^:?-{3,}:?$/.test(normalized)) {
+				return null;
+			}
+			if (normalized.startsWith(":") && normalized.endsWith(":")) {
+				alignments.push("center");
+			} else if (normalized.endsWith(":")) {
+				alignments.push("right");
+			} else {
+				alignments.push("left");
+			}
+		}
+		return alignments;
+	}
+	function looksLikeMarkdownTableStart(line, nextLine = "") {
+		const headerCells = splitMarkdownTableRow(line);
+		if (headerCells.length < 2) return false;
+		return Array.isArray(parseMarkdownTableAlignments(nextLine));
+	}
+	function collectMarkdownTable(lines, startIndex) {
+		const headerLine = String(lines[startIndex] ?? "");
+		const alignLine = String(lines[startIndex + 1] ?? "");
+		const alignments = parseMarkdownTableAlignments(alignLine);
+		if (!alignments) {
+			return null;
+		}
+		const headerCells = splitMarkdownTableRow(headerLine);
+		if (headerCells.length < 2 || headerCells.length !== alignments.length) {
+			return null;
+		}
+		const rows = [];
+		let index = startIndex + 2;
+		while (index < lines.length) {
+			const currentLine = String(lines[index] ?? "");
+			const trimmed = currentLine.trim();
+			if (!trimmed) break;
+			if (!trimmed.includes("|")) break;
+			const cells = splitMarkdownTableRow(currentLine);
+			if (cells.length !== headerCells.length) break;
+			rows.push(cells);
+			index += 1;
+		}
+		const renderCells = (cells, cellTag) => `
+        <tr>${cells.map((cell, cellIndex) => {
+			const align = alignments[cellIndex] || "left";
+			return `<${cellTag} data-align="${align}">${renderInlineMarkdown(cell)}</${cellTag}>`;
+		}).join("")}</tr>
+    `;
+		const bodyHtml = rows.length ? `<tbody>${rows.map((cells) => renderCells(cells, "td")).join("")}</tbody>` : "";
+		return {
+			html: `<table><thead>${renderCells(headerCells, "th")}</thead>${bodyHtml}</table>`,
+			nextIndex: index
+		};
+	}
+	function collectMarkdownList(lines, startIndex, ordered) {
+		const matcher = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/;
+		const tagName = ordered ? "ol" : "ul";
+		const items = [];
+		let index = startIndex;
+		while (index < lines.length) {
+			const currentLine = String(lines[index] ?? "");
+			if (!currentLine.trim()) break;
+			const matched = currentLine.match(matcher);
+			if (matched) {
+				items.push([matched[1]]);
+				index += 1;
+				continue;
+			}
+			if (!items.length || isMarkdownBlockStart(currentLine) || !/^\s{2,}\S/.test(currentLine)) {
+				break;
+			}
+			items[items.length - 1].push(currentLine.trim());
+			index += 1;
+		}
+		return {
+			html: `<${tagName}>${items.map((itemLines) => `<li>${itemLines.map(renderInlineMarkdown).join("<br>")}</li>`).join("")}</${tagName}>`,
+			nextIndex: index
+		};
+	}
+	function collectMarkdownBlockquote(lines, startIndex) {
+		const quoteLines = [];
+		let index = startIndex;
+		while (index < lines.length) {
+			const currentLine = String(lines[index] ?? "");
+			if (!currentLine.trim()) {
+				quoteLines.push("");
+				index += 1;
+				continue;
+			}
+			const matched = currentLine.match(/^\s*>\s?(.*)$/);
+			if (!matched) break;
+			quoteLines.push(matched[1]);
+			index += 1;
+		}
+		return {
+			html: `<blockquote>${renderMarkdownHtml(quoteLines.join("\n"))}</blockquote>`,
+			nextIndex: index
+		};
+	}
+	function pickCodeLanguageToken(value) {
+		const source = String(value || "").trim();
+		if (!source) return "";
+		return source.split(/\s+/)[0]?.trim() || "";
+	}
+	function normalizeCodeLanguage(value) {
+		return pickCodeLanguageToken(value).replace(/^[`'"]+|[`'"]+$/g, "").replace(/[^\w#+.-]/g, "").toLowerCase();
+	}
+	function getCodeLanguageLabel(rawLanguage, normalizedLanguage) {
+		const displayValue = pickCodeLanguageToken(rawLanguage).replace(/[^\w#+.-]/g, "");
+		if (displayValue) return displayValue;
+		return normalizedLanguage ? normalizedLanguage.toUpperCase() : "";
+	}
+	function renderMarkdownCodeBlock(token) {
+		const text = typeof token?.text === "string" ? token.text.replace(/\n$/, "") : "";
+		const language = normalizeCodeLanguage(token?.lang);
+		const codeId = `af-code-content-${++markdownCodeBlockSerial}`;
+		const escapedCode = escapeHtml(text);
+		if (!language) {
+			return `<pre><code node id="${codeId}" class="hljs">${escapedCode}</code></pre>`;
+		}
+		const languageLabel = getCodeLanguageLabel(token?.lang, language);
+		const tooltipId = `copy-tooltip-${markdownCodeBlockSerial}`;
+		return [
+			"<pre>",
+			"<div class=\"af-code-block\">",
+			"<div class=\"border-b flex justify-between items-center af-code-block-header\" data-af-copy-ignore=\"true\">",
+			`<div class="af-code-block-language">${escapeHtml(languageLabel)}</div>`,
+			`<div data-tooltip-id="${tooltipId}" class="af-code-copy-trigger" data-af-copy-target="#${codeId}" data-af-copy-mode="icon" data-af-copy-copied-class="${MARKDOWN_CODE_COPIED_CLASS}" role="button" tabindex="0" title="复制代码" aria-label="复制代码">`,
+			`<div class="af-code-copy-icon ${MARKDOWN_CODE_COPY_ICON_CLASS}"></div>`,
+			"</div>",
+			"</div>",
+			"<div node class=\"af-code-block-body\">",
+			`<code node id="${codeId}" class="hljs language-${escapeHtml(language)}">${escapedCode}</code>`,
+			"</div>",
+			"</div>",
+			"</pre>"
+		].join("");
+	}
+	function renderMarkdownHtml(text) {
+		const normalized = normalizeLineBreakTokens(text);
+		const renderer = new g.Renderer();
+		renderer.code = (token) => renderMarkdownCodeBlock(token);
+		const rendered = g.parse(normalized, {
+			async: false,
+			breaks: true,
+			gfm: true,
+			renderer
+		});
+		return sanitizeRenderedMarkdownHtml(rendered);
+	}
 	function uniqueTextArray(values) {
 		const output = [];
 		const seen = new Set();
@@ -498,14 +3010,18 @@
 			removedPrefix: ""
 		};
 	}
-	function renderMessageBody(text, emptyPlaceholder = "(空)") {
+	function renderMessageBody(text, emptyPlaceholder = "(空)", options = {}) {
+		const { preferMarkdown = false } = options || {};
 		const normalized = asDisplayContent(text);
 		if (!normalized) {
 			return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(emptyPlaceholder)}</pre>`;
 		}
+		if (preferMarkdown) {
+			return `<div class="markdown-body af-markdown-body">${renderMarkdownHtml(normalized)}</div>`;
+		}
 		if (looksLikeHtml(normalized)) {
-			const normalizedHtml = normalizeLineBreakTokens(normalized);
-			return `<div class="markdown-body false" style="font-size:14px;white-space:pre-wrap;">${normalizedHtml}</div>`;
+			const normalizedHtml = sanitizeRenderedMarkdownHtml(normalizeLineBreakTokens(normalized));
+			return `<div class="markdown-body af-markdown-body">${normalizedHtml}</div>`;
 		}
 		const plainText = normalizeLineBreakTokens(normalized);
 		return `<pre class="af-plain" style="white-space: pre-wrap !important;">${escapeHtml(plainText)}</pre>`;
@@ -1332,6 +3848,9 @@
 	function sanitizeInlineStyleText(text) {
 		return String(text || "").replace(/<\/style/gi, "<\\/style");
 	}
+	function encodeCopyTextPayload(text) {
+		return escapeHtml(encodeURIComponent(String(text ?? "")));
+	}
 	const chatHistoryViewerMethods = { async buildChainViewerHtml({ appId, chainId }) {
 		const normalizedAppId = normalizeId(appId);
 		const normalizedChainId = normalizeId(chainId);
@@ -1358,17 +3877,18 @@
 			appId: normalizedAppId,
 			kind: "cover"
 		}));
-		const userAvatar = escapeHtml((appNameRaw || "C").slice(0, 1).toUpperCase() || "C");
+		const userAvatar = "我";
 		const answerHistory = [];
 		const messageHtml = records.length > 0 ? records.map((record, index) => {
 			const rawMessage = record?.rawMessage && typeof record.rawMessage === "object" ? record.rawMessage : {};
 			const queryText = asDisplayContent(rawMessage.query ?? record?.query ?? "");
 			const answerText = asDisplayContent(rawMessage.answer ?? record?.answer ?? "");
 			const dedupResult = stripDuplicatedAnswerPrefix(queryText, answerHistory);
-			const renderedQuery = renderMessageBody(dedupResult.text || "(去重后为空)", "(去重后为空)");
-			const renderedAnswer = renderMessageBody(answerText, "(空回复)");
+			const renderedQuery = renderMessageBody(dedupResult.text || "(去重后为空)", "(去重后为空)", { preferMarkdown: false });
+			const renderedAnswer = renderMessageBody(answerText, "(空回复)", { preferMarkdown: true });
 			const queryContentId = `af-query-content-${index + 1}`;
 			const answerContentId = `af-answer-content-${index + 1}`;
+			const rawAnswerCopyPayload = encodeCopyTextPayload(answerText);
 			if (answerText) {
 				answerHistory.push(answerText);
 			}
@@ -1397,7 +3917,7 @@
                                     ${renderedAnswer}
                                 </div>
                                 <div class="af-copy-row">
-                                    <button class="af-copy-btn" type="button" data-af-copy-target="#${answerContentId}">复制 Answer</button>
+                                    <button class="af-copy-btn" type="button" data-af-copy-text="${rawAnswerCopyPayload}">复制 Answer</button>
                                 </div>
                             </div>
                         </div>
@@ -1420,8 +3940,12 @@
         html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
         body {
             font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            font-size: 14px;
             background: #f3f6fa;
             color: #111827;
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         .af-root-wrap, .af-root-inner, #installedBuiltInCss {
             width: 100%;
@@ -1544,13 +4068,7 @@
             color: #111827;
             overflow-wrap: anywhere;
             word-break: break-word;
-        }
-        .af-message-bubble .markdown-body pre {
-            margin: 8px 0 0;
-            border-radius: 10px;
-            border: 1px solid rgba(0,0,0,.08);
-            background: #fff;
-            overflow: hidden;
+            white-space: normal !important;
         }
         .af-copy-row {
             margin-top: 4px;
@@ -1619,6 +4137,113 @@
     <style id="aifengyue-built-in-css">
         ${builtInCss}
     </style>
+    <style id="aifengyue-preview-overrides">
+        .af-message-bubble .markdown-body > :first-child { margin-top: 0 !important; }
+        .af-message-bubble .markdown-body > :last-child { margin-bottom: 0 !important; }
+        .af-message-bubble .markdown-body > * + * { margin-top: 10px !important; }
+        .af-message-bubble .markdown-body p,
+        .af-message-bubble .markdown-body ul,
+        .af-message-bubble .markdown-body ol,
+        .af-message-bubble .markdown-body blockquote,
+        .af-message-bubble .markdown-body pre,
+        .af-message-bubble .markdown-body details,
+        .af-message-bubble .markdown-body table,
+        .af-message-bubble .markdown-body h1,
+        .af-message-bubble .markdown-body h2,
+        .af-message-bubble .markdown-body h3,
+        .af-message-bubble .markdown-body h4,
+        .af-message-bubble .markdown-body h5,
+        .af-message-bubble .markdown-body h6 {
+            margin-bottom: 0 !important;
+        }
+        .af-message-bubble .markdown-body details {
+            display: block !important;
+        }
+        .af-message-bubble .markdown-body summary {
+            margin: 0 !important;
+        }
+        :where(.af-markdown-body) pre {
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            overflow: auto !important;
+        }
+        :where(.af-markdown-body) pre > div,
+        :where(.af-markdown-body) pre > code[node] {
+            display: block;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,.08);
+            background: #fff;
+        }
+        :where(.af-markdown-body) pre > div {
+            overflow: hidden;
+        }
+        :where(.af-markdown-body) pre > div > div.border-b {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(0,0,0,.08);
+            background: rgba(248,250,252,.92);
+        }
+        :where(.af-markdown-body) pre > div > div.flex.justify-between > div:first-child {
+            min-width: 0;
+            font-size: 12px;
+            line-height: 1.2;
+            font-weight: 600;
+            color: #64748b;
+        }
+        :where(.af-markdown-body) pre > div > div[node] {
+            background: transparent;
+            overflow: auto;
+        }
+        :where(.af-markdown-body) pre > div > div[node] > code[node],
+        :where(.af-markdown-body) pre > code[node] {
+            display: block;
+            padding: 10px 12px;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre;
+            word-break: normal;
+            overflow-wrap: normal;
+            background: transparent;
+            tab-size: 4;
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"] {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            padding: 4px;
+            border-radius: 6px;
+            cursor: pointer;
+            user-select: none;
+            outline: none;
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"]:focus-visible {
+            box-shadow: 0 0 0 2px rgba(59,130,246,.24);
+        }
+        :where(.af-markdown-body) pre div[data-tooltip-id^="copy-tooltip"] > div {
+            width: 16px;
+            height: 16px;
+            background-size: 16px 16px;
+        }
+        .af-message-bubble .markdown-body :not(pre) > code {
+            display: inline !important;
+            padding: 0.15em 0.38em !important;
+            border-radius: 6px !important;
+            background: rgba(15, 23, 42, 0.06) !important;
+            font-size: 0.92em !important;
+        }
+        .af-message-bubble .markdown-body img {
+            max-width: 100% !important;
+            height: auto !important;
+            border-radius: 10px !important;
+        }
+    </style>
 </head>
 <body>
     <div class="grow overflow-hidden af-root-wrap">
@@ -1649,6 +4274,203 @@
 	};
 
 //#endregion
+//#region src/utils/logger.js
+	const PREFIX = "AI风月注册助手";
+	const LOG_STORAGE_KEY = CONFIG.STORAGE_KEYS.RUNTIME_LOG_BUFFER;
+	const LOG_ENTRY_LIMIT = 240;
+	const LOG_STRING_LIMIT = 400;
+	const LOG_MAX_DEPTH = 3;
+	const LOG_MAX_KEYS = 12;
+	const LOG_MAX_ARRAY = 12;
+	const runtimeLogSubscribers = new Set();
+	let runtimeLogMemoryFallback = [];
+	function trimText(value, maxLength = LOG_STRING_LIMIT) {
+		const text = typeof value === "string" ? value : String(value ?? "");
+		if (text.length <= maxLength) return text;
+		return `${text.slice(0, maxLength)}…`;
+	}
+	function sanitizeLogMeta(value, depth = 0, seen = new WeakSet()) {
+		if (value === null || value === undefined) return value;
+		if (typeof value === "string") return trimText(value);
+		if (typeof value === "number" || typeof value === "boolean") return value;
+		if (typeof value === "bigint") return `${value}n`;
+		if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
+		if (value instanceof Date) return value.toISOString();
+		if (value instanceof Error) {
+			return {
+				name: value.name || "Error",
+				message: trimText(value.message || ""),
+				stack: trimText(value.stack || "", 1200)
+			};
+		}
+		if (typeof Element !== "undefined" && value instanceof Element) {
+			const id = value.id ? `#${value.id}` : "";
+			const className = typeof value.className === "string" && value.className.trim() ? `.${value.className.trim().replace(/\s+/g, ".")}` : "";
+			return `[Element ${value.tagName?.toLowerCase?.() || "unknown"}${id}${className}]`;
+		}
+		if (depth >= LOG_MAX_DEPTH) {
+			if (Array.isArray(value)) return `[Array(${value.length})]`;
+			return "[Object]";
+		}
+		if (typeof value === "object") {
+			if (seen.has(value)) return "[Circular]";
+			seen.add(value);
+			if (Array.isArray(value)) {
+				const normalized = value.slice(0, LOG_MAX_ARRAY).map((item) => sanitizeLogMeta(item, depth + 1, seen));
+				if (value.length > LOG_MAX_ARRAY) {
+					normalized.push(`…(${value.length - LOG_MAX_ARRAY} more)`);
+				}
+				return normalized;
+			}
+			const normalized = {};
+			const entries = Object.entries(value).slice(0, LOG_MAX_KEYS);
+			entries.forEach(([key, item]) => {
+				normalized[key] = sanitizeLogMeta(item, depth + 1, seen);
+			});
+			if (Object.keys(value).length > LOG_MAX_KEYS) {
+				normalized.__truncated__ = `${Object.keys(value).length - LOG_MAX_KEYS} more keys`;
+			}
+			return normalized;
+		}
+		return trimText(value);
+	}
+	function normalizeLogEntries(entries) {
+		if (!Array.isArray(entries)) return [];
+		return entries.filter((entry) => entry && typeof entry === "object").slice(-LOG_ENTRY_LIMIT);
+	}
+	function readStoredRuntimeLogs() {
+		try {
+			const raw = localStorage.getItem(LOG_STORAGE_KEY);
+			if (!raw) return runtimeLogMemoryFallback.slice();
+			const parsed = JSON.parse(raw);
+			const normalized = normalizeLogEntries(parsed);
+			runtimeLogMemoryFallback = normalized;
+			return normalized.slice();
+		} catch {
+			return runtimeLogMemoryFallback.slice();
+		}
+	}
+	function persistRuntimeLogs(entries) {
+		const normalized = normalizeLogEntries(entries);
+		runtimeLogMemoryFallback = normalized;
+		try {
+			localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(normalized));
+			return normalized.slice();
+		} catch {
+			const compact = normalized.slice(-Math.max(80, Math.floor(LOG_ENTRY_LIMIT / 2)));
+			runtimeLogMemoryFallback = compact;
+			try {
+				localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(compact));
+			} catch {}
+			return compact.slice();
+		}
+	}
+	function emitRuntimeLogChange(entry = null) {
+		runtimeLogSubscribers.forEach((listener) => {
+			try {
+				listener(entry);
+			} catch {}
+		});
+	}
+	function appendRuntimeLog(entry) {
+		const entries = readStoredRuntimeLogs();
+		entries.push(entry);
+		persistRuntimeLogs(entries);
+		emitRuntimeLogChange(entry);
+	}
+	function output(level, text, meta) {
+		if (level === "ERROR") {
+			if (meta === undefined) console.error(text);
+			else console.error(text, meta);
+			return;
+		}
+		if (level === "WARN") {
+			if (meta === undefined) console.warn(text);
+			else console.warn(text, meta);
+			return;
+		}
+		if (level === "DEBUG") {
+			if (meta === undefined) console.debug(text);
+			else console.debug(text, meta);
+			return;
+		}
+		if (meta === undefined) console.log(text);
+		else console.log(text, meta);
+	}
+	function baseLog(level, runCtx, step, message, meta) {
+		const createdAt = Date.now();
+		const runId = runCtx?.runId || "NO-RUN";
+		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
+		output(level, tag, meta);
+		appendRuntimeLog({
+			id: `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+			createdAt,
+			level,
+			runId,
+			step: typeof step === "string" ? step : String(step ?? ""),
+			message: trimText(message, 800),
+			text: trimText(tag, 1200),
+			meta: meta === undefined ? null : sanitizeLogMeta(meta)
+		});
+	}
+	function createRunContext(prefix = "AR") {
+		const stamp = Date.now().toString(36);
+		const rand = Math.random().toString(36).slice(2, 6);
+		return {
+			runId: `${prefix}-${stamp}-${rand}`,
+			startedAt: Date.now()
+		};
+	}
+	function isDebugEnabled() {
+		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
+	}
+	function setDebugEnabled(enabled) {
+		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
+	}
+	function toggleDebugEnabled() {
+		const next = !isDebugEnabled();
+		setDebugEnabled(next);
+		return next;
+	}
+	function readRuntimeLogEntries({ limit = LOG_ENTRY_LIMIT } = {}) {
+		const normalizedLimit = Number(limit);
+		const entries = readStoredRuntimeLogs();
+		if (!Number.isFinite(normalizedLimit) || normalizedLimit <= 0) {
+			return entries;
+		}
+		return entries.slice(-Math.floor(normalizedLimit));
+	}
+	function clearRuntimeLogEntries() {
+		runtimeLogMemoryFallback = [];
+		try {
+			localStorage.removeItem(LOG_STORAGE_KEY);
+		} catch {}
+		emitRuntimeLogChange(null);
+	}
+	function subscribeRuntimeLogChange(listener) {
+		if (typeof listener !== "function") {
+			return () => {};
+		}
+		runtimeLogSubscribers.add(listener);
+		return () => {
+			runtimeLogSubscribers.delete(listener);
+		};
+	}
+	function logInfo$1(runCtx, step, message, meta) {
+		baseLog("INFO", runCtx, step, message, meta);
+	}
+	function logWarn$1(runCtx, step, message, meta) {
+		baseLog("WARN", runCtx, step, message, meta);
+	}
+	function logError(runCtx, step, message, meta) {
+		baseLog("ERROR", runCtx, step, message, meta);
+	}
+	function logDebug(runCtx, step, message, meta) {
+		if (!isDebugEnabled()) return;
+		baseLog("DEBUG", runCtx, step, message, meta);
+	}
+
+//#endregion
 //#region src/ui/sidebar/sidebar-context.js
 	const VALID_TABS = [
 		"register",
@@ -1673,6 +4495,10 @@
 //#region src/ui/sidebar/sidebar-view.js
 	const sidebarViewMethods = {
 		createSidebar() {
+			const providerMeta = MailService.getCurrentProviderMeta();
+			const providerOptions = MailService.listProviders().map((provider) => `
+                                <option value="${provider.id}"${provider.id === providerMeta.id ? " selected" : ""}>${provider.name}</option>
+                            `).join("");
 			const existing = document.getElementById("aifengyue-sidebar");
 			if (existing) {
 				existing.remove();
@@ -1913,13 +4739,24 @@
                     <div class="aifengyue-section">
                         <div class="aifengyue-section-title">API 配置</div>
                         <div class="aifengyue-input-group">
-                            <label>GPTMail API Key</label>
-                            <input type="text" id="aifengyue-api-key" placeholder="输入你的 API Key (默认: gpt-test)">
+                            <label>邮件提供商</label>
+                            <select id="aifengyue-mail-provider">
+${providerOptions}
+                            </select>
+                            <div class="aifengyue-hint">切换后会立即清空当前邮箱与验证码，请重新生成邮箱。</div>
                         </div>
-                        <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
+                        <div class="aifengyue-input-group" id="aifengyue-api-key-group">
+                            <label id="aifengyue-api-key-label">${providerMeta.apiKeyLabel}</label>
+                            <input type="text" id="aifengyue-api-key" placeholder="${providerMeta.apiKeyPlaceholder}">
+                        </div>
+                        <div class="aifengyue-hint" id="aifengyue-mail-provider-key-hint"></div>
+                        <div class="aifengyue-input-group">
+                            <div class="aifengyue-hint" id="aifengyue-mail-provider-name">当前邮件提供商：${providerMeta.name}</div>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-save-key">💾 保存 API Key</button>
+                        </div>
                     </div>
 
-                    <div class="aifengyue-section">
+                    <div class="aifengyue-section" id="aifengyue-usage-section">
                         <div class="aifengyue-section-title">配额统计</div>
                         <div class="aifengyue-usage-display">
                             <div class="aifengyue-usage-head">
@@ -1930,8 +4767,7 @@
                                 <div id="aifengyue-usage-bar"></div>
                             </div>
                             <div class="aifengyue-usage-foot">
-                                <span id="aifengyue-usage-remaining">剩余: 1000 次</span>
-                                <button id="aifengyue-reset-usage">重置统计</button>
+                                <span id="aifengyue-usage-remaining">等待邮件接口返回 usage...</span>
                             </div>
                         </div>
                     </div>
@@ -2041,6 +4877,14 @@
                                 <span class="aifengyue-info-value" id="aifengyue-token-pool-last-error">-</span>
                             </div>
                         </div>
+                        <div class="aifengyue-btn-group">
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-token-pool-maintain">
+                                立即维护
+                            </button>
+                            <button class="aifengyue-btn aifengyue-btn-secondary" id="aifengyue-token-pool-view-log">
+                                查看日志
+                            </button>
+                        </div>
                     </div>
 
                 </div>
@@ -2099,6 +4943,71 @@
 			if (!this.conversationModal) return;
 			this.conversationModal.classList.remove("open");
 			this.conversationModalOpen = false;
+		},
+		createTokenPoolLogModal() {
+			const existing = document.getElementById("aifengyue-token-pool-log-modal");
+			if (existing) {
+				existing.remove();
+			}
+			const modal = document.createElement("div");
+			modal.id = "aifengyue-token-pool-log-modal";
+			modal.innerHTML = `
+            <div class="aifengyue-conv-modal-backdrop">
+                <div class="aifengyue-log-modal-content" role="dialog" aria-modal="true" aria-label="号池运行日志">
+                    <div class="aifengyue-conv-modal-head">
+                        <div class="aifengyue-conv-modal-title">号池运行日志</div>
+                        <div class="aifengyue-log-modal-head-actions">
+                            <button id="aifengyue-token-pool-log-refresh" class="aifengyue-copy-btn" title="刷新日志">刷新</button>
+                            <button id="aifengyue-token-pool-log-clear" class="aifengyue-copy-btn" title="清空日志">清空</button>
+                            <button id="aifengyue-token-pool-log-modal-close" class="aifengyue-conv-modal-close" title="关闭">✕</button>
+                        </div>
+                    </div>
+                    <div class="aifengyue-log-modal-body">
+                        <div id="aifengyue-token-pool-log-summary" class="aifengyue-hint"></div>
+                        <div id="aifengyue-token-pool-log-list" class="aifengyue-log-list"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+			document.body.appendChild(modal);
+			modal.dataset.theme = this.theme;
+			this.tokenPoolLogModal = modal;
+			this.tokenPoolLogModalOpen = false;
+			modal.querySelector("#aifengyue-token-pool-log-modal-close")?.addEventListener("click", () => this.closeTokenPoolLogModal());
+			modal.querySelector("#aifengyue-token-pool-log-refresh")?.addEventListener("click", () => this.renderTokenPoolLogModal());
+			modal.querySelector("#aifengyue-token-pool-log-clear")?.addEventListener("click", () => this.clearTokenPoolLogs());
+			if (typeof this.tokenPoolLogUnsubscribe === "function") {
+				this.tokenPoolLogUnsubscribe();
+				this.tokenPoolLogUnsubscribe = null;
+			}
+			this.tokenPoolLogUnsubscribe = subscribeRuntimeLogChange(() => {
+				if (this.tokenPoolLogModalOpen) {
+					this.renderTokenPoolLogModal();
+				}
+			});
+			if (this.tokenPoolLogModalEscHandler) {
+				document.removeEventListener("keydown", this.tokenPoolLogModalEscHandler);
+			}
+			this.tokenPoolLogModalEscHandler = (event) => {
+				if (event.key === "Escape" && this.tokenPoolLogModalOpen) {
+					this.closeTokenPoolLogModal();
+				}
+			};
+			document.addEventListener("keydown", this.tokenPoolLogModalEscHandler);
+		},
+		openTokenPoolLogModal() {
+			if (!this.tokenPoolLogModal) {
+				this.createTokenPoolLogModal();
+			}
+			if (!this.tokenPoolLogModal) return;
+			this.tokenPoolLogModal.classList.add("open");
+			this.tokenPoolLogModalOpen = true;
+			this.renderTokenPoolLogModal();
+		},
+		closeTokenPoolLogModal() {
+			if (!this.tokenPoolLogModal) return;
+			this.tokenPoolLogModal.classList.remove("open");
+			this.tokenPoolLogModalOpen = false;
 		},
 		createToggleButton() {
 			const existing = document.getElementById("aifengyue-sidebar-toggle");
@@ -2173,66 +5082,6 @@
 	};
 
 //#endregion
-//#region src/utils/logger.js
-	const PREFIX = "AI风月注册助手";
-	function output(level, text, meta) {
-		if (level === "ERROR") {
-			if (meta === undefined) console.error(text);
-			else console.error(text, meta);
-			return;
-		}
-		if (level === "WARN") {
-			if (meta === undefined) console.warn(text);
-			else console.warn(text, meta);
-			return;
-		}
-		if (level === "DEBUG") {
-			if (meta === undefined) console.debug(text);
-			else console.debug(text, meta);
-			return;
-		}
-		if (meta === undefined) console.log(text);
-		else console.log(text, meta);
-	}
-	function baseLog(level, runCtx, step, message, meta) {
-		const runId = runCtx?.runId || "NO-RUN";
-		const tag = `[${PREFIX}][${runId}][${level}][${step}] ${message}`;
-		output(level, tag, meta);
-	}
-	function createRunContext(prefix = "AR") {
-		const stamp = Date.now().toString(36);
-		const rand = Math.random().toString(36).slice(2, 6);
-		return {
-			runId: `${prefix}-${stamp}-${rand}`,
-			startedAt: Date.now()
-		};
-	}
-	function isDebugEnabled() {
-		return !!gmGetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, false);
-	}
-	function setDebugEnabled(enabled) {
-		gmSetValue(CONFIG.STORAGE_KEYS.LOG_DEBUG_ENABLED, !!enabled);
-	}
-	function toggleDebugEnabled() {
-		const next = !isDebugEnabled();
-		setDebugEnabled(next);
-		return next;
-	}
-	function logInfo$1(runCtx, step, message, meta) {
-		baseLog("INFO", runCtx, step, message, meta);
-	}
-	function logWarn$1(runCtx, step, message, meta) {
-		baseLog("WARN", runCtx, step, message, meta);
-	}
-	function logError(runCtx, step, message, meta) {
-		baseLog("ERROR", runCtx, step, message, meta);
-	}
-	function logDebug(runCtx, step, message, meta) {
-		if (!isDebugEnabled()) return;
-		baseLog("DEBUG", runCtx, step, message, meta);
-	}
-
-//#endregion
 //#region src/ui/sidebar/sidebar-events.js
 	const sidebarEventsMethods = {
 		bindEvents() {
@@ -2248,9 +5097,29 @@
 			});
 			this.element.querySelector("#aifengyue-save-key").addEventListener("click", () => {
 				const input = this.element.querySelector("#aifengyue-api-key");
-				const key = input.value.trim() || CONFIG.DEFAULT_API_KEY;
-				ApiService.setApiKey(key);
-				getToast()?.success("API Key 已保存");
+				const providerMeta = MailService.getCurrentProviderMeta();
+				if (!providerMeta.requiresApiKey) {
+					this.refreshMailProviderConfigDisplay();
+					getToast()?.info(`${providerMeta.name} 无需 API Key`);
+					return;
+				}
+				const key = input.value.trim() || MailService.getDefaultApiKey();
+				MailService.setApiKey(key);
+				this.refreshMailProviderConfigDisplay();
+				getToast()?.success(`${providerMeta.name} API Key 已保存`);
+			});
+			this.element.querySelector("#aifengyue-mail-provider").addEventListener("change", (e) => {
+				const providerId = typeof e?.target?.value === "string" ? e.target.value : "";
+				if (!providerId || providerId === MailService.getCurrentProviderId()) {
+					this.refreshMailProviderConfigDisplay();
+					return;
+				}
+				MailService.setCurrentProviderId(providerId);
+				const providerMeta = MailService.getCurrentProviderMeta();
+				this.refreshMailProviderConfigDisplay();
+				this.updateUsageDisplay(MailService.getUsageSnapshot(providerMeta.id));
+				this.resetMailProviderState(providerMeta);
+				getToast()?.success(`已切换到 ${providerMeta.name}，请重新生成邮箱`);
 			});
 			this.element.querySelector("#aifengyue-layout-mode").addEventListener("change", (e) => {
 				const mode = e.target.value;
@@ -2350,6 +5219,36 @@
 				}
 				applyTokenPoolCheckSeconds(e?.target?.value, { showToast: true });
 			});
+			this.element.querySelector("#aifengyue-token-pool-maintain").addEventListener("click", async () => {
+				const autoRegister = getAutoRegister();
+				if (!autoRegister?.maintainTokenPool) {
+					getToast()?.warning("号池维护能力未就绪");
+					return;
+				}
+				this.openTokenPoolLogModal();
+				const summary = await autoRegister.maintainTokenPool({
+					reason: "manual-button",
+					force: true
+				});
+				this.refreshTokenPoolSummary(summary);
+				this.renderTokenPoolLogModal();
+				if (summary?.maintaining) {
+					getToast()?.info("号池已在维护中，可在日志弹窗查看实时进度");
+					return;
+				}
+				if (summary?.status === "ok") {
+					getToast()?.success("号池手动维护完成");
+					return;
+				}
+				if (summary?.status === "failed") {
+					getToast()?.warning("号池维护失败，请查看日志详情");
+					return;
+				}
+				getToast()?.info("号池维护已触发，可在日志弹窗查看详情");
+			});
+			this.element.querySelector("#aifengyue-token-pool-view-log").addEventListener("click", () => {
+				this.openTokenPoolLogModal();
+			});
 			this.element.querySelector("#aifengyue-start").addEventListener("click", () => {
 				getAutoRegister()?.start();
 			});
@@ -2392,12 +5291,6 @@
 						});
 					}
 				});
-			});
-			this.element.querySelector("#aifengyue-reset-usage").addEventListener("click", () => {
-				if (confirm("确定要重置 API 使用统计吗？")) {
-					ApiService.resetUsageCount();
-					getToast()?.success("统计已重置");
-				}
 			});
 			this.element.querySelector("#aifengyue-extract-html").addEventListener("click", () => {
 				const extractor = getIframeExtractor();
@@ -2557,29 +5450,73 @@
 		},
 		bindConversationPreviewCopyButtons(doc) {
 			if (!doc) return;
-			const buttons = doc.querySelectorAll(".af-copy-btn[data-af-copy-target]");
-			buttons.forEach((button) => {
-				button.addEventListener("click", async () => {
-					const selector = button.getAttribute("data-af-copy-target") || "";
+			const triggers = doc.querySelectorAll("[data-af-copy-target], [data-af-copy-text]");
+			const handleCopy = async (trigger) => {
+				const mode = trigger.getAttribute("data-af-copy-mode") || "text";
+				const encodedText = trigger.getAttribute("data-af-copy-text");
+				let rawText = "";
+				if (encodedText !== null) {
+					try {
+						rawText = decodeURIComponent(encodedText);
+					} catch {
+						rawText = encodedText;
+					}
+				} else {
+					const selector = trigger.getAttribute("data-af-copy-target") || "";
 					if (!selector) return;
 					const target = doc.querySelector(selector);
-					const text = typeof target?.textContent === "string" ? target.textContent.replace(/\u00a0/g, " ").trim() : "";
-					if (!text) {
-						getToast()?.warning("当前消息为空，无法复制");
-						return;
+					if (mode === "icon") {
+						rawText = typeof target?.textContent === "string" ? target.textContent.replace(/\u00a0/g, " ").replace(/\u200b/g, "") : "";
+					} else if (target) {
+						const copyRoot = target.cloneNode(true);
+						copyRoot.querySelectorAll("[data-af-copy-ignore]").forEach((node) => node.remove());
+						rawText = typeof copyRoot.textContent === "string" ? copyRoot.textContent.replace(/\u00a0/g, " ").replace(/\u200b/g, "") : "";
 					}
-					const copied = await this.copyTextToClipboard(text, {
-						successMessage: "消息已复制到剪贴板",
-						errorMessage: "消息复制失败"
-					});
-					if (copied) {
-						const prev = button.textContent;
-						button.textContent = "已复制";
-						setTimeout(() => {
-							button.textContent = prev || "复制";
-						}, 900);
-					}
+				}
+				const text = encodedText !== null ? rawText : mode === "icon" ? rawText : rawText.trim();
+				if (!text) {
+					getToast()?.warning(mode === "icon" ? "当前代码块为空，无法复制" : "当前消息为空，无法复制");
+					return;
+				}
+				const copied = await this.copyTextToClipboard(text, {
+					successMessage: mode === "icon" ? "代码已复制到剪贴板" : "消息已复制到剪贴板",
+					errorMessage: mode === "icon" ? "代码复制失败" : "消息复制失败"
 				});
+				if (!copied) return;
+				if (mode === "icon") {
+					const icon = trigger.querySelector(".af-code-copy-icon");
+					const copiedClass = trigger.getAttribute("data-af-copy-copied-class") || "style_copied__SbkhO";
+					if (!icon) return;
+					if (trigger.__afCopyResetTimer) {
+						clearTimeout(trigger.__afCopyResetTimer);
+					}
+					icon.classList.add(copiedClass, "af-code-copy-icon-copied");
+					trigger.__afCopyResetTimer = setTimeout(() => {
+						icon.classList.remove(copiedClass, "af-code-copy-icon-copied");
+						trigger.__afCopyResetTimer = null;
+					}, 900);
+					return;
+				}
+				const prev = trigger.textContent;
+				trigger.textContent = "已复制";
+				setTimeout(() => {
+					trigger.textContent = prev || "复制";
+				}, 900);
+			};
+			triggers.forEach((trigger) => {
+				if (trigger.dataset.afCopyBound === "1") return;
+				trigger.dataset.afCopyBound = "1";
+				trigger.addEventListener("click", async (event) => {
+					event.preventDefault();
+					await handleCopy(trigger);
+				});
+				if (trigger.getAttribute("data-af-copy-mode") === "icon") {
+					trigger.addEventListener("keydown", async (event) => {
+						if (event.key !== "Enter" && event.key !== " ") return;
+						event.preventDefault();
+						await handleCopy(trigger);
+					});
+				}
 			});
 		}
 	};
@@ -3149,6 +6086,81 @@
 				return "-";
 			}
 		},
+		getTokenPoolStatusText(summary = {}) {
+			if (summary?.maintaining) return "维护中";
+			switch (summary?.status) {
+				case "ok": return "最近成功";
+				case "failed": return "最近失败";
+				case "backoff": return "退避等待";
+				case "stopped": return "已停止";
+				case "running": return "定时中";
+				default: return summary?.schedulerEnabled ? summary?.schedulerRunning ? "运行中" : "待启动" : "已关闭";
+			}
+		},
+		escapeLogHtml(value) {
+			const text = typeof value === "string" ? value : String(value ?? "");
+			return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+		},
+		getTokenPoolLogEntries(limit = 200) {
+			const normalizedLimit = Math.max(1, Math.floor(Number(limit) || 200));
+			const entries = readRuntimeLogEntries({ limit: Math.max(normalizedLimit * 3, normalizedLimit) });
+			return entries.filter((entry) => {
+				const runId = typeof entry?.runId === "string" ? entry.runId : "";
+				const step = typeof entry?.step === "string" ? entry.step : "";
+				const message = typeof entry?.message === "string" ? entry.message : "";
+				return runId.startsWith("POOL-") || step.includes("TOKEN_POOL") || step.includes("SWITCH_POOL") || message.includes("号池");
+			}).slice(-normalizedLimit);
+		},
+		renderTokenPoolLogModal() {
+			if (!this.tokenPoolLogModal) return;
+			const summaryEl = this.tokenPoolLogModal.querySelector("#aifengyue-token-pool-log-summary");
+			const listEl = this.tokenPoolLogModal.querySelector("#aifengyue-token-pool-log-list");
+			const entries = this.getTokenPoolLogEntries(180);
+			const latestEntry = entries[entries.length - 1] || null;
+			const poolSummary = getAutoRegister()?.getTokenPoolSummary?.() || null;
+			if (summaryEl) {
+				const statusText = this.getTokenPoolStatusText(poolSummary || {});
+				const latestText = latestEntry ? `${this.formatTokenPoolTime(latestEntry.createdAt)} / ${latestEntry.runId || "NO-RUN"}` : "暂无";
+				const detailHint = isDebugEnabled() ? "DEBUG 已开启，当前会记录更细的请求与响应细节。" : "如需更多请求明细，可先打开「启用调试日志（DEBUG）」。";
+				summaryEl.textContent = `当前状态：${statusText}；最近日志：${latestText}；日志条数：${entries.length}；${detailHint}`;
+			}
+			if (!listEl) return;
+			if (!entries.length) {
+				listEl.innerHTML = `
+                <div class="aifengyue-log-empty">
+                    暂无号池运行日志。可先点“立即维护”，再打开这里查看完整过程。
+                </div>
+            `;
+				return;
+			}
+			listEl.innerHTML = entries.slice().reverse().map((entry) => {
+				const level = typeof entry?.level === "string" ? entry.level : "INFO";
+				const levelClass = `is-${level.toLowerCase()}`;
+				const timeText = this.formatTokenPoolTime(entry?.createdAt);
+				const stepText = typeof entry?.step === "string" && entry.step.trim() ? entry.step.trim() : "-";
+				const runIdText = typeof entry?.runId === "string" && entry.runId.trim() ? entry.runId.trim() : "NO-RUN";
+				const messageText = typeof entry?.message === "string" ? entry.message : "";
+				const metaText = entry?.meta ? JSON.stringify(entry.meta, null, 2) : "";
+				const metaHtml = metaText ? `<pre class="aifengyue-log-meta">${this.escapeLogHtml(metaText)}</pre>` : "";
+				return `
+                    <div class="aifengyue-log-entry ${levelClass}">
+                        <div class="aifengyue-log-entry-head">
+                            <span class="aifengyue-log-level">${this.escapeLogHtml(level)}</span>
+                            <span class="aifengyue-log-time">${this.escapeLogHtml(timeText)}</span>
+                            <span class="aifengyue-log-step">${this.escapeLogHtml(stepText)}</span>
+                        </div>
+                        <div class="aifengyue-log-message">${this.escapeLogHtml(messageText)}</div>
+                        <div class="aifengyue-log-run">${this.escapeLogHtml(runIdText)}</div>
+                        ${metaHtml}
+                    </div>
+                `;
+			}).join("");
+		},
+		clearTokenPoolLogs() {
+			clearRuntimeLogEntries();
+			this.renderTokenPoolLogModal();
+			getToast()?.success("号池运行日志已清空");
+		},
 		refreshTokenPoolSummary(summary = null) {
 			if (!this.element) return;
 			const autoRegister = getAutoRegister();
@@ -3161,19 +6173,27 @@
 			const lastCheckAtText = this.formatTokenPoolTime(resolvedSummary.lastCheckAt);
 			const nextAllowedAtText = this.formatTokenPoolTime(resolvedSummary.nextAllowedAt);
 			const errorText = typeof resolvedSummary.lastError === "string" && resolvedSummary.lastError.trim() ? resolvedSummary.lastError.trim() : "-";
-			const statusText = resolvedSummary.schedulerEnabled ? resolvedSummary.schedulerRunning ? "运行中" : "待启动" : "已关闭";
+			const statusText = this.getTokenPoolStatusText(resolvedSummary);
 			const fullEl = this.element.querySelector("#aifengyue-token-pool-full");
 			const totalEl = this.element.querySelector("#aifengyue-token-pool-total");
 			const statusEl = this.element.querySelector("#aifengyue-token-pool-status");
 			const lastCheckEl = this.element.querySelector("#aifengyue-token-pool-last-check");
 			const nextAllowedEl = this.element.querySelector("#aifengyue-token-pool-next-allowed");
 			const errorEl = this.element.querySelector("#aifengyue-token-pool-last-error");
+			const maintainBtn = this.element.querySelector("#aifengyue-token-pool-maintain");
 			if (fullEl) fullEl.textContent = `${fullCount} / ${targetFullCount}`;
 			if (totalEl) totalEl.textContent = `${totalCount} / ${maxCount}`;
 			if (statusEl) statusEl.textContent = statusText;
 			if (lastCheckEl) lastCheckEl.textContent = lastCheckAtText;
 			if (nextAllowedEl) nextAllowedEl.textContent = nextAllowedAtText;
 			if (errorEl) errorEl.textContent = errorText;
+			if (maintainBtn) {
+				maintainBtn.disabled = !!resolvedSummary.maintaining;
+				maintainBtn.textContent = resolvedSummary.maintaining ? "维护中..." : "立即维护";
+			}
+			if (this.tokenPoolLogModalOpen) {
+				this.renderTokenPoolLogModal();
+			}
 		},
 		setAutoReloadEnabled(enabled) {
 			const normalized = !!enabled;
@@ -3200,21 +6220,111 @@
 		applyTheme() {
 			if (!this.element) return;
 			this.element.dataset.theme = this.theme;
+			if (this.tokenPoolLogModal) {
+				this.tokenPoolLogModal.dataset.theme = this.theme;
+			}
 			const btn = this.element.querySelector(".aifengyue-theme-toggle");
 			if (btn) btn.textContent = this.theme === "dark" ? "☀" : "🌙";
 		},
 		toggleTheme() {
 			this.setTheme(this.theme === "dark" ? "light" : "dark");
 		},
-		updateUsageDisplay(snapshot = ApiService.getUsageSnapshot()) {
+		refreshMailProviderConfigDisplay() {
 			if (!this.element) return;
-			const used = Number(snapshot?.used || 0);
-			const limit = Number(snapshot?.limit || CONFIG.API_QUOTA_LIMIT || 0);
-			const remaining = Number(snapshot?.remaining || 0);
-			const percentage = Number(snapshot?.percentage || 0);
+			const providerMeta = MailService.getCurrentProviderMeta();
+			const providerSelect = this.element.querySelector("#aifengyue-mail-provider");
+			const apiKeyGroup = this.element.querySelector("#aifengyue-api-key-group");
+			const apiKeyLabel = this.element.querySelector("#aifengyue-api-key-label");
+			const apiKeyInput = this.element.querySelector("#aifengyue-api-key");
+			const providerKeyHint = this.element.querySelector("#aifengyue-mail-provider-key-hint");
+			const providerName = this.element.querySelector("#aifengyue-mail-provider-name");
+			const saveKeyButton = this.element.querySelector("#aifengyue-save-key");
+			const usageSection = this.element.querySelector("#aifengyue-usage-section");
+			if (providerSelect) {
+				providerSelect.value = providerMeta.id;
+			}
+			if (apiKeyLabel) {
+				apiKeyLabel.textContent = providerMeta.apiKeyLabel;
+			}
+			if (apiKeyInput) {
+				apiKeyInput.placeholder = providerMeta.apiKeyPlaceholder;
+				apiKeyInput.value = providerMeta.requiresApiKey ? MailService.getApiKey() : "";
+				apiKeyInput.disabled = !providerMeta.requiresApiKey;
+			}
+			if (apiKeyGroup) {
+				apiKeyGroup.style.display = providerMeta.requiresApiKey ? "" : "none";
+			}
+			if (providerKeyHint) {
+				providerKeyHint.textContent = providerMeta.requiresApiKey ? "" : "当前邮件提供商无需 API Key";
+				providerKeyHint.style.display = providerMeta.requiresApiKey ? "none" : "";
+			}
+			if (providerName) {
+				providerName.textContent = `当前邮件提供商：${providerMeta.name}`;
+			}
+			if (saveKeyButton) {
+				saveKeyButton.disabled = !providerMeta.requiresApiKey;
+				saveKeyButton.style.display = providerMeta.requiresApiKey ? "" : "none";
+			}
+			if (usageSection) {
+				usageSection.style.display = providerMeta.supportsUsage ? "" : "none";
+			}
+		},
+		resetMailProviderState(providerMeta = MailService.getCurrentProviderMeta()) {
+			gmSetValue(CONFIG.STORAGE_KEYS.CURRENT_EMAIL, "");
+			this.updateState({
+				email: "",
+				verificationCode: "",
+				status: "idle",
+				statusMessage: `已切换到 ${providerMeta.name}，请重新生成邮箱`
+			});
+			const autoRegister = getAutoRegister();
+			if (!autoRegister?.getFormElements || !autoRegister?.simulateInput) {
+				return;
+			}
+			const { emailInput, codeInput } = autoRegister.getFormElements();
+			if (emailInput) {
+				autoRegister.simulateInput(emailInput, "");
+			}
+			if (codeInput) {
+				autoRegister.simulateInput(codeInput, "");
+			}
+		},
+		formatUsageSummary(snapshot) {
+			if (snapshot?.usageStatus === "unsupported" || snapshot?.supportsUsage === false) {
+				return "当前邮件提供商未提供 usage";
+			}
+			if (!snapshot?.hasUsage) {
+				return "等待邮件接口返回 usage...";
+			}
+			const totalRemaining = Number(snapshot?.remaining || 0);
+			const totalText = totalRemaining < 0 ? `总剩余: 超限 ${Math.abs(totalRemaining)} 次` : `总剩余: ${totalRemaining} 次`;
+			const dailyLimit = Number(snapshot?.dailyLimit || 0);
+			const dailyUsed = Number(snapshot?.dailyUsed || 0);
+			if (dailyLimit > 0) {
+				return `${totalText} · 今日: ${dailyUsed} / ${dailyLimit}`;
+			}
+			if (dailyUsed > 0 || Number.isFinite(Number(snapshot?.dailyRemaining))) {
+				return `${totalText} · 今日已用: ${dailyUsed} 次`;
+			}
+			return totalText;
+		},
+		updateUsageDisplay(snapshot = MailService.getUsageSnapshot()) {
+			if (!this.element) return;
 			const usageText = this.element.querySelector("#aifengyue-usage-text");
 			const usageBar = this.element.querySelector("#aifengyue-usage-bar");
 			const usageRemaining = this.element.querySelector("#aifengyue-usage-remaining");
+			if (!snapshot?.hasUsage) {
+				if (usageText) usageText.textContent = "-- / --";
+				if (usageBar) {
+					usageBar.style.width = "0%";
+					usageBar.style.background = "linear-gradient(90deg, #64748b, #94a3b8)";
+				}
+				if (usageRemaining) usageRemaining.textContent = this.formatUsageSummary(snapshot);
+				return;
+			}
+			const used = Number(snapshot?.used || 0);
+			const limit = Number(snapshot?.limit || CONFIG.API_QUOTA_LIMIT || 0);
+			const percentage = Number(snapshot?.percentage || 0);
 			if (usageText) usageText.textContent = `${used} / ${limit}`;
 			if (usageBar) {
 				usageBar.style.width = `${percentage}%`;
@@ -3226,7 +6336,7 @@
 					usageBar.style.background = "linear-gradient(90deg, #0d9488, #14b8a6)";
 				}
 			}
-			if (usageRemaining) usageRemaining.textContent = `剩余: ${remaining} 次`;
+			if (usageRemaining) usageRemaining.textContent = this.formatUsageSummary(snapshot);
 		},
 		refreshModelFamilyMappingEditor() {
 			if (!this.element) return;
@@ -3247,10 +6357,7 @@
 //#region src/ui/sidebar/sidebar-state.js
 	const sidebarStateMethods = {
 		loadSavedData() {
-			const apiKey = gmGetValue(CONFIG.STORAGE_KEYS.API_KEY, "");
-			if (apiKey) {
-				this.element.querySelector("#aifengyue-api-key").value = apiKey;
-			}
+			this.refreshMailProviderConfigDisplay();
 			const layoutModeInput = this.element.querySelector("#aifengyue-layout-mode");
 			if (layoutModeInput) {
 				layoutModeInput.value = this.layoutMode;
@@ -3283,7 +6390,7 @@
 			if (tokenPoolCheckInput) {
 				tokenPoolCheckInput.value = String(this.getTokenPoolCheckSeconds());
 			}
-			this.updateUsageDisplay();
+			this.updateUsageDisplay(MailService.getUsageSnapshot());
 			this.refreshTokenPoolSummary();
 			this.refreshModelFamilyMappingEditor();
 			this.render();
@@ -3419,6 +6526,10 @@
 		conversationModal: null,
 		conversationModalOpen: false,
 		conversationModalEscHandler: null,
+		tokenPoolLogModal: null,
+		tokenPoolLogModalOpen: false,
+		tokenPoolLogModalEscHandler: null,
+		tokenPoolLogUnsubscribe: null,
 		usageUnsubscribe: null,
 		isOpen: false,
 		layoutMode: "inline",
@@ -3445,6 +6556,7 @@
 			this.theme = this.getTheme();
 			this.createSidebar();
 			this.createConversationModal();
+			this.createTokenPoolLogModal();
 			this.createToggleButton();
 			this.loadSavedData();
 			this.bindUsageSubscription();
@@ -3462,7 +6574,7 @@
 				this.usageUnsubscribe();
 				this.usageUnsubscribe = null;
 			}
-			this.usageUnsubscribe = ApiService.subscribeUsageChange((snapshot) => {
+			this.usageUnsubscribe = MailService.subscribeUsageChange((snapshot) => {
 				this.updateUsageDisplay(snapshot);
 			});
 		},
@@ -5897,6 +9009,7 @@
 				intervalSeconds,
 				schedulerEnabled: intervalSeconds > 0,
 				schedulerRunning: !!this.tokenPoolTimer,
+				maintaining: !!this.tokenPoolMaintaining,
 				lastCheckAt: backoff.lastCheckAt,
 				nextAllowedAt: backoff.nextAllowedAt,
 				backoffLevel: backoff.backoffLevel,
@@ -6026,6 +9139,14 @@
 			const ctx = runCtx || createRunContext("POOL");
 			this.tokenPoolMaintaining = true;
 			try {
+				logInfo$1(ctx, "TOKEN_POOL", "号池维护开始", {
+					reason,
+					force: !!force
+				});
+				this.updateTokenPoolSummary(this.buildTokenPoolSummary({
+					reason: reason || "maintain",
+					status: "maintaining"
+				}), ctx);
 				const backoff = this.readTokenPoolBackoffState();
 				const now = Date.now();
 				if (!force && backoff.nextAllowedAt > now) {
@@ -6201,7 +9322,7 @@
 					});
 				}
 				logInfo$1(runCtx, "POLL_CODE", `轮询验证码第 ${attempt}/${maxAttempts} 次`);
-				const emails = await ApiService.getEmails(email);
+				const emails = await MailService.getEmails(email);
 				const sortedEmails = (emails || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 				logDebug(runCtx, "POLL_CODE", "邮件列表详情", {
 					count: sortedEmails.length,
@@ -6244,7 +9365,7 @@
 				});
 				this.registrationStartTime = Math.floor(Date.now() / 1e3);
 				gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-				const email = await ApiService.generateEmail();
+				const email = await MailService.generateEmail();
 				const username = generateUsername();
 				const password = generatePassword();
 				logInfo$1(runCtx, "GENERATE", "生成注册信息完成", {
@@ -6319,7 +9440,7 @@
 			}
 			this.registrationStartTime = Math.floor(Date.now() / 1e3);
 			gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-			const email = await ApiService.generateEmail();
+			const email = await MailService.generateEmail();
 			const username = generateUsername();
 			const password = generatePassword();
 			logInfo$1(runCtx, "GENERATE", `${flowName} 生成注册信息完成`, {
@@ -6802,7 +9923,7 @@
 				});
 				this.registrationStartTime = Math.floor(Date.now() / 1e3);
 				gmSetValue(CONFIG.STORAGE_KEYS.REGISTRATION_START_TIME, this.registrationStartTime);
-				const email = await ApiService.generateEmail();
+				const email = await MailService.generateEmail();
 				Sidebar.updateState({
 					email,
 					status: "waiting",
@@ -7724,14 +10845,20 @@
 		gmRegisterMenuCommand(`🔍 调试日志状态: ${isDebugEnabled() ? "ON" : "OFF"}`, () => {
 			Toast.info(`当前调试日志: ${isDebugEnabled() ? "ON" : "OFF"}`);
 		});
-		gmRegisterMenuCommand("⚙️ 设置 API Key", () => {
-			const currentKey = ApiService.getApiKey();
-			const newKey = prompt("请输入 GPTMail API Key:", currentKey);
+		gmRegisterMenuCommand("⚙️ 设置邮件 API Key", () => {
+			const providerMeta = MailService.getCurrentProviderMeta();
+			if (!providerMeta.requiresApiKey) {
+				Toast.info(`${providerMeta.name} 无需 API Key`);
+				Sidebar.refreshMailProviderConfigDisplay?.();
+				return;
+			}
+			const currentKey = MailService.getApiKey();
+			const newKey = prompt(`请输入 ${providerMeta.apiKeyLabel}:`, currentKey);
 			if (newKey !== null) {
-				ApiService.setApiKey(newKey.trim() || CONFIG.DEFAULT_API_KEY);
-				Toast.success("API Key 已更新");
-				const input = document.querySelector("#aifengyue-api-key");
-				if (input) input.value = newKey.trim() || CONFIG.DEFAULT_API_KEY;
+				MailService.setApiKey(newKey.trim() || MailService.getDefaultApiKey());
+				Toast.success(`${providerMeta.name} API Key 已更新`);
+				Sidebar.refreshMailProviderConfigDisplay?.();
+				Sidebar.updateUsageDisplay?.(MailService.getUsageSnapshot());
 			}
 		});
 		gmRegisterMenuCommand("📧 生成新邮箱", () => {
@@ -8965,7 +12092,8 @@
     /* ============================
        Light 主题 (默认)
        ============================ */
-    #aifengyue-sidebar {
+    #aifengyue-sidebar,
+    #aifengyue-token-pool-log-modal {
         --af-bg:          #ffffff;
         --af-bg-soft:     #f0f2f7;
         --af-bg-card:     #e4e8f0;
@@ -9008,7 +12136,8 @@
     /* ============================
        Dark 主题
        ============================ */
-    #aifengyue-sidebar[data-theme="dark"] {
+    #aifengyue-sidebar[data-theme="dark"],
+    #aifengyue-token-pool-log-modal[data-theme="dark"] {
         --af-bg:          #13151e;
         --af-bg-soft:     #1a1d2b;
         --af-bg-card:     #212435;
@@ -9624,7 +12753,16 @@
         z-index: 2147483647;
         display: none;
     }
+    #aifengyue-token-pool-log-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: none;
+    }
     #aifengyue-conversation-modal.open {
+        display: block;
+    }
+    #aifengyue-token-pool-log-modal.open {
         display: block;
     }
     .aifengyue-conv-modal-backdrop {
@@ -9649,6 +12787,18 @@
         flex-direction: column;
         overflow: hidden;
     }
+    .aifengyue-log-modal-content {
+        width: min(1280px, calc(100vw - 40px));
+        min-width: 760px;
+        height: min(92vh, 1080px);
+        border-radius: 12px;
+        background: var(--af-bg);
+        border: 1px solid var(--af-border);
+        box-shadow: 0 18px 48px rgba(2, 6, 23, 0.42);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
     .aifengyue-conv-modal-head {
         height: 46px;
         display: flex;
@@ -9659,10 +12809,19 @@
         background: rgba(255, 255, 255, 0.92);
         flex-shrink: 0;
     }
+    #aifengyue-sidebar[data-theme="dark"] .aifengyue-conv-modal-head,
+    #aifengyue-token-pool-log-modal .aifengyue-conv-modal-head {
+        background: color-mix(in srgb, var(--af-bg-card) 88%, #ffffff);
+    }
     .aifengyue-conv-modal-title {
         font-size: 14px;
         font-weight: 700;
         color: #1f2937;
+    }
+    .aifengyue-log-modal-head-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
     .aifengyue-conv-modal-close {
         width: 30px;
@@ -9687,11 +12846,119 @@
         width: 100%;
         background: #fff;
     }
+    .aifengyue-log-modal-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+        height: 100%;
+        padding: 12px;
+        background: var(--af-bg-soft);
+    }
+    .aifengyue-log-list {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: var(--af-bg-card);
+        padding: 12px;
+    }
+    .aifengyue-log-empty {
+        height: 100%;
+        min-height: 240px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: var(--af-muted);
+        font-size: 13px;
+        line-height: 1.7;
+    }
+    .aifengyue-log-entry {
+        border: 1px solid var(--af-border);
+        border-radius: 10px;
+        background: var(--af-bg);
+        padding: 12px;
+        margin-bottom: 10px;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+    }
+    .aifengyue-log-entry:last-child {
+        margin-bottom: 0;
+    }
+    .aifengyue-log-entry.is-info {
+        border-left: 3px solid #2563eb;
+    }
+    .aifengyue-log-entry.is-warn {
+        border-left: 3px solid #d97706;
+    }
+    .aifengyue-log-entry.is-error {
+        border-left: 3px solid #dc2626;
+    }
+    .aifengyue-log-entry.is-debug {
+        border-left: 3px solid #7c3aed;
+    }
+    .aifengyue-log-entry-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 11px;
+        color: var(--af-muted);
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    }
+    .aifengyue-log-level,
+    .aifengyue-log-step,
+    .aifengyue-log-time {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 2px 8px;
+        background: var(--af-input-bg);
+        border: 1px solid var(--af-border);
+    }
+    .aifengyue-log-message {
+        color: var(--af-text);
+        font-size: 13px;
+        line-height: 1.7;
+        font-weight: 600;
+        word-break: break-word;
+    }
+    .aifengyue-log-run {
+        margin-top: 8px;
+        color: var(--af-muted);
+        font-size: 11px;
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+        word-break: break-all;
+    }
+    .aifengyue-log-meta {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--af-border);
+        background: var(--af-input-bg);
+        color: var(--af-text);
+        font-size: 11px;
+        line-height: 1.6;
+        font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-x: auto;
+    }
     @media (max-width: 760px) {
         .aifengyue-conv-modal-content {
             min-width: 0;
             width: calc(100vw - 16px);
             height: calc(100vh - 16px);
+        }
+        .aifengyue-log-modal-content {
+            min-width: 0;
+            width: calc(100vw - 16px);
+            height: calc(100vh - 16px);
+        }
+        .aifengyue-log-modal-head-actions {
+            gap: 6px;
         }
         .aifengyue-conv-modal-backdrop {
             padding: 8px;
@@ -9728,20 +12995,6 @@
         border-radius: 999px;
         background: var(--af-bar-gradient);
         transition: width 0.4s var(--af-ease);
-    }
-    #aifengyue-reset-usage {
-        border: none;
-        background: transparent;
-        color: var(--af-accent);
-        cursor: pointer;
-        font-size: 12px;
-        font-family: var(--af-font);
-        padding: 0;
-        transition: color 0.2s;
-    }
-    #aifengyue-reset-usage:hover {
-        color: var(--af-primary);
-        text-decoration: underline;
     }
 
     /* --- 脚注 --- */
