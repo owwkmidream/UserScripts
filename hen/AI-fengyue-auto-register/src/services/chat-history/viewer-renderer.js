@@ -68,6 +68,10 @@ function sanitizeInlineStyleText(text) {
     return String(text || '').replace(/<\/style/gi, '<\\/style');
 }
 
+function encodeCopyTextPayload(text) {
+    return escapeHtml(encodeURIComponent(String(text ?? '')));
+}
+
 export const chatHistoryViewerMethods = {
     async buildChainViewerHtml({ appId, chainId }) {
         const normalizedAppId = normalizeId(appId);
@@ -110,6 +114,7 @@ export const chatHistoryViewerMethods = {
                 });
                 const queryContentId = `af-query-content-${index + 1}`;
                 const answerContentId = `af-answer-content-${index + 1}`;
+                const rawAnswerCopyPayload = encodeCopyTextPayload(answerText);
                 if (answerText) {
                     answerHistory.push(answerText);
                 }
@@ -139,7 +144,7 @@ export const chatHistoryViewerMethods = {
                                     ${renderedAnswer}
                                 </div>
                                 <div class="af-copy-row">
-                                    <button class="af-copy-btn" type="button" data-af-copy-target="#${answerContentId}">复制 Answer</button>
+                                    <button class="af-copy-btn" type="button" data-af-copy-text="${rawAnswerCopyPayload}">复制 Answer</button>
                                 </div>
                             </div>
                         </div>
