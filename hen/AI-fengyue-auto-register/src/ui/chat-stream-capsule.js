@@ -47,6 +47,10 @@ export const ChatStreamCapsule = {
                 -webkit-backdrop-filter: blur(8px);
                 opacity: 0.95;
             }
+            #${CAPSULE_ID},
+            #${CAPSULE_ID} * {
+                pointer-events: none;
+            }
             #${CAPSULE_ID} .aifengyue-chat-status-dot {
                 width: 8px;
                 height: 8px;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI风月 自动注册助手
 // @namespace    https://github.com/owwkmidream/UserScripts
-// @version      2.0.19
+// @version      2.0.20
 // @description  自动生成临时邮箱、账户名和密码，自动获取验证码，完成 AI风月 网站注册
 // @author       owwkmidream
 // @match        https://dearestie.xyz/*
@@ -11023,6 +11023,10 @@ ${providerOptions}
                 backdrop-filter: blur(8px);
                 -webkit-backdrop-filter: blur(8px);
                 opacity: 0.95;
+            }
+            #${CAPSULE_ID},
+            #${CAPSULE_ID} * {
+                pointer-events: none;
             }
             #${CAPSULE_ID} .aifengyue-chat-status-dot {
                 width: 8px;
