@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Everia Club 极致画廊
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @description  重构 Everia Club 列表与详情页，提供现代 Grid、无限滚动、嵌入式画廊和手势灯箱
 // @author       owwkmidream
 // @match        https://www.everiaclub.com/*
@@ -19,7 +19,8 @@
     const DEFAULT_WIDTH = clamp(Number(localStorage.getItem(WIDTH_KEY) || '260'), MIN_WIDTH, MAX_WIDTH);
 
     const CONFIG = {
-        heartbeatMs: 900,
+        heartbeatMs: 1500,
+        feedImageRootMargin: '500px 0px',
         adSelectors: [
             'ins',
             '.sk',
@@ -49,13 +50,21 @@
     const STATE = {
         stylesInjected: false,
         adGuardStarted: false,
-        adObserver: null,
+        adRootScanned: false,
+        adSweepTimer: 0,
         feed: {
             root: null,
             loading: false,
             nextUrl: '',
             loadedUrls: new Set(),
-            io: null,
+            observer: null,
+            sanitizeTimer: 0,
+            initialized: false,
+            scrollBound: false,
+            scrollTicking: false,
+            lastAutoLoadAt: 0,
+            autoLoadedCount: 0,
+            imageIo: null,
         },
     };
 
@@ -392,24 +401,20 @@
     }
 
     function startAdGuard() {
-        hideAds(document);
+        if (!STATE.adRootScanned) {
+            hideAds(document, true);
+            STATE.adRootScanned = true;
+        }
         if (STATE.adGuardStarted) {
             return;
         }
         STATE.adGuardStarted = true;
-        STATE.adObserver = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (node instanceof HTMLElement) {
-                        hideAds(node);
-                    }
-                }
-            }
-        });
-        STATE.adObserver.observe(document.documentElement, { childList: true, subtree: true });
+        STATE.adSweepTimer = window.setInterval(() => {
+            hideAds(document, false);
+        }, 5000);
     }
 
-    function hideAds(scope) {
+    function hideAds(scope, deep = false) {
         if (!scope) {
             return;
         }
@@ -422,8 +427,8 @@
             }
         }
         const nodes = scope instanceof HTMLElement ? [scope] : [];
-        if (typeof scope.querySelectorAll === 'function') {
-            scope.querySelectorAll('script, iframe, a, div, p').forEach((element) => nodes.push(element));
+        if (deep && typeof scope.querySelectorAll === 'function') {
+            scope.querySelectorAll('script[src], iframe[src], a[href], [data-src]').forEach((element) => nodes.push(element));
         }
         nodes.forEach((node) => {
             if (!(node instanceof HTMLElement)) {
@@ -438,21 +443,38 @@
 
     function initFeedScene(root) {
         if (STATE.feed.root !== root) {
-            if (STATE.feed.io) {
-                STATE.feed.io.disconnect();
+            if (STATE.feed.observer) {
+                STATE.feed.observer.disconnect();
+            }
+            if (STATE.feed.imageIo) {
+                STATE.feed.imageIo.disconnect();
+                STATE.feed.imageIo = null;
+            }
+            if (STATE.feed.sanitizeTimer) {
+                clearTimeout(STATE.feed.sanitizeTimer);
             }
             STATE.feed.root = root;
             STATE.feed.loading = false;
             STATE.feed.nextUrl = '';
             STATE.feed.loadedUrls = new Set();
+            STATE.feed.observer = null;
+            STATE.feed.sanitizeTimer = 0;
+            STATE.feed.initialized = false;
+            STATE.feed.autoLoadedCount = 0;
+        }
+        if (STATE.feed.initialized) {
+            return;
         }
         root.dataset.ecgFeed = 'true';
         sanitizeFeed(root);
+        processFeedImagesInScope(root);
         ensureFeedToolbar(root);
         ensureFeedListeners(root);
         ensureFeedSentinel(root);
+        ensureFeedScrollAutoload(root);
         refreshFeedState(root);
         observeFeedRoot(root);
+        STATE.feed.initialized = true;
     }
 
     function sanitizeFeed(root) {
@@ -491,6 +513,7 @@
                 element.removeAttribute('style');
             }
         });
+        card.querySelectorAll('img').forEach((image) => prepareFeedCardImage(image));
     }
 
     function sanitizePagination(pagination) {
@@ -528,12 +551,23 @@
             return;
         }
         root.dataset.ecgFeedObserved = 'true';
-        const observer = new MutationObserver(() => {
-            sanitizeFeed(root);
-            moveFeedSentinel(root);
-            refreshFeedState(root);
+        STATE.feed.observer = new MutationObserver((mutations) => {
+            const hasDirectChildMutation = mutations.some((mutation) => mutation.type === 'childList' && mutation.target === root);
+            if (!hasDirectChildMutation) {
+                return;
+            }
+            if (STATE.feed.sanitizeTimer) {
+                clearTimeout(STATE.feed.sanitizeTimer);
+            }
+            STATE.feed.sanitizeTimer = window.setTimeout(() => {
+                sanitizeFeed(root);
+                processFeedImagesInScope(root);
+                moveFeedSentinel(root);
+                refreshFeedState(root);
+                STATE.feed.sanitizeTimer = 0;
+            }, 120);
         });
-        observer.observe(root, { childList: true, subtree: true });
+        STATE.feed.observer.observe(root, { childList: true, subtree: false });
     }
 
     function ensureFeedSentinel(root) {
@@ -544,18 +578,38 @@
             root.appendChild(sentinel);
         }
         moveFeedSentinel(root);
-        if (STATE.feed.io) {
-            STATE.feed.io.disconnect();
-        }
-        if (!('IntersectionObserver' in window)) {
+    }
+
+    function ensureFeedScrollAutoload(root) {
+        if (STATE.feed.scrollBound) {
             return;
         }
-        STATE.feed.io = new IntersectionObserver((entries) => {
-            if (entries.some((entry) => entry.isIntersecting)) {
-                void loadFeedPage(root, STATE.feed.nextUrl);
+        STATE.feed.scrollBound = true;
+        window.addEventListener('scroll', () => {
+            if (STATE.feed.scrollTicking) {
+                return;
             }
-        }, { rootMargin: '1200px 0px' });
-        STATE.feed.io.observe(sentinel);
+            STATE.feed.scrollTicking = true;
+            window.requestAnimationFrame(() => {
+                STATE.feed.scrollTicking = false;
+                if (STATE.feed.loading || !STATE.feed.nextUrl) {
+                    return;
+                }
+                if (STATE.feed.autoLoadedCount >= 2) {
+                    return;
+                }
+                const now = Date.now();
+                if (now - STATE.feed.lastAutoLoadAt < 1200) {
+                    return;
+                }
+                const bottomGap = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+                if (bottomGap <= 800) {
+                    STATE.feed.lastAutoLoadAt = now;
+                    STATE.feed.autoLoadedCount += 1;
+                    void loadFeedPage(root, STATE.feed.nextUrl);
+                }
+            });
+        }, { passive: true });
     }
 
     function moveFeedSentinel(root) {
@@ -628,6 +682,7 @@
             STATE.feed.nextUrl = findNextPageUrl(incomingRoot, targetUrl);
             moveFeedSentinel(root);
             sanitizeFeed(root);
+            processFeedImagesInScope(root);
             setToolbarStatus('#ecg-feed-toolbar', appended > 0 ? `已追加 Page ${pageNumber} · ${appended} 项` : '没有新的卡片');
         } catch (error) {
             console.error('[Everia Club] feed load failed:', error);
@@ -635,6 +690,96 @@
         } finally {
             STATE.feed.loading = false;
         }
+    }
+
+    function ensureFeedImageObserver() {
+        if (STATE.feed.imageIo || !('IntersectionObserver' in window)) {
+            return;
+        }
+        STATE.feed.imageIo = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) {
+                    return;
+                }
+                const image = entry.target;
+                if (!(image instanceof HTMLImageElement)) {
+                    return;
+                }
+                revealFeedImage(image);
+                observer.unobserve(image);
+            });
+        }, { rootMargin: CONFIG.feedImageRootMargin });
+    }
+
+    function processFeedImagesInScope(scope) {
+        if (!(scope instanceof HTMLElement)) {
+            return;
+        }
+        const images = scope.querySelectorAll('.leftp img');
+        if (!images.length) {
+            return;
+        }
+        ensureFeedImageObserver();
+        images.forEach((image) => prepareFeedCardImage(image));
+        revealVisibleFeedImages(scope);
+    }
+
+    function prepareFeedCardImage(image) {
+        if (!(image instanceof HTMLImageElement)) {
+            return;
+        }
+        const realSrc = getHighResUrl(image);
+        if (!realSrc) {
+            return;
+        }
+        image.decoding = 'async';
+        image.loading = 'lazy';
+        image.referrerPolicy = 'no-referrer';
+        image.dataset.ecgRealSrc = realSrc;
+        if (!image.dataset.ecgLazyPrepared) {
+            image.dataset.ecgLazyPrepared = '1';
+            if (!image.src || /\/static\/loading\.jpg/i.test(image.src)) {
+                image.src = '/static/loading.jpg';
+            }
+        }
+        if ('IntersectionObserver' in window && STATE.feed.imageIo) {
+            STATE.feed.imageIo.observe(image);
+            return;
+        }
+        revealFeedImage(image);
+    }
+
+    function revealFeedImage(image) {
+        if (!(image instanceof HTMLImageElement)) {
+            return;
+        }
+        const realSrc = image.dataset.ecgRealSrc || getHighResUrl(image);
+        if (!realSrc) {
+            return;
+        }
+        if (image.src !== realSrc) {
+            image.src = realSrc;
+        }
+        image.setAttribute('data-original', realSrc);
+    }
+
+    function revealVisibleFeedImages(scope) {
+        if (!(scope instanceof HTMLElement)) {
+            return;
+        }
+        const viewHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        scope.querySelectorAll('.leftp img[data-ecg-real-src]').forEach((image) => {
+            if (!(image instanceof HTMLImageElement)) {
+                return;
+            }
+            const rect = image.getBoundingClientRect();
+            if (rect.top <= viewHeight + 150 && rect.bottom >= -150) {
+                revealFeedImage(image);
+                if (STATE.feed.imageIo) {
+                    STATE.feed.imageIo.unobserve(image);
+                }
+            }
+        });
     }
 
     async function initDetailScene(root) {
