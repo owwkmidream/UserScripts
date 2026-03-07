@@ -13,6 +13,8 @@
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @connect      mail.chatgpt.org.uk
+// @connect      www.emailnator.com
+// @connect      emailnator.com
 // @license      MIT
 // @run-at       document-end
 // ==/UserScript==

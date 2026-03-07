@@ -13,7 +13,7 @@
 
 ### 2.1 运行入口
 
-- `src/meta.user.js`：userscript 元信息头（`@match`、`@grant`、版本等）。
+- `src/meta.user.js`：userscript 元信息头（`@match`、`@grant`、`@connect`、版本等）。
 - `src/index.js`：脚本运行入口，负责样式注入与 `startApp` 启动。
 - `src/app.js`：应用初始化编排，挂载模块引用并启动主流程。
 
@@ -168,3 +168,4 @@
 - `2026-03-07`：号池设置区新增“立即维护/查看日志”入口，`logger.js` 增加本地运行日志缓冲，支持在侧边栏弹窗查看号池维护明细。
 - `2026-03-07`：邮件服务重构为 `mail-service + provider-registry + gptmail-provider` 结构，usage 改为直接消费邮件接口返回的 `usage` 元数据。
 - `2026-03-07`：新增 `emailnator-provider.js` 第二邮件提供商，侧边栏设置页加入 provider 切换与按 provider 显示 API Key/usage 状态。
+- `2026-03-07`：`src/meta.user.js` 增加 Emailnator 的 `@connect` 权限；无 usage 的邮件 provider 在侧边栏中隐藏“配额统计”区域。

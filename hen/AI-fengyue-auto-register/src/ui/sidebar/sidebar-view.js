@@ -268,7 +268,7 @@ ${providerOptions}
                         </div>
                     </div>
 
-                    <div class="aifengyue-section">
+                    <div class="aifengyue-section" id="aifengyue-usage-section">
                         <div class="aifengyue-section-title">配额统计</div>
                         <div class="aifengyue-usage-display">
                             <div class="aifengyue-usage-head">

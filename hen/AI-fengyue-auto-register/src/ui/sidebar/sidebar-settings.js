@@ -344,6 +344,7 @@ export const sidebarSettingsMethods = {
         const providerKeyHint = this.element.querySelector('#aifengyue-mail-provider-key-hint');
         const providerName = this.element.querySelector('#aifengyue-mail-provider-name');
         const saveKeyButton = this.element.querySelector('#aifengyue-save-key');
+        const usageSection = this.element.querySelector('#aifengyue-usage-section');
 
         if (providerSelect) {
             providerSelect.value = providerMeta.id;
@@ -372,6 +373,9 @@ export const sidebarSettingsMethods = {
         if (saveKeyButton) {
             saveKeyButton.disabled = !providerMeta.requiresApiKey;
             saveKeyButton.style.display = providerMeta.requiresApiKey ? '' : 'none';
+        }
+        if (usageSection) {
+            usageSection.style.display = providerMeta.supportsUsage ? '' : 'none';
         }
     },
 
